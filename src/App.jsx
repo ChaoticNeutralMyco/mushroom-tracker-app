@@ -1,96 +1,80 @@
-import React, { useEffect, useState } from "react";
+import React, { useState, useEffect } from "react";
 import GrowForm from "./components/GrowForm";
 import GrowList from "./components/GrowList";
 import GrowFilters from "./components/GrowFilters";
+import ImportExportButtons from "./components/ImportExportButtons";
 import PhotoUpload from "./components/PhotoUpload";
 import TaskReminder from "./components/TaskReminder";
-import ImportExportButtons from "./components/ImportExportButtons";
 import Analytics from "./components/Analytics";
 import CalendarView from "./components/CalendarView";
 import Settings from "./components/Settings";
-import "./index.css";
 
-export default function App() {
+function App() {
   const [grows, setGrows] = useState([]);
-  const [filteredStage, setFilteredStage] = useState("All");
-  const [activeTab, setActiveTab] = useState("Grow");
+  const [filter, setFilter] = useState("all");
+  const [activeTab, setActiveTab] = useState("Grow Tracker");
 
-  // Load from localStorage on startup
   useEffect(() => {
-    const stored = localStorage.getItem("grows");
-    if (stored) setGrows(JSON.parse(stored));
+    const saved = localStorage.getItem("mushroom-grows");
+    if (saved) {
+      setGrows(JSON.parse(saved));
+    }
   }, []);
 
-  // Save to localStorage when grows change
   useEffect(() => {
-    localStorage.setItem("grows", JSON.stringify(grows));
+    localStorage.setItem("mushroom-grows", JSON.stringify(grows));
   }, [grows]);
 
   const filteredGrows =
-    filteredStage === "All"
-      ? grows
-      : grows.filter((grow) => grow.stage === filteredStage);
-
-  const tabs = [
-    { id: "Grow", label: "Grow Tracker" },
-    { id: "Photos", label: "Photos" },
-    { id: "Tasks", label: "Reminders" },
-    { id: "Analytics", label: "Analytics" },
-    { id: "Calendar", label: "Calendar" },
-    { id: "Settings", label: "Settings" },
-  ];
+    filter === "all" ? grows : grows.filter((grow) => grow.stage === filter);
 
   return (
-    <div className="min-h-screen bg-gray-100 text-gray-800 p-4">
-      <header className="text-3xl font-bold text-center mb-4">
-        🍄 Chaotic Neutral Mushroom Tracker
-      </header>
+    <div className="min-h-screen bg-gray-100 text-gray-800 dark:bg-gray-900 dark:text-gray-100 p-4">
+      <div className="max-w-5xl mx-auto">
+        <h1 className="text-3xl font-bold text-center mb-4">
+          🍄 Mushroom Grow Tracker
+        </h1>
 
-      <nav className="flex flex-wrap justify-center mb-6">
-        {tabs.map((tab) => (
-          <button
-            key={tab.id}
-            onClick={() => setActiveTab(tab.id)}
-            className={`m-2 px-4 py-2 rounded-lg shadow ${
-              activeTab === tab.id
-                ? "bg-blue-600 text-white"
-                : "bg-white hover:bg-blue-100"
-            }`}
-          >
-            {tab.label}
-          </button>
-        ))}
-      </nav>
+        <div className="flex justify-center space-x-2 mb-4 flex-wrap">
+          {[
+            "Grow Tracker",
+            "Photos",
+            "Tasks",
+            "Analytics",
+            "Calendar",
+            "Settings",
+          ].map((tab) => (
+            <button
+              key={tab}
+              className={`px-3 py-1 rounded-md border ${
+                activeTab === tab
+                  ? "bg-blue-500 text-white"
+                  : "bg-white dark:bg-gray-800"
+              }`}
+              onClick={() => setActiveTab(tab)}
+            >
+              {tab}
+            </button>
+          ))}
+        </div>
 
-      <main className="max-w-5xl mx-auto space-y-4">
-        {activeTab === "Grow" && (
+        {activeTab === "Grow Tracker" && (
           <>
             <GrowForm setGrows={setGrows} />
-            <GrowFilters
-              filteredStage={filteredStage}
-              setFilteredStage={setFilteredStage}
-            />
+            <GrowFilters setFilter={setFilter} />
             <GrowList grows={filteredGrows} setGrows={setGrows} />
             <ImportExportButtons grows={grows} setGrows={setGrows} />
           </>
         )}
 
-        {activeTab === "Photos" && (
-          <PhotoUpload grows={grows} setGrows={setGrows} />
-        )}
-
-        {activeTab === "Tasks" && (
-          <TaskReminder grows={grows} setGrows={setGrows} />
-        )}
-
+        {activeTab === "Photos" && <PhotoUpload grows={grows} setGrows={setGrows} />}
+        {activeTab === "Tasks" && <TaskReminder grows={grows} setGrows={setGrows} />}
         {activeTab === "Analytics" && <Analytics grows={grows} />}
-
-        {activeTab === "Calendar" && (
-          <CalendarView grows={grows} setGrows={setGrows} />
-        )}
-
+        {activeTab === "Calendar" && <CalendarView grows={grows} />}
         {activeTab === "Settings" && <Settings />}
-      </main>
+      </div>
     </div>
   );
 }
+
+export default App;
