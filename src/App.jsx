@@ -1,81 +1,72 @@
-// src/App.jsx
-import React, { useEffect, useState } from "react";
+import React, { useState, useEffect } from "react";
 import GrowForm from "./components/GrowForm";
-import GrowList from "./components/GrowList";
 import GrowFilters from "./components/GrowFilters";
+import GrowList from "./components/GrowList";
 import PhotoUpload from "./components/PhotoUpload";
 import TaskReminder from "./components/TaskReminder";
 import ImportExportButtons from "./components/ImportExportButtons";
-import Analytics from "./components/Analytics";
 import CalendarView from "./components/CalendarView";
+import Analytics from "./components/Analytics";
 import Settings from "./components/Settings";
-import { saveData, loadData } from "./utils/storage";
-import { app, db } from "./firebase";
-import { collection, getDocs, setDoc, doc } from "firebase/firestore";
+import { onValue, ref, set } from "firebase/database";
+import { db } from "./firebase";
 
 export default function App() {
   const [grows, setGrows] = useState([]);
-  const [activeTab, setActiveTab] = useState("tracker");
+  const [tab, setTab] = useState("tracker");
 
-  // Firebase Sync
+  // Firebase sync
   useEffect(() => {
-    const fetchData = async () => {
-      const snapshot = await getDocs(collection(db, "grows"));
-      const data = snapshot.docs.map((doc) => doc.data());
-      setGrows(data);
-    };
-    fetchData();
+    const growsRef = ref(db, "grows");
+    const unsubscribe = onValue(growsRef, (snapshot) => {
+      const data = snapshot.val();
+      if (data) {
+        setGrows(data);
+      }
+    });
+    return () => unsubscribe();
   }, []);
 
   useEffect(() => {
-    const saveToFirebase = async () => {
-      for (const grow of grows) {
-        await setDoc(doc(db, "grows", grow.id), grow);
-      }
-    };
-    if (grows.length) saveToFirebase();
+    set(ref(db, "grows"), grows);
   }, [grows]);
 
   return (
-    <div className="min-h-screen bg-gray-900 text-white p-6">
-      <h1 className="text-3xl font-bold mb-4 flex items-center">
-        <span className="mr-2">🍄</span> Chaotic Neutral Mushroom Tracker
+    <div className="min-h-screen bg-gray-900 text-white p-4">
+      <h1 className="text-3xl font-bold text-center mb-6">
+        🍄 Chaotic Neutral Mushroom Tracker
       </h1>
 
       {/* Tabs */}
-      <div className="flex gap-2 mb-4">
-        {["tracker", "calendar", "analytics", "settings"].map((tab) => (
+      <div className="flex justify-center mb-6 space-x-2">
+        {["tracker", "calendar", "analytics", "settings"].map((t) => (
           <button
-            key={tab}
-            onClick={() => setActiveTab(tab)}
+            key={t}
             className={`px-4 py-2 rounded ${
-              activeTab === tab
-                ? "bg-green-600 text-white"
-                : "bg-gray-800 text-gray-300"
+              tab === t ? "bg-green-600" : "bg-gray-700"
             }`}
+            onClick={() => setTab(t)}
           >
-            {tab.charAt(0).toUpperCase() + tab.slice(1)}
+            {t.charAt(0).toUpperCase() + t.slice(1)}
           </button>
         ))}
       </div>
 
-      {/* Content */}
-      <div className="bg-gray-800 p-4 rounded shadow">
-        {activeTab === "tracker" && (
-          <>
-            <GrowForm setGrows={setGrows} />
-            <GrowFilters grows={grows} setGrows={setGrows} />
-            <GrowList grows={grows} setGrows={setGrows} />
-            <PhotoUpload grows={grows} setGrows={setGrows} />
-            <TaskReminder grows={grows} />
-            <ImportExportButtons grows={grows} setGrows={setGrows} />
-          </>
-        )}
+      {/* Tab content */}
+      {tab === "tracker" && (
+        <div className="space-y-4">
+          <GrowForm setGrows={setGrows} />
+          <GrowFilters grows={grows} setGrows={setGrows} />
+          <GrowList grows={grows} setGrows={setGrows} />
+          <PhotoUpload grows={grows} setGrows={setGrows} />
+          <TaskReminder grows={grows} />
+          <ImportExportButtons grows={grows} setGrows={setGrows} />
+        </div>
+      )}
 
-        {activeTab === "calendar" && <CalendarView grows={grows} />}
-        {activeTab === "analytics" && <Analytics grows={grows} />}
-        {activeTab === "settings" && <Settings />}
-      </div>
+      {tab === "calendar" && <CalendarView grows={grows} />}
+      {tab === "analytics" && <Analytics grows={grows} />}
+      {tab === "settings" && <Settings />}
     </div>
   );
 }
