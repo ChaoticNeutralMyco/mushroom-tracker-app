@@ -2,76 +2,125 @@ import React, { useEffect, useState } from "react";
 import GrowForm from "./components/GrowForm";
 import GrowList from "./components/GrowList";
 import GrowFilters from "./components/GrowFilters";
+import PhotoUpload from "./components/PhotoUpload";
+import TaskReminder from "./components/TaskReminder";
+import ImportExportButtons from "./components/ImportExportButtons";
 import CalendarView from "./components/CalendarView";
 import Analytics from "./components/Analytics";
 import Settings from "./components/Settings";
-import ImportExportButtons from "./components/ImportExportButtons";
-import TaskReminder from "./components/TaskReminder";
-import PhotoUpload from "./components/PhotoUpload";
 import { db } from "./firebase";
-import { collection, getDocs, addDoc, updateDoc, deleteDoc, doc } from "firebase/firestore";
+import {
+  collection,
+  getDocs,
+  addDoc,
+  updateDoc,
+  deleteDoc,
+  doc,
+} from "firebase/firestore";
 
 export default function App() {
+  const [tab, setTab] = useState("tracker");
   const [grows, setGrows] = useState([]);
-  const [activeTab, setActiveTab] = useState("Tracker");
 
-  const growCollection = collection(db, "grows");
+  const growsCollectionRef = collection(db, "grows");
 
-  useEffect(() => {
-    const fetchData = async () => {
-      const data = await getDocs(growCollection);
-      setGrows(data.docs.map(doc => ({ ...doc.data(), id: doc.id })));
-    };
-    fetchData();
-  }, []);
-
-  const addGrow = async (grow) => {
-    const docRef = await addDoc(growCollection, grow);
-    setGrows([...grows, { ...grow, id: docRef.id }]);
+  // 🔄 Fetch data from Firestore
+  const fetchGrows = async () => {
+    const data = await getDocs(growsCollectionRef);
+    setGrows(data.docs.map((doc) => ({ ...doc.data(), id: doc.id })));
   };
 
-  const updateGrow = async (id, updated) => {
+  useEffect(() => {
+    fetchGrows();
+  }, []);
+
+  const addGrow = async (newGrow) => {
+    const docRef = await addDoc(growsCollectionRef, newGrow);
+    setGrows([...grows, { ...newGrow, id: docRef.id }]);
+  };
+
+  const updateGrow = async (id, updatedData) => {
     const growDoc = doc(db, "grows", id);
-    await updateDoc(growDoc, updated);
-    setGrows(grows.map(g => (g.id === id ? { ...g, ...updated } : g)));
+    await updateDoc(growDoc, updatedData);
+    setGrows(
+      grows.map((grow) => (grow.id === id ? { ...grow, ...updatedData } : grow))
+    );
   };
 
   const deleteGrow = async (id) => {
     const growDoc = doc(db, "grows", id);
     await deleteDoc(growDoc);
-    setGrows(grows.filter(g => g.id !== id));
+    setGrows(grows.filter((grow) => grow.id !== id));
   };
 
   return (
-    <div className="min-h-screen p-4 max-w-5xl mx-auto">
-      <h1 className="text-3xl font-bold mb-4">Chaotic Neutral Mushroom Tracker</h1>
-      <div className="flex gap-2 mb-4">
-        {["Tracker", "Calendar", "Analytics", "Settings"].map((tab) => (
-          <button
-            key={tab}
-            onClick={() => setActiveTab(tab)}
-            className={`px-4 py-2 rounded ${
-              activeTab === tab ? "bg-blue-600 text-white" : "bg-gray-200 dark:bg-gray-700"
-            }`}
-          >
-            {tab}
-          </button>
-        ))}
+    <div className="min-h-screen bg-zinc-900 text-zinc-100 p-4">
+      <h1 className="text-3xl font-bold text-center mb-6">
+        🍄 Chaotic Neutral Mushroom Tracker
+      </h1>
+
+      {/* Tab Navigation */}
+      <div className="flex justify-center gap-2 mb-6 flex-wrap">
+        <button
+          onClick={() => setTab("tracker")}
+          className={`px-4 py-2 rounded ${
+            tab === "tracker"
+              ? "bg-emerald-600 text-white"
+              : "bg-zinc-800 text-zinc-300"
+          }`}
+        >
+          Tracker
+        </button>
+        <button
+          onClick={() => setTab("calendar")}
+          className={`px-4 py-2 rounded ${
+            tab === "calendar"
+              ? "bg-blue-600 text-white"
+              : "bg-zinc-800 text-zinc-300"
+          }`}
+        >
+          Calendar
+        </button>
+        <button
+          onClick={() => setTab("analytics")}
+          className={`px-4 py-2 rounded ${
+            tab === "analytics"
+              ? "bg-purple-600 text-white"
+              : "bg-zinc-800 text-zinc-300"
+          }`}
+        >
+          Analytics
+        </button>
+        <button
+          onClick={() => setTab("settings")}
+          className={`px-4 py-2 rounded ${
+            tab === "settings"
+              ? "bg-orange-600 text-white"
+              : "bg-zinc-800 text-zinc-300"
+          }`}
+        >
+          Settings
+        </button>
       </div>
 
-      {activeTab === "Tracker" && (
+      {/* Tab Views */}
+      {tab === "tracker" && (
         <>
           <GrowForm onAdd={addGrow} />
-          <GrowFilters setGrows={setGrows} grows={grows} />
-          <GrowList grows={grows} onUpdate={updateGrow} onDelete={deleteGrow} />
-          <PhotoUpload grows={grows} />
-          <TaskReminder grows={grows} />
+          <GrowFilters grows={grows} setGrows={setGrows} />
+          <GrowList
+            grows={grows}
+            onUpdate={updateGrow}
+            onDelete={deleteGrow}
+          />
+          <PhotoUpload />
+          <TaskReminder />
           <ImportExportButtons grows={grows} setGrows={setGrows} />
         </>
       )}
-      {activeTab === "Calendar" && <CalendarView grows={grows} />}
-      {activeTab === "Analytics" && <Analytics grows={grows} />}
-      {activeTab === "Settings" && <Settings />}
+      {tab === "calendar" && <CalendarView grows={grows} />}
+      {tab === "analytics" && <Analytics grows={grows} />}
+      {tab === "settings" && <Settings />}
     </div>
   );
 }
