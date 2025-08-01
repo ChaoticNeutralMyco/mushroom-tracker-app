@@ -1,40 +1,35 @@
-import "react-big-calendar/lib/css/react-big-calendar.css";
+// src/components/CalendarView.jsx
+
 import React from "react";
-import { Calendar, dateFnsLocalizer } from "react-big-calendar";
-import format from "date-fns/format";
-import parse from "date-fns/parse";
-import startOfWeek from "date-fns/startOfWeek";
-import getDay from "date-fns/getDay";
-import "react-big-calendar/lib/css/react-big-calendar.css";
+import FullCalendar from "@fullcalendar/react";
+import dayGridPlugin from "@fullcalendar/daygrid";
+import interactionPlugin from "@fullcalendar/interaction";
 
-const locales = {
-  "en-US": require("date-fns/locale/en-US"),
-};
+// Import CSS via CDN in index.html (recommended) or here:
+import "https://cdn.jsdelivr.net/npm/@fullcalendar/daygrid@6.1.10/main.min.css";
 
-const localizer = dateFnsLocalizer({
-  format,
-  parse,
-  startOfWeek,
-  getDay,
-  locales,
-});
-
-export default function CalendarView({ grows }) {
+export default function CalendarView({ grows = [] }) {
   const events = grows.map((grow) => ({
-    title: grow.strain,
-    start: new Date(grow.startDate),
-    end: new Date(grow.endDate || grow.startDate),
+    id: grow.id,
+    title: `${grow.name} (${grow.stage})`,
+    start: grow.startDate,
+    end: grow.harvestDate || grow.endDate || grow.startDate,
+    allDay: true,
   }));
 
+  const handleEventClick = (info) => {
+    alert(`Grow: ${info.event.title}`);
+  };
+
   return (
-    <div className="p-4 bg-white dark:bg-gray-900 rounded shadow">
-      <h2 className="text-xl font-semibold mb-4">Grow Calendar</h2>
-      <Calendar
-        localizer={localizer}
+    <div className="p-4">
+      <h2 className="text-2xl font-bold mb-4">Grow Calendar</h2>
+      <FullCalendar
+        plugins={[dayGridPlugin, interactionPlugin]}
+        initialView="dayGridMonth"
         events={events}
-        startAccessor="start"
-        endAccessor="end"
-        style={{ height: 500 }}
+        eventClick={handleEventClick}
+        height="auto"
       />
     </div>
   );
