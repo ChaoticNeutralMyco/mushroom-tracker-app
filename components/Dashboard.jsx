@@ -1,5 +1,5 @@
 import React from "react";
-import { AuthProvider, useAuth } from "./context/AuthContext";
+import { useAuth } from "../context/AuthContext";
 import LogoutButton from "./LogoutButton";
 import GrowList from "./GrowList"; // Optional
 import GrowForm from "./GrowForm"; // Optional
