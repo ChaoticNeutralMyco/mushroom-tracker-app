@@ -6,7 +6,6 @@ import dayGridPlugin from "@fullcalendar/daygrid";
 import interactionPlugin from "@fullcalendar/interaction";
 
 // Import CSS via CDN in index.html (recommended) or here:
-import "https://cdn.jsdelivr.net/npm/@fullcalendar/daygrid@6.1.10/main.min.css";
 
 export default function CalendarView({ grows = [] }) {
   const events = grows.map((grow) => ({
