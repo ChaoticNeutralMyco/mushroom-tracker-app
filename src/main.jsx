@@ -14,6 +14,5 @@ ReactDOM.createRoot(document.getElementById("root")).render(
       </AuthProvider>
     </BrowserRouter>
     <App />
->>>>>>> be7d1a18 (Initial commit with final polished version)
   </React.StrictMode>
 );
