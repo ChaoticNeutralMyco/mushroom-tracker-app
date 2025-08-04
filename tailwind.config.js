@@ -1,19 +1,7 @@
-<<<<<<< HEAD
-/** @type {import('tailwindcss').Config} */
-module.exports = {
-  content: [
-    "./src/**/*.{js,jsx,ts,tsx,html}"
-  ],
-  theme: {
-    extend: {},
-  },
-  plugins: [],
-}
-=======
 // tailwind.config.js
 /** @type {import('tailwindcss').Config} */
 module.exports = {
-  content: ["./index.html", "./src/**/*.{js,jsx}"],
+  content: ["./index.html", "./src/**/*.{js,jsx,ts,tsx,html}"],
   darkMode: "class",
   theme: {
     extend: {
@@ -33,4 +21,3 @@ module.exports = {
   },
   plugins: [],
 };
->>>>>>> be7d1a18 (Initial commit with final polished version)
