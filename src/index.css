@@ -3,30 +3,16 @@
 @tailwind components;
 @tailwind utilities;
 
-/* Custom styles */
+:root {
+  --font-size: 1rem;
+  --accent-color: #10b981; /* emerald */
+}
+
 body {
-  @apply bg-white text-gray-900 dark:bg-gray-900 dark:text-white;
+  font-size: var(--font-size);
 }
 
-input,
-select,
-textarea,
-button {
-  @apply rounded-md border border-gray-300 dark:border-gray-600 p-2 bg-white dark:bg-gray-800 text-gray-900 dark:text-white;
-}
-
-.card {
-  @apply p-4 rounded-2xl shadow-md dark:shadow-lg bg-white dark:bg-gray-800;
-}
-
-.btn {
-  @apply px-4 py-2 rounded-xl font-semibold shadow-sm hover:shadow-md transition-all;
-}
-
-.btn-primary {
-  @apply bg-blue-600 text-white hover:bg-blue-700 dark:bg-blue-500 dark:hover:bg-blue-600;
-}
-
-.btn-secondary {
-  @apply bg-gray-600 text-white hover:bg-gray-700 dark:bg-gray-500 dark:hover:bg-gray-600;
+.dark {
+  background-color: #111827;
+  color: #f9fafb;
 }
