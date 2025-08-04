@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 # Mushroom Tracker App
 
 This is a React-based application for tracking mushroom grows.
@@ -43,3 +44,8 @@ We recommend using [Vercel](https://vercel.com/) for quick deployment. Make sure
 Firebase has been removed for production stability. You may reintroduce it later with:
 - `firebase.js`
 - State syncing via Firestore
+=======
+# Mushroom Grow Tracker
+
+Track your mushroom grows, photos, tasks, analytics and more with Firebase sync.
+>>>>>>> be7d1a18 (Initial commit with final polished version)

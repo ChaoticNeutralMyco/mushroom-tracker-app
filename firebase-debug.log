@@ -1,0 +1,35 @@
+[debug] [2025-08-02T02:53:22.394Z] ----------------------------------------------------------------------
+[debug] [2025-08-02T02:53:22.397Z] Command:       C:\Program Files\nodejs\node.exe C:\Users\vtruj\AppData\Roaming\npm\node_modules\firebase-tools\lib\bin\firebase.js login
+[debug] [2025-08-02T02:53:22.397Z] CLI Version:   14.11.2
+[debug] [2025-08-02T02:53:22.398Z] Platform:      win32
+[debug] [2025-08-02T02:53:22.398Z] Node Version:  v20.19.4
+[debug] [2025-08-02T02:53:22.398Z] Time:          Fri Aug 01 2025 20:53:22 GMT-0600 (Mountain Daylight Time)
+[debug] [2025-08-02T02:53:22.398Z] ----------------------------------------------------------------------
+[debug] 
+[debug] [2025-08-02T02:53:22.400Z] >>> [apiv2][query] GET https://firebase-public.firebaseio.com/cli.json [none]
+[info] i  The Firebase CLI’s MCP server feature can optionally make use of Gemini in Firebase. Learn more about Gemini in Firebase and how it uses your data: https://firebase.google.com/docs/gemini-in-firebase#how-gemini-in-firebase-uses-your-data 
+[debug] [2025-08-02T02:53:22.812Z] <<< [apiv2][status] GET https://firebase-public.firebaseio.com/cli.json 200
+[debug] [2025-08-02T02:53:22.813Z] <<< [apiv2][body] GET https://firebase-public.firebaseio.com/cli.json {"cloudBuildErrorAfter":1594252800000,"cloudBuildWarnAfter":1590019200000,"defaultNode10After":1594252800000,"minVersion":"3.0.5","node8DeploysDisabledAfter":1613390400000,"node8RuntimeDisabledAfter":1615809600000,"node8WarnAfter":1600128000000}
+[warn] !  Unable to fetch the CLI MOTD and remote config. This is not a fatal error, but may indicate an issue with your network connection. 
+[debug] [2025-08-02T02:53:22.815Z] Failed to fetch MOTD Error: EPERM: operation not permitted, mkdir 'C:\Users\vtruj\.config\configstore'
+[debug] [2025-08-02T02:54:59.348Z] Error: EPERM: operation not permitted, mkdir 'C:\Users\vtruj\.config\configstore'
+    at Object.mkdirSync (node:fs:1372:26)
+    at module.exports.sync (C:\Users\vtruj\AppData\Roaming\npm\node_modules\firebase-tools\node_modules\make-dir\index.js:114:6)
+    at set all [as all] (C:\Users\vtruj\AppData\Roaming\npm\node_modules\firebase-tools\node_modules\configstore\index.js:59:12)
+    at Configstore.set (C:\Users\vtruj\AppData\Roaming\npm\node_modules\firebase-tools\node_modules\configstore\index.js:91:12)
+    at Command.actionFn (C:\Users\vtruj\AppData\Roaming\npm\node_modules\firebase-tools\lib\commands\login.js:33:35)
+[error] 
+[error] Error: An unexpected error has occurred.
+[debug] [2025-08-02T02:54:59.628Z] Error: EPERM: operation not permitted, mkdir 'C:\Users\vtruj\.config\configstore'
+    at Object.mkdirSync (node:fs:1372:26)
+    at module.exports.sync (C:\Users\vtruj\AppData\Roaming\npm\node_modules\firebase-tools\node_modules\make-dir\index.js:114:6)
+    at set all [as all] (C:\Users\vtruj\AppData\Roaming\npm\node_modules\firebase-tools\node_modules\configstore\index.js:59:12)
+    at Configstore.set (C:\Users\vtruj\AppData\Roaming\npm\node_modules\firebase-tools\node_modules\configstore\index.js:91:12)
+    at process.<anonymous> (C:\Users\vtruj\AppData\Roaming\npm\node_modules\firebase-tools\lib\bin\cli.js:62:39)
+    at process.emit (node:events:536:35)
+    at process.exit (node:internal/process/per_thread:184:15)
+    at Timeout._onTimeout (C:\Users\vtruj\AppData\Roaming\npm\node_modules\firebase-tools\lib\errorOut.js:20:17)
+    at listOnTimeout (node:internal/timers:581:17)
+    at process.processTimers (node:internal/timers:519:7)
+[error] 
+[error] Error: An unexpected error has occurred.

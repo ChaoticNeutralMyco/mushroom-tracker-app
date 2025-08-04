@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 import React, { useState } from "react";
 
 export default function TaskReminder({ growId, tasks, onAddTask, onToggleTask }) {
@@ -60,6 +61,59 @@ export default function TaskReminder({ growId, tasks, onAddTask, onToggleTask })
           </li>
         ))}
       </ul>
+=======
+// src/components/TaskReminder.jsx
+import React, { useState } from "react";
+
+export default function TaskReminder({ grows }) {
+  const [reminderText, setReminderText] = useState("");
+  const [reminders, setReminders] = useState([]);
+
+  const handleAddReminder = () => {
+    if (!reminderText.trim()) return;
+    setReminders([
+      ...reminders,
+      {
+        text: reminderText.trim(),
+        created: new Date().toISOString(),
+      },
+    ]);
+    setReminderText("");
+  };
+
+  return (
+    <div className="bg-white dark:bg-zinc-900 text-zinc-900 dark:text-white p-6 rounded-2xl shadow max-w-2xl mx-auto mt-6 space-y-4">
+      <h2 className="text-2xl font-bold">📝 Quick Task Reminders</h2>
+
+      <div className="flex flex-col sm:flex-row gap-3">
+        <input
+          type="text"
+          value={reminderText}
+          onChange={(e) => setReminderText(e.target.value)}
+          placeholder="e.g., Shake jar on Aug 5"
+          className="p-2 rounded border border-zinc-300 dark:border-zinc-600 bg-white dark:bg-zinc-800 w-full text-sm"
+        />
+        <button
+          onClick={handleAddReminder}
+          className="bg-purple-600 hover:bg-purple-700 text-white px-4 py-2 rounded w-full sm:w-auto text-sm font-semibold"
+        >
+          ➕ Add Reminder
+        </button>
+      </div>
+
+      {reminders.length > 0 && (
+        <ul className="space-y-2 list-disc list-inside mt-4">
+          {reminders.map((r, i) => (
+            <li key={i}>
+              <div className="font-medium">{r.text}</div>
+              <div className="text-xs text-zinc-500 dark:text-zinc-400">
+                Added: {new Date(r.created).toLocaleString()}
+              </div>
+            </li>
+          ))}
+        </ul>
+      )}
+>>>>>>> be7d1a18 (Initial commit with final polished version)
     </div>
   );
 }

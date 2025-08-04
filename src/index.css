@@ -1,3 +1,54 @@
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
+<<<<<<< HEAD
+=======
+
+/* Base Font */
+body {
+  font-family: "Inter", sans-serif;
+}
+
+/* Dyslexia Friendly Font */
+body.dyslexia-font {
+  font-family: 'OpenDyslexic', 'Comic Sans MS', Arial, sans-serif;
+}
+
+/* Reduce Motion */
+body.reduce-motion * {
+  transition: none !important;
+  animation: none !important;
+}
+
+/* THEME: Default */
+body.theme-default {
+  --bg-color: #ffffff;
+  --card-color: #f9fafb;
+  --text-color: #111827;
+}
+
+/* THEME: Pastel */
+body.theme-pastel {
+  --bg-color: #fef6fb;
+  --card-color: #ffeaf1;
+  --text-color: #542c3e;
+}
+
+/* THEME: High Contrast */
+body.theme-high-contrast {
+  --bg-color: #000000;
+  --card-color: #1a1a1a;
+  --text-color: #ffffff;
+}
+
+/* Apply theme variables */
+body {
+  background-color: var(--bg-color);
+  color: var(--text-color);
+}
+
+/* Card style class (uses theme colors) */
+.card {
+  background-color: var(--card-color);
+}
+>>>>>>> be7d1a18 (Initial commit with final polished version)
