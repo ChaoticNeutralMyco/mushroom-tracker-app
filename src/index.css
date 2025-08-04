@@ -1,54 +1,55 @@
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
-<<<<<<< HEAD
-=======
 
-/* Base Font */
+/* Root variables for theme customization */
+:root {
+  --font-size-base: 1rem;
+  --font-size-lg: 1.125rem;
+  --font-size-xl: 1.25rem;
+  --accent-color: #4f46e5; /* indigo-600 */
+}
+
+html {
+  font-size: var(--font-size-base);
+}
+
 body {
-  font-family: "Inter", sans-serif;
+  @apply bg-white text-gray-800 dark:bg-gray-900 dark:text-gray-100;
 }
 
-/* Dyslexia Friendly Font */
-body.dyslexia-font {
-  font-family: 'OpenDyslexic', 'Comic Sans MS', Arial, sans-serif;
+/* Theme: Default */
+.theme-default {
+  --accent-color: #4f46e5; /* indigo-600 */
 }
 
-/* Reduce Motion */
-body.reduce-motion * {
-  transition: none !important;
-  animation: none !important;
+/* Theme: High Contrast */
+.theme-high-contrast {
+  --accent-color: #000;
+  background-color: #fff !important;
+  color: #000 !important;
 }
 
-/* THEME: Default */
-body.theme-default {
-  --bg-color: #ffffff;
-  --card-color: #f9fafb;
-  --text-color: #111827;
+.theme-high-contrast * {
+  border-color: #000 !important;
 }
 
-/* THEME: Pastel */
-body.theme-pastel {
-  --bg-color: #fef6fb;
-  --card-color: #ffeaf1;
-  --text-color: #542c3e;
+/* Theme: Pastel */
+.theme-pastel {
+  --accent-color: #a78bfa; /* purple-300 */
+  background-color: #fdf6f9;
+  color: #4b5563;
 }
 
-/* THEME: High Contrast */
-body.theme-high-contrast {
-  --bg-color: #000000;
-  --card-color: #1a1a1a;
-  --text-color: #ffffff;
+/* Utility classes for accessibility */
+.text-accent {
+  color: var(--accent-color);
 }
 
-/* Apply theme variables */
-body {
-  background-color: var(--bg-color);
-  color: var(--text-color);
+.bg-accent {
+  background-color: var(--accent-color);
 }
 
-/* Card style class (uses theme colors) */
-.card {
-  background-color: var(--card-color);
+.border-accent {
+  border-color: var(--accent-color);
 }
->>>>>>> be7d1a18 (Initial commit with final polished version)
