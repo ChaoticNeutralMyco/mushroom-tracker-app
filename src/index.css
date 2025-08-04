@@ -1,44 +1,36 @@
-/* src/index.css */
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
 
-html, body {
-  @apply bg-white text-gray-800 dark:bg-gray-900 dark:text-gray-100 font-sans;
+/* Custom styles */
+html {
+  scroll-behavior: smooth;
 }
 
-input, select, textarea {
-  @apply bg-white dark:bg-gray-800 border dark:border-gray-600 text-sm text-black dark:text-white rounded px-2 py-1;
+body {
+  font-family: 'Inter', sans-serif;
 }
 
-button {
-  @apply px-3 py-1 rounded bg-blue-600 hover:bg-blue-700 text-white dark:bg-blue-500 dark:hover:bg-blue-600;
-}
-
-.card {
-  @apply p-4 rounded-2xl shadow-md bg-white dark:bg-gray-800;
-}
-
-h1, h2, h3, h4 {
-  @apply font-bold text-gray-800 dark:text-white;
-}
-
-a {
-  @apply text-blue-600 dark:text-blue-400 underline;
-}
-
+/* Theme overrides */
 .theme-default {
-  --color-accent: #3b82f6;
+  --accent: #4ade80;
+  --bg: #f9fafb;
+  --text: #111827;
+}
+
+.theme-dark {
+  --accent: #4ade80;
+  --bg: #1f2937;
+  --text: #f9fafb;
 }
 
 .theme-high-contrast {
-  --color-accent: #ff0055;
-  background-color: #000;
-  color: #fff;
+  --accent: #facc15;
+  --bg: #000000;
+  --text: #ffffff;
 }
 
-.theme-pastel {
-  --color-accent: #c084fc;
-  background-color: #fdf6fd;
-  color: #444;
+body {
+  background-color: var(--bg);
+  color: var(--text);
 }
