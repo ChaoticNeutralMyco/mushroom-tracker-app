@@ -1,55 +1,32 @@
+/* src/index.css */
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
 
-/* Root variables for theme customization */
-:root {
-  --font-size-base: 1rem;
-  --font-size-lg: 1.125rem;
-  --font-size-xl: 1.25rem;
-  --accent-color: #4f46e5; /* indigo-600 */
-}
-
-html {
-  font-size: var(--font-size-base);
-}
-
+/* Custom styles */
 body {
-  @apply bg-white text-gray-800 dark:bg-gray-900 dark:text-gray-100;
+  @apply bg-white text-gray-900 dark:bg-gray-900 dark:text-white;
 }
 
-/* Theme: Default */
-.theme-default {
-  --accent-color: #4f46e5; /* indigo-600 */
+input,
+select,
+textarea,
+button {
+  @apply rounded-md border border-gray-300 dark:border-gray-600 p-2 bg-white dark:bg-gray-800 text-gray-900 dark:text-white;
 }
 
-/* Theme: High Contrast */
-.theme-high-contrast {
-  --accent-color: #000;
-  background-color: #fff !important;
-  color: #000 !important;
+.card {
+  @apply p-4 rounded-2xl shadow-md dark:shadow-lg bg-white dark:bg-gray-800;
 }
 
-.theme-high-contrast * {
-  border-color: #000 !important;
+.btn {
+  @apply px-4 py-2 rounded-xl font-semibold shadow-sm hover:shadow-md transition-all;
 }
 
-/* Theme: Pastel */
-.theme-pastel {
-  --accent-color: #a78bfa; /* purple-300 */
-  background-color: #fdf6f9;
-  color: #4b5563;
+.btn-primary {
+  @apply bg-blue-600 text-white hover:bg-blue-700 dark:bg-blue-500 dark:hover:bg-blue-600;
 }
 
-/* Utility classes for accessibility */
-.text-accent {
-  color: var(--accent-color);
-}
-
-.bg-accent {
-  background-color: var(--accent-color);
-}
-
-.border-accent {
-  border-color: var(--accent-color);
+.btn-secondary {
+  @apply bg-gray-600 text-white hover:bg-gray-700 dark:bg-gray-500 dark:hover:bg-gray-600;
 }
