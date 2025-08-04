@@ -1,34 +1,3 @@
-<<<<<<< HEAD
-import React from "react";
-import { AuthProvider, useAuth } from "./context/AuthContext";
-import LogoutButton from "./LogoutButton";
-import GrowList from "./GrowList"; // Optional
-import GrowForm from "./GrowForm"; // Optional
-
-const Dashboard = () => {
-  const { user } = useAuth();
-
-  return (
-    <div className="min-h-screen bg-gray-100 p-6">
-      <div className="max-w-3xl mx-auto bg-white shadow-md rounded-lg p-6">
-        <div className="flex justify-between items-center mb-4">
-          <h1 className="text-2xl font-bold">
-            Welcome, {user?.email || "User"} 👋
-          </h1>
-          <LogoutButton />
-        </div>
-
-        <div className="space-y-6">
-          <GrowForm />
-          <GrowList />
-        </div>
-      </div>
-    </div>
-  );
-};
-
-export default Dashboard;
-=======
 // src/App.jsx
 import React, { useState, useEffect } from "react";
 import { auth } from "./firebase-config";
@@ -59,7 +28,7 @@ import GrowTimeline from "./components/GrowTimeline";
 import COGManager from "./components/COGManager";
 import RecipeManager from "./components/RecipeManager";
 import DashboardStats from "./components/DashboardStats";
-import StrainManager from "./components/StrainManager"; // ✅ NEW
+import StrainManager from "./components/StrainManager";
 
 import "./index.css";
 
@@ -194,7 +163,7 @@ export default function App() {
           { id: "tasks", label: "Tasks" },
           { id: "cog", label: "COG" },
           { id: "recipes", label: "Recipes" },
-          { id: "strains", label: "Strains" }, // ✅ New Tab
+          { id: "strains", label: "Strains" },
           { id: "settings", label: "Settings" },
         ].map(({ id, label }) => (
           <button
@@ -228,9 +197,8 @@ export default function App() {
       {activeTab === "tasks" && <TaskManager selectedGrowId={null} />}
       {activeTab === "cog" && <COGManager />}
       {activeTab === "recipes" && <RecipeManager />}
-      {activeTab === "strains" && <StrainManager />} {/* ✅ New Strain Manager */}
+      {activeTab === "strains" && <StrainManager />}
       {activeTab === "settings" && <Settings />}
     </div>
   );
 }
->>>>>>> be7d1a18 (Initial commit with final polished version)
