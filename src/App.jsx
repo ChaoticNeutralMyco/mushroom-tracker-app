@@ -1,7 +1,9 @@
-// src/App.jsx
 import React, { useState, useEffect } from "react";
-import { auth } from "./firebase-config";
-import { onAuthStateChanged, signOut } from "firebase/auth";
+import { auth, db } from "./firebase-config";
+import {
+  onAuthStateChanged,
+  signOut
+} from "firebase/auth";
 import {
   collection,
   getDocs,
@@ -9,9 +11,8 @@ import {
   updateDoc,
   getDoc,
   setDoc,
-  serverTimestamp,
+  serverTimestamp
 } from "firebase/firestore";
-import { db } from "./firebase-config";
 
 import Auth from "./components/Auth";
 import GrowForm from "./components/GrowForm";
@@ -29,8 +30,19 @@ import COGManager from "./components/COGManager";
 import RecipeManager from "./components/RecipeManager";
 import DashboardStats from "./components/DashboardStats";
 import StrainManager from "./components/StrainManager";
+import SplashScreen from "./components/SplashScreen";
+import QrScannerModal from "./components/QrScannerModal";
+import LabelPrintWrapper from "./components/LabelPrint";
 
 import "./index.css";
+
+// --- Apply theme from localStorage BEFORE any rendering ---
+const savedTheme = localStorage.getItem("theme");
+if (savedTheme === "dark") {
+  document.documentElement.classList.add("dark");
+} else {
+  document.documentElement.classList.remove("dark");
+}
 
 export default function App() {
   const [user, setUser] = useState(null);
@@ -39,41 +51,90 @@ export default function App() {
   const [filter, setFilter] = useState("");
   const [activeTab, setActiveTab] = useState("dashboard");
   const [showOnboarding, setShowOnboarding] = useState(false);
+  const [themeLoaded, setThemeLoaded] = useState(false);
+  const [showQrModal, setShowQrModal] = useState(false);
+  const [supplies, setSupplies] = useState([]);
+  const [recipes, setRecipes] = useState([]);
 
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, async (currentUser) => {
       setUser(currentUser);
       if (currentUser) {
-        const growsRef = collection(db, "users", currentUser.uid, "grows");
-        const snapshot = await getDocs(growsRef);
-        setGrows(snapshot.docs.map((doc) => ({ id: doc.id, ...doc.data() })));
-
-        const onboardRef = doc(db, "users", currentUser.uid, "settings", "onboarding");
-        const onboardSnap = await getDoc(onboardRef);
-        if (!onboardSnap.exists() || !onboardSnap.data().seen) {
-          setShowOnboarding(true);
-        }
-
-        const prefRef = doc(db, "users", currentUser.uid, "settings", "preferences");
-        const prefSnap = await getDoc(prefRef);
-        if (prefSnap.exists()) {
-          const prefs = prefSnap.data();
-          const themeClass = `theme-${prefs.theme || "default"}`;
-          document.body.classList.remove("theme-default", "theme-high-contrast", "theme-pastel");
-          document.body.classList.add(themeClass);
-          document.documentElement.style.fontSize =
-            prefs.fontSize === "small" ? "14px" :
-            prefs.fontSize === "large" ? "18px" : "16px";
-          document.body.classList.toggle("dyslexia-font", prefs.dyslexicFont);
-          document.body.classList.toggle("reduce-motion", prefs.reduceMotion);
-        }
+        await loadUserData(currentUser.uid);
       } else {
         setGrows([]);
+        setSupplies([]);
+        setRecipes([]);
+        setThemeLoaded(true);
       }
     });
 
     return () => unsubscribe();
   }, []);
+
+  const loadUserData = async (uid) => {
+    const growsRef = collection(db, "users", uid, "grows");
+    const suppliesRef = collection(db, "users", uid, "supplies");
+    const recipesRef = collection(db, "users", uid, "recipes");
+
+    const [growsSnap, suppliesSnap, recipesSnap] = await Promise.all([
+      getDocs(growsRef),
+      getDocs(suppliesRef),
+      getDocs(recipesRef),
+    ]);
+
+    const loadedSupplies = suppliesSnap.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+    const loadedRecipes = recipesSnap.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+
+    const hydratedGrows = growsSnap.docs.map(doc => {
+      const grow = { id: doc.id, ...doc.data() };
+      const recipe = loadedRecipes.find(r => r.id === grow.recipeId);
+      grow.recipeItems = recipe?.items?.map(item => {
+        const supply = loadedSupplies.find(s => s.id === item.supplyId);
+        return {
+          ...item,
+          name: supply?.name || "Unknown",
+          unit: supply?.unit || "",
+          cost: supply?.cost || 0,
+        };
+      }) || [];
+      return grow;
+    });
+
+    setGrows(hydratedGrows);
+    setSupplies(loadedSupplies);
+    setRecipes(loadedRecipes);
+
+    const onboardRef = doc(db, "users", uid, "settings", "onboarding");
+    const onboardSnap = await getDoc(onboardRef);
+    if (!onboardSnap.exists() || !onboardSnap.data().seen) {
+      setShowOnboarding(true);
+    }
+
+    const prefRef = doc(db, "users", uid, "settings", "preferences");
+    const prefSnap = await getDoc(prefRef);
+    if (prefSnap.exists()) {
+      const prefs = prefSnap.data();
+      if (prefs.theme === "dark" || prefs.darkMode) {
+        document.documentElement.classList.add("dark");
+        localStorage.setItem("theme", "dark");
+      } else {
+        document.documentElement.classList.remove("dark");
+        localStorage.setItem("theme", "light");
+      }
+
+      const themeClass = `theme-${prefs.theme || "default"}`;
+      document.body.classList.remove("theme-default", "theme-high-contrast", "theme-pastel");
+      document.body.classList.add(themeClass);
+      document.documentElement.style.fontSize =
+        prefs.fontSize === "small" ? "14px" :
+        prefs.fontSize === "large" ? "18px" : "16px";
+      document.body.classList.toggle("dyslexia-font", prefs.dyslexicFont);
+      document.body.classList.toggle("reduce-motion", prefs.reduceMotion);
+    }
+
+    setThemeLoaded(true);
+  };
 
   const handleLogout = async () => {
     await signOut(auth);
@@ -105,10 +166,6 @@ export default function App() {
     );
   };
 
-  const filteredGrows = filter
-    ? grows.filter((grow) => grow.strain?.toLowerCase().includes(filter.toLowerCase()))
-    : grows;
-
   const handleDismissOnboarding = async () => {
     const user = auth.currentUser;
     if (!user) return;
@@ -117,10 +174,17 @@ export default function App() {
     setShowOnboarding(false);
   };
 
+  const filteredGrows = filter
+    ? grows.filter((grow) =>
+        grow.strain?.toLowerCase().includes(filter.toLowerCase())
+      )
+    : grows;
+
+  if (!themeLoaded) return <SplashScreen />;
   if (!user) return <Auth setUser={setUser} />;
 
   return (
-    <div className="min-h-screen p-4 bg-white text-gray-900 dark:bg-gray-900 dark:text-white transition-colors duration-300">
+    <div className="min-h-screen overflow-y-auto p-4 bg-white text-gray-900 dark:bg-gray-900 dark:text-white transition-colors duration-300">
       {showOnboarding && (
         <div className="fixed inset-0 bg-black bg-opacity-60 flex items-center justify-center z-50">
           <div className="bg-white dark:bg-gray-800 text-gray-900 dark:text-white p-6 rounded shadow-lg max-w-lg w-full space-y-4">
@@ -145,12 +209,24 @@ export default function App() {
 
       <div className="flex justify-between items-center mb-6">
         <div className="flex items-center gap-4 w-full justify-center">
-          <img src="/logo.png" alt="Logo" className="h-40 w-40 rounded-full shadow-md" />
-          <h1 className="text-4xl font-bold">Chaotic Mycology</h1>
-          <img src="/logo.png" alt="Logo" className="h-40 w-40 rounded-full shadow-md" />
+          <img src="/logo.png" alt="Logo" className="h-32 w-32 sm:h-40 sm:w-40 rounded-full shadow-md" />
+          <h1 className="text-3xl sm:text-4xl font-bold text-center">Chaotic Mycology</h1>
+          <img src="/logo.png" alt="Logo" className="h-32 w-32 sm:h-40 sm:w-40 rounded-full shadow-md" />
         </div>
-        <button onClick={handleLogout} className="absolute right-4 top-4 text-sm text-red-500 hover:underline">
+        <button
+          onClick={handleLogout}
+          className="absolute right-4 top-4 text-sm text-red-500 hover:underline"
+        >
           Logout
+        </button>
+      </div>
+
+      <div className="flex justify-center gap-2 mb-4 flex-wrap">
+        <button
+          onClick={() => setShowQrModal(true)}
+          className="bg-indigo-600 text-white px-4 py-2 rounded hover:bg-indigo-700 transition"
+        >
+          📷 Scan Grow QR
         </button>
       </div>
 
@@ -164,6 +240,7 @@ export default function App() {
           { id: "cog", label: "COG" },
           { id: "recipes", label: "Recipes" },
           { id: "strains", label: "Strains" },
+          { id: "labels", label: "Labels" },
           { id: "settings", label: "Settings" },
         ].map(({ id, label }) => (
           <button
@@ -180,25 +257,46 @@ export default function App() {
         ))}
       </div>
 
-      {activeTab === "dashboard" && (
-        <>
-          <DashboardStats grows={grows} />
-          <GrowForm grows={grows} setGrows={setGrows} editingGrow={editingGrow} setEditingGrow={setEditingGrow} />
-          <GrowFilters filter={filter} setFilter={setFilter} />
-          <GrowList grows={filteredGrows} setGrows={setGrows} setEditingGrow={setEditingGrow} />
-          <PhotoUpload grows={grows} setGrows={setGrows} />
-          <TaskReminder grows={grows} />
-          <ImportExportButtons grows={grows} setGrows={setGrows} />
-        </>
-      )}
-      {activeTab === "timeline" && <GrowTimeline grows={grows} setGrows={setGrows} updateGrowStage={updateGrowStage} />}
-      {activeTab === "analytics" && <Analytics grows={grows} />}
-      {activeTab === "calendar" && <CalendarView grows={grows} />}
-      {activeTab === "tasks" && <TaskManager selectedGrowId={null} />}
-      {activeTab === "cog" && <COGManager />}
-      {activeTab === "recipes" && <RecipeManager />}
-      {activeTab === "strains" && <StrainManager />}
-      {activeTab === "settings" && <Settings />}
+      <div className="space-y-6 pb-10">
+        {activeTab === "dashboard" && (
+          <>
+            <DashboardStats grows={grows} />
+            <GrowForm
+              grows={grows}
+              setGrows={setGrows}
+              editingGrow={editingGrow}
+              setEditingGrow={setEditingGrow}
+            />
+            <GrowFilters filter={filter} setFilter={setFilter} />
+            <GrowList grows={filteredGrows} setGrows={setGrows} setEditingGrow={setEditingGrow} />
+            <PhotoUpload grows={grows} setGrows={setGrows} />
+            <TaskReminder grows={grows} />
+            <ImportExportButtons grows={grows} setGrows={setGrows} />
+          </>
+        )}
+        {activeTab === "timeline" && (
+          <GrowTimeline
+            grows={grows}
+            setGrows={setGrows}
+            updateGrowStage={updateGrowStage}
+          />
+        )}
+        {activeTab === "analytics" && <Analytics grows={grows} supplies={supplies} />}
+        {activeTab === "calendar" && <CalendarView grows={grows} />}
+        {activeTab === "tasks" && <TaskManager selectedGrowId={null} />}
+        {activeTab === "cog" && <COGManager />}
+        {activeTab === "recipes" && <RecipeManager />}
+        {activeTab === "strains" && <StrainManager />}
+        {activeTab === "labels" && <LabelPrintWrapper grows={grows} />}
+        {activeTab === "settings" && <Settings />}
+      </div>
+
+      <QrScannerModal
+        isOpen={showQrModal}
+        onClose={() => setShowQrModal(false)}
+        setEditingGrow={setEditingGrow}
+        updateGrowStage={updateGrowStage}
+      />
     </div>
   );
 }
