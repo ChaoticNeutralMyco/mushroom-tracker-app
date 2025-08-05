@@ -9,14 +9,12 @@ import {
 } from "firebase/firestore";
 import { useAuthState } from "react-firebase-hooks/auth";
 import { Trash2, Pencil } from "lucide-react";
-import QRCode from "qrcode"; // ✅ Correct modern library
 
 export default function GrowList({ grows, setGrows, setEditingGrow }) {
   const [user] = useAuthState(auth);
   const [parentMap, setParentMap] = useState({});
   const [supplyMap, setSupplyMap] = useState({});
   const [recipeMap, setRecipeMap] = useState({});
-  const [qrDataURLs, setQrDataURLs] = useState({});
 
   useEffect(() => {
     if (!user) return;
@@ -40,29 +38,14 @@ export default function GrowList({ grows, setGrows, setEditingGrow }) {
       const recipesSnap = await getDocs(collection(db, "users", user.uid, "recipes"));
       const supplyData = {};
       const recipeData = {};
-      suppliesSnap.forEach((doc) => supplyData[doc.id] = doc.data());
-      recipesSnap.forEach((doc) => recipeData[doc.id] = doc.data());
+      suppliesSnap.forEach((doc) => (supplyData[doc.id] = doc.data()));
+      recipesSnap.forEach((doc) => (recipeData[doc.id] = doc.data()));
       setSupplyMap(supplyData);
       setRecipeMap(recipeData);
     };
 
-    const generateQRCodes = async () => {
-      const urls = {};
-      for (const grow of grows) {
-        const raw = `${user.uid}:${grow.id}`;
-        const encoded = "grow:" + btoa(raw);
-        try {
-          urls[grow.id] = await QRCode.toDataURL(encoded);
-        } catch (err) {
-          console.error("Failed to generate QR code:", err);
-        }
-      }
-      setQrDataURLs(urls);
-    };
-
     fetchParents();
     fetchSuppliesAndRecipes();
-    generateQRCodes();
   }, [grows, user]);
 
   const calculateRecipeCost = (recipeId) => {
@@ -79,6 +62,12 @@ export default function GrowList({ grows, setGrows, setEditingGrow }) {
     const ref = doc(db, "users", user.uid, "grows", id);
     await deleteDoc(ref);
     setGrows((prev) => prev.filter((g) => g.id !== id));
+  };
+
+  const generateQRUrl = (growId) => {
+    const raw = `${user?.uid || ""}:${growId}`;
+    const encoded = "grow:" + btoa(raw);
+    return `https://api.qrserver.com/v1/create-qr-code/?data=${encodeURIComponent(encoded)}&size=100x100`;
   };
 
   return (
@@ -159,18 +148,17 @@ export default function GrowList({ grows, setGrows, setEditingGrow }) {
                   </p>
                 )}
 
-                {qrDataURLs[grow.id] && (
-                  <div className="pt-2">
-                    <p className="font-medium text-sm mb-1">QR Code:</p>
-                    <img
-                      src={qrDataURLs[grow.id]}
-                      alt={`QR for ${grow.strain}`}
-                      className="border rounded bg-white p-1 shadow-sm"
-                      width={96}
-                      height={96}
-                    />
-                  </div>
-                )}
+                {/* QR CODE (CDN based) */}
+                <div className="pt-2">
+                  <p className="font-medium text-sm mb-1">QR Code:</p>
+                  <img
+                    src={generateQRUrl(grow.id)}
+                    alt={`QR for ${grow.strain}`}
+                    className="border rounded bg-white p-1 shadow-sm"
+                    width={96}
+                    height={96}
+                  />
+                </div>
               </div>
             </div>
           ))}
