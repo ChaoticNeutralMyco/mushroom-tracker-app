@@ -30,9 +30,8 @@ import COGManager from "./components/COGManager";
 import RecipeManager from "./components/RecipeManager";
 import DashboardStats from "./components/DashboardStats";
 import StrainManager from "./components/StrainManager";
-import SplashScreen from "./components/SplashScreen";
-import QrScannerModal from "./components/QrScannerModal";
 import LabelPrintWrapper from "./components/LabelPrint";
+import SplashScreen from "./components/SplashScreen";
 
 import "./index.css";
 
@@ -52,7 +51,6 @@ export default function App() {
   const [activeTab, setActiveTab] = useState("dashboard");
   const [showOnboarding, setShowOnboarding] = useState(false);
   const [themeLoaded, setThemeLoaded] = useState(false);
-  const [showQrModal, setShowQrModal] = useState(false);
   const [supplies, setSupplies] = useState([]);
   const [recipes, setRecipes] = useState([]);
 
@@ -221,15 +219,6 @@ export default function App() {
         </button>
       </div>
 
-      <div className="flex justify-center gap-2 mb-4 flex-wrap">
-        <button
-          onClick={() => setShowQrModal(true)}
-          className="bg-indigo-600 text-white px-4 py-2 rounded hover:bg-indigo-700 transition"
-        >
-          📷 Scan Grow QR
-        </button>
-      </div>
-
       <div className="flex justify-center mb-6 flex-wrap gap-2">
         {[
           { id: "dashboard", label: "Dashboard" },
@@ -290,13 +279,6 @@ export default function App() {
         {activeTab === "labels" && <LabelPrintWrapper grows={grows} />}
         {activeTab === "settings" && <Settings />}
       </div>
-
-      <QrScannerModal
-        isOpen={showQrModal}
-        onClose={() => setShowQrModal(false)}
-        setEditingGrow={setEditingGrow}
-        updateGrowStage={updateGrowStage}
-      />
     </div>
   );
 }
