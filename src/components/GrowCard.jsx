@@ -4,6 +4,9 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 
 const GrowCard = ({ grow, onEdit, onDelete }) => {
+  const hasYield = grow.yieldWet || grow.yieldDry;
+  const hasNotes = Array.isArray(grow.notes) && grow.notes.length > 0;
+
   return (
     <Card className="shadow-md hover:shadow-lg transition-shadow">
       <CardHeader className="flex flex-col items-start space-y-1">
@@ -15,10 +18,21 @@ const GrowCard = ({ grow, onEdit, onDelete }) => {
 
       <CardContent className="space-y-2 text-sm text-muted-foreground">
         <p><span className="font-medium text-foreground">Start Date:</span> {grow.date}</p>
-        <p><span className="font-medium text-foreground">Cost:</span> ${grow.cost || "0.00"}</p>
-        <p><span className="font-medium text-foreground">Yield:</span> {grow.yield || "0"}g</p>
-        {grow.notes && (
-          <p><span className="font-medium text-foreground">Notes:</span> {grow.notes}</p>
+        {grow.cost > 0 && (
+          <p><span className="font-medium text-foreground">Cost:</span> ${Number(grow.cost).toFixed(2)}</p>
+        )}
+        {hasYield && (
+          <p>
+            <span className="font-medium text-foreground">Yield:</span>{" "}
+            {grow.yieldWet ? `${grow.yieldWet}g wet` : ""}
+            {grow.yieldWet && grow.yieldDry ? " / " : ""}
+            {grow.yieldDry ? `${grow.yieldDry}g dry` : ""}
+          </p>
+        )}
+        {hasNotes && (
+          <p>
+            <span className="font-medium text-foreground">Notes:</span> {grow.notes.length} note(s)
+          </p>
         )}
       </CardContent>
 

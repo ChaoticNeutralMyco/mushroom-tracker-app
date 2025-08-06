@@ -1,7 +1,6 @@
-// src/components/DashboardStats.jsx
 import React, { useEffect, useState } from "react";
 
-export default function DashboardStats({ grows }) {
+export default function DashboardStats({ grows, recipes, supplies }) {
   const [stats, setStats] = useState({
     total: 0,
     byStage: {},
@@ -9,6 +8,17 @@ export default function DashboardStats({ grows }) {
     avgDry: 0,
     totalCost: 0,
   });
+
+  const calculateRecipeCost = (recipeId) => {
+    const recipe = recipes?.find((r) => r.id === recipeId);
+    if (!recipe || !Array.isArray(recipe.items)) return 0;
+
+    return recipe.items.reduce((sum, item) => {
+      const supply = supplies?.find((s) => s.id === item.supplyId);
+      const cost = supply?.cost || 0;
+      return sum + cost * item.amount;
+    }, 0);
+  };
 
   useEffect(() => {
     const total = grows.length;
@@ -31,9 +41,12 @@ export default function DashboardStats({ grows }) {
         drySum += parseFloat(g.dryYield);
         dryCount++;
       }
-      if (g.cost) {
-        costSum += parseFloat(g.cost);
-      }
+
+      const cost = g.recipeId
+        ? calculateRecipeCost(g.recipeId)
+        : parseFloat(g.cost || 0);
+
+      costSum += cost;
     });
 
     setStats({
@@ -43,7 +56,7 @@ export default function DashboardStats({ grows }) {
       avgDry: dryCount ? (drySum / dryCount).toFixed(2) : 0,
       totalCost: costSum.toFixed(2),
     });
-  }, [grows]);
+  }, [grows, recipes, supplies]);
 
   return (
     <div className="p-4 bg-white dark:bg-zinc-900 text-zinc-900 dark:text-white rounded-2xl shadow space-y-4 mb-6">

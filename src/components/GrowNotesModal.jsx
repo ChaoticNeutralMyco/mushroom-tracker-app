@@ -1,51 +1,51 @@
-// src/components/GrowNotesModal.jsx
 import React, { useState, useEffect } from "react";
 import { db, auth } from "../firebase-config";
 import { doc, getDoc, updateDoc } from "firebase/firestore";
 
-export default function GrowNotesModal({ growId, onClose }) {
+export default function GrowNotesModal({ grow, onClose }) {
   const [noteText, setNoteText] = useState("");
-  const [grow, setGrow] = useState(null);
+  const [fullGrow, setFullGrow] = useState(null);
   const [editingIndex, setEditingIndex] = useState(null);
   const [editingText, setEditingText] = useState("");
 
   useEffect(() => {
     const fetchGrow = async () => {
       const user = auth.currentUser;
-      if (!user) return;
-      const growRef = doc(db, "users", user.uid, "grows", growId);
+      if (!user || !grow?.id) return;
+
+      const growRef = doc(db, "users", user.uid, "grows", grow.id);
       const snap = await getDoc(growRef);
       if (snap.exists()) {
-        setGrow({ id: snap.id, ...snap.data() });
+        setFullGrow({ id: snap.id, ...snap.data() });
       }
     };
     fetchGrow();
-  }, [growId]);
+  }, [grow]);
 
   const updateNotes = async (newNotes) => {
     const user = auth.currentUser;
-    if (!user || !grow) return;
-    const growRef = doc(db, "users", user.uid, "grows", grow.id);
+    if (!user || !fullGrow) return;
+    const growRef = doc(db, "users", user.uid, "grows", fullGrow.id);
     await updateDoc(growRef, { notes: newNotes });
-    setGrow((prev) => ({ ...prev, notes: newNotes }));
+    setFullGrow((prev) => ({ ...prev, notes: newNotes }));
   };
 
   const handleAddNote = async () => {
     if (!noteText.trim()) return;
     const newNote = { text: noteText.trim(), date: new Date().toISOString() };
-    const updatedNotes = [...(grow.notes || []), newNote];
+    const updatedNotes = [...(fullGrow.notes || []), newNote];
     await updateNotes(updatedNotes);
     setNoteText("");
   };
 
   const handleDeleteNote = async (index) => {
-    const updatedNotes = [...(grow.notes || [])];
+    const updatedNotes = [...(fullGrow.notes || [])];
     updatedNotes.splice(index, 1);
     await updateNotes(updatedNotes);
   };
 
   const handleSaveEdit = async (index) => {
-    const updatedNotes = [...(grow.notes || [])];
+    const updatedNotes = [...(fullGrow.notes || [])];
     updatedNotes[index] = { ...updatedNotes[index], text: editingText.trim() };
     await updateNotes(updatedNotes);
     setEditingIndex(null);
@@ -54,17 +54,17 @@ export default function GrowNotesModal({ growId, onClose }) {
 
   const exportLogbook = () => {
     const lines = [];
-    lines.push(`📘 Logbook for: ${grow.strain || "Unnamed"}`);
-    lines.push(`Inoculated: ${grow.inoculation || "N/A"}`);
-    lines.push(`Stage: ${grow.stage || "N/A"}`);
+    lines.push(`📘 Logbook for: ${fullGrow.strain || "Unnamed"}`);
+    lines.push(`Inoculated: ${fullGrow.inoculation || "N/A"}`);
+    lines.push(`Stage: ${fullGrow.stage || "N/A"}`);
     lines.push("");
     lines.push("🔄 Stage History:");
-    Object.entries(grow.stageDates || {}).forEach(([stage, date]) => {
+    Object.entries(fullGrow.stageDates || {}).forEach(([stage, date]) => {
       lines.push(`- ${stage}: ${new Date(date).toLocaleString()}`);
     });
     lines.push("");
     lines.push("📝 Notes:");
-    (grow.notes || []).forEach((note, idx) => {
+    (fullGrow.notes || []).forEach((note, idx) => {
       lines.push(`${idx + 1}. ${note.text}`);
       lines.push(`   [${new Date(note.date).toLocaleString()}]`);
     });
@@ -73,12 +73,12 @@ export default function GrowNotesModal({ growId, onClose }) {
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = `grow-logbook-${grow.strain || grow.id}.txt`;
+    a.download = `grow-logbook-${fullGrow.strain || fullGrow.id}.txt`;
     a.click();
     URL.revokeObjectURL(url);
   };
 
-  if (!grow) {
+  if (!fullGrow) {
     return (
       <div className="fixed inset-0 bg-black bg-opacity-50 flex justify-center items-center z-50">
         <div className="bg-white dark:bg-zinc-900 p-6 rounded-xl shadow-lg max-w-md w-full">
@@ -108,7 +108,7 @@ export default function GrowNotesModal({ growId, onClose }) {
             🔄 Stage Timeline
           </h3>
           <ul className="list-disc list-inside space-y-1">
-            {Object.entries(grow.stageDates || {}).map(([stage, date]) => (
+            {Object.entries(fullGrow.stageDates || {}).map(([stage, date]) => (
               <li key={stage}>
                 <strong>{stage}:</strong> {new Date(date).toLocaleString()}
               </li>
@@ -118,7 +118,7 @@ export default function GrowNotesModal({ growId, onClose }) {
 
         {/* Notes List */}
         <div className="space-y-3 max-h-48 overflow-y-auto mb-4 pr-1">
-          {(grow.notes || []).map((note, index) => (
+          {(fullGrow.notes || []).map((note, index) => (
             <div
               key={index}
               className="border-b border-zinc-200 dark:border-zinc-700 pb-2"

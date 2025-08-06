@@ -1,3 +1,4 @@
+// src/components/GrowTimeline.jsx
 import React, { useEffect, useState } from "react";
 import { db, auth } from "../firebase-config";
 import {
@@ -111,9 +112,13 @@ export default function GrowTimeline({ grows, setGrows, updateGrowStage }) {
           className="bg-white dark:bg-zinc-900 text-zinc-900 dark:text-white rounded-xl shadow p-4 space-y-4"
         >
           <h2 className="text-xl font-semibold">
-            🌱 {grow.strain || "Unnamed"} – {grow.inoculation || "No Date"}
+            🌱 {grow.strain || "Unnamed"} –{" "}
+            {grow.stageDates?.Inoculated
+              ? grow.stageDates.Inoculated.substring(0, 10)
+              : "No Date"}
           </h2>
 
+          {/* ✅ STAGE SELECT BUTTONS */}
           <div className="flex flex-wrap gap-2 items-center">
             {STAGES.map((s) => (
               <button
@@ -130,10 +135,49 @@ export default function GrowTimeline({ grows, setGrows, updateGrowStage }) {
             ))}
           </div>
 
+          {/* ✅ VISUAL STAGE TIMELINE */}
+          <div className="flex flex-col md:flex-row md:items-center md:space-x-4 space-y-2 md:space-y-0 mt-4">
+            {STAGES.map((s, index) => {
+              const completed = STAGES.indexOf(grow.stage) > index;
+              const current = grow.stage === s;
+              const date = grow.stageDates?.[s];
+
+              return (
+                <div
+                  key={s}
+                  className={`flex items-center md:flex-col md:items-start text-xs px-2 py-1 rounded border ${
+                    completed
+                      ? "bg-green-100 dark:bg-green-900 border-green-400 dark:border-green-600"
+                      : current
+                      ? "bg-blue-100 dark:bg-blue-900 border-blue-400 dark:border-blue-600"
+                      : "bg-zinc-100 dark:bg-zinc-800 border-zinc-300 dark:border-zinc-700"
+                  }`}
+                >
+                  <div className="font-medium">
+                    {completed ? "✔️" : current ? "🟦" : "⬜"} {s}
+                  </div>
+                  {date && (
+                    <div className="text-[10px] mt-0.5 md:mt-1 text-zinc-500 dark:text-zinc-400">
+                      {date.substring(0, 10)}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+
+          {/* ✅ DATE EDITOR */}
           <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
             {STAGES.map((s) => (
-              <div key={s}>
-                <label className="text-xs">{s} Date</label>
+              <div
+                key={s}
+                className={`rounded p-1 ${
+                  grow.stage === s
+                    ? "bg-blue-100 dark:bg-blue-900 border border-blue-400 dark:border-blue-500"
+                    : ""
+                }`}
+              >
+                <label className="text-xs block font-medium">{s} Date</label>
                 <input
                   type="date"
                   value={grow.stageDates?.[s]?.substring(0, 10) || ""}
@@ -146,6 +190,7 @@ export default function GrowTimeline({ grows, setGrows, updateGrowStage }) {
             ))}
           </div>
 
+          {/* ✅ YIELD INPUTS */}
           {grow.stage === "Harvested" && (
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mt-4">
               <div>
@@ -173,15 +218,13 @@ export default function GrowTimeline({ grows, setGrows, updateGrowStage }) {
             </div>
           )}
 
-          {/* 🌡️ ENVIRONMENT LOGGING */}
+          {/* ✅ ENVIRONMENT LOGGING */}
           <div className="mt-6 border-t pt-4 space-y-3">
             <h3 className="text-lg font-semibold">🌡️ Log Environment</h3>
             <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
               <select
                 value={inputs[grow.id]?.stage || ""}
-                onChange={(e) =>
-                  handleInput(grow.id, "stage", e.target.value)
-                }
+                onChange={(e) => handleInput(grow.id, "stage", e.target.value)}
                 className="p-2 rounded border dark:bg-zinc-800 dark:border-zinc-600"
               >
                 <option value="">Stage</option>

@@ -1,4 +1,3 @@
-// src/components/TaskManager.jsx
 import React, { useState, useEffect } from "react";
 import { db, auth } from "../firebase-config";
 import {
@@ -13,7 +12,13 @@ import {
 
 export default function TaskManager({ selectedGrowId }) {
   const [tasks, setTasks] = useState([]);
-  const [form, setForm] = useState({ title: "", due: "", growId: "" });
+  const [form, setForm] = useState({
+    title: "",
+    due: "",
+    growId: "",
+    repeatInterval: "",
+    repeatUnit: "days",
+  });
   const [editingId, setEditingId] = useState(null);
   const [filter, setFilter] = useState("all");
   const [search, setSearch] = useState("");
@@ -38,11 +43,17 @@ export default function TaskManager({ selectedGrowId }) {
     e.preventDefault();
     const user = auth.currentUser;
     if (!user || !form.title.trim()) return;
+
     const payload = {
       ...form,
       createdAt: Timestamp.now(),
       completed: false,
     };
+
+    if (!form.repeatInterval) {
+      delete payload.repeatInterval;
+      delete payload.repeatUnit;
+    }
 
     if (editingId) {
       await updateDoc(doc(db, "users", user.uid, "tasks", editingId), payload);
@@ -50,7 +61,13 @@ export default function TaskManager({ selectedGrowId }) {
       await addDoc(collection(db, "users", user.uid, "tasks"), payload);
     }
 
-    setForm({ title: "", due: "", growId: selectedGrowId || "" });
+    setForm({
+      title: "",
+      due: "",
+      growId: selectedGrowId || "",
+      repeatInterval: "",
+      repeatUnit: "days",
+    });
     setEditingId(null);
     fetchTasks();
   };
@@ -60,6 +77,8 @@ export default function TaskManager({ selectedGrowId }) {
       title: task.title,
       due: task.due || "",
       growId: task.growId || "",
+      repeatInterval: task.repeatInterval || "",
+      repeatUnit: task.repeatUnit || "days",
     });
     setEditingId(task.id);
   };
@@ -71,12 +90,55 @@ export default function TaskManager({ selectedGrowId }) {
     fetchTasks();
   };
 
+  const addRecurringTask = async (task) => {
+    if (!task.repeatInterval || !task.repeatUnit || !task.due) return;
+
+    const nextDue = new Date(task.due);
+    switch (task.repeatUnit) {
+      case "days":
+        nextDue.setDate(nextDue.getDate() + parseInt(task.repeatInterval));
+        break;
+      case "weeks":
+        nextDue.setDate(nextDue.getDate() + 7 * parseInt(task.repeatInterval));
+        break;
+      case "months":
+        nextDue.setMonth(nextDue.getMonth() + parseInt(task.repeatInterval));
+        break;
+      case "years":
+        nextDue.setFullYear(nextDue.getFullYear() + parseInt(task.repeatInterval));
+        break;
+      default:
+        return;
+    }
+
+    const user = auth.currentUser;
+    if (!user) return;
+
+    const newTask = {
+      title: task.title,
+      growId: task.growId || "",
+      due: nextDue.toISOString().substring(0, 10),
+      repeatInterval: task.repeatInterval,
+      repeatUnit: task.repeatUnit,
+      createdAt: Timestamp.now(),
+      completed: false,
+    };
+
+    await addDoc(collection(db, "users", user.uid, "tasks"), newTask);
+  };
+
   const toggleComplete = async (task) => {
     const user = auth.currentUser;
     if (!user) return;
+
     await updateDoc(doc(db, "users", user.uid, "tasks", task.id), {
       completed: !task.completed,
     });
+
+    if (!task.completed && task.repeatInterval) {
+      await addRecurringTask(task);
+    }
+
     fetchTasks();
   };
 
@@ -125,6 +187,33 @@ export default function TaskManager({ selectedGrowId }) {
         >
           {editingId ? "✅ Update Task" : "➕ Add Task"}
         </button>
+
+        <div className="col-span-3 flex flex-wrap gap-2 items-center text-sm">
+          <label className="flex items-center gap-1">
+            Repeat every
+            <input
+              type="number"
+              min="1"
+              value={form.repeatInterval}
+              onChange={(e) =>
+                setForm({ ...form, repeatInterval: e.target.value })
+              }
+              className="w-16 px-2 py-1 border rounded bg-white dark:bg-zinc-800"
+            />
+          </label>
+          <select
+            value={form.repeatUnit}
+            onChange={(e) =>
+              setForm({ ...form, repeatUnit: e.target.value })
+            }
+            className="px-2 py-1 border rounded bg-white dark:bg-zinc-800"
+          >
+            <option value="days">Days</option>
+            <option value="weeks">Weeks</option>
+            <option value="months">Months</option>
+            <option value="years">Years</option>
+          </select>
+        </div>
       </form>
 
       <div className="flex flex-wrap gap-2 items-center">
@@ -176,6 +265,11 @@ export default function TaskManager({ selectedGrowId }) {
                     {task.due || "No date"}
                   </span>
                 </p>
+                {task.repeatInterval && (
+                  <p className="text-xs text-zinc-400">
+                    Repeats every {task.repeatInterval} {task.repeatUnit}
+                  </p>
+                )}
                 {task.growId && (
                   <p className="text-xs text-zinc-400">
                     Linked to grow: <code>{task.growId}</code>

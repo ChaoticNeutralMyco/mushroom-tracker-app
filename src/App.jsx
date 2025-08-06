@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from "react";
+import { Routes, Route } from "react-router-dom";
 import { auth, db } from "./firebase-config";
 import {
   onAuthStateChanged,
@@ -32,10 +33,11 @@ import DashboardStats from "./components/DashboardStats";
 import StrainManager from "./components/StrainManager";
 import LabelPrintWrapper from "./components/LabelPrint";
 import SplashScreen from "./components/SplashScreen";
+import ScanBarcodeModal from "./components/ScanBarcodeModal";
+import GrowDetailPage from "./pages/GrowDetailPage";
 
 import "./index.css";
 
-// --- Apply theme from localStorage BEFORE any rendering ---
 const savedTheme = localStorage.getItem("theme");
 if (savedTheme === "dark") {
   document.documentElement.classList.add("dark");
@@ -53,6 +55,7 @@ export default function App() {
   const [themeLoaded, setThemeLoaded] = useState(false);
   const [supplies, setSupplies] = useState([]);
   const [recipes, setRecipes] = useState([]);
+  const [showScanner, setShowScanner] = useState(false);
 
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, async (currentUser) => {
@@ -182,103 +185,119 @@ export default function App() {
   if (!user) return <Auth setUser={setUser} />;
 
   return (
-    <div className="min-h-screen overflow-y-auto p-4 bg-white text-gray-900 dark:bg-gray-900 dark:text-white transition-colors duration-300">
-      {showOnboarding && (
-        <div className="fixed inset-0 bg-black bg-opacity-60 flex items-center justify-center z-50">
-          <div className="bg-white dark:bg-gray-800 text-gray-900 dark:text-white p-6 rounded shadow-lg max-w-lg w-full space-y-4">
-            <h2 className="text-2xl font-bold">👋 Welcome to Chaotic Mycology!</h2>
-            <p>This app helps you track your mushroom grows from spore to harvest.</p>
-            <ul className="list-disc list-inside text-sm space-y-1">
-              <li>📋 Add and edit your grows</li>
-              <li>📆 View stage progress and timelines</li>
-              <li>📸 Upload photos and track yield</li>
-              <li>🧪 Track cost of goods and recipes</li>
-              <li>📊 Visualize analytics and export logbooks</li>
-            </ul>
-            <button
-              onClick={handleDismissOnboarding}
-              className="w-full bg-blue-600 text-white py-2 rounded hover:bg-blue-700 transition"
-            >
-              Let's Get Started!
-            </button>
-          </div>
-        </div>
-      )}
+    <>
+      {showScanner && <ScanBarcodeModal onClose={() => setShowScanner(false)} />}
+      <Routes>
+        <Route path="/grow/:growId" element={<GrowDetailPage />} />
+        <Route
+          path="/"
+          element={
+            <div className="min-h-screen overflow-y-auto p-4 bg-white text-gray-900 dark:bg-gray-900 dark:text-white transition-colors duration-300">
+              {showOnboarding && (
+                <div className="fixed inset-0 bg-black bg-opacity-60 flex items-center justify-center z-50">
+                  <div className="bg-white dark:bg-gray-800 text-gray-900 dark:text-white p-6 rounded shadow-lg max-w-lg w-full space-y-4">
+                    <h2 className="text-2xl font-bold">👋 Welcome to Chaotic Mycology!</h2>
+                    <p>This app helps you track your mushroom grows from spore to harvest.</p>
+                    <ul className="list-disc list-inside text-sm space-y-1">
+                      <li>📋 Add and edit your grows</li>
+                      <li>📆 View stage progress and timelines</li>
+                      <li>📸 Upload photos and track yield</li>
+                      <li>🧪 Track cost of goods and recipes</li>
+                      <li>📊 Visualize analytics and export logbooks</li>
+                    </ul>
+                    <button
+                      onClick={handleDismissOnboarding}
+                      className="w-full bg-blue-600 text-white py-2 rounded hover:bg-blue-700 transition"
+                    >
+                      Let's Get Started!
+                    </button>
+                  </div>
+                </div>
+              )}
 
-      <div className="flex justify-between items-center mb-6">
-        <div className="flex items-center gap-4 w-full justify-center">
-          <img src="/logo.png" alt="Logo" className="h-32 w-32 sm:h-40 sm:w-40 rounded-full shadow-md" />
-          <h1 className="text-3xl sm:text-4xl font-bold text-center">Chaotic Mycology</h1>
-          <img src="/logo.png" alt="Logo" className="h-32 w-32 sm:h-40 sm:w-40 rounded-full shadow-md" />
-        </div>
-        <button
-          onClick={handleLogout}
-          className="absolute right-4 top-4 text-sm text-red-500 hover:underline"
-        >
-          Logout
-        </button>
-      </div>
+              <div className="flex justify-between items-center mb-6">
+                <div className="flex items-center gap-4 w-full justify-center">
+                  <img src="/logo.png" alt="Logo" className="h-32 w-32 sm:h-40 sm:w-40 rounded-full shadow-md" />
+                  <h1 className="text-3xl sm:text-4xl font-bold text-center">Chaotic Mycology</h1>
+                  <img src="/logo.png" alt="Logo" className="h-32 w-32 sm:h-40 sm:w-40 rounded-full shadow-md" />
+                </div>
+                <button
+                  onClick={handleLogout}
+                  className="absolute right-4 top-4 text-sm text-red-500 hover:underline"
+                >
+                  Logout
+                </button>
+              </div>
 
-      <div className="flex justify-center mb-6 flex-wrap gap-2">
-        {[
-          { id: "dashboard", label: "Dashboard" },
-          { id: "timeline", label: "Timeline" },
-          { id: "analytics", label: "Analytics" },
-          { id: "calendar", label: "Calendar" },
-          { id: "tasks", label: "Tasks" },
-          { id: "cog", label: "COG" },
-          { id: "recipes", label: "Recipes" },
-          { id: "strains", label: "Strains" },
-          { id: "labels", label: "Labels" },
-          { id: "settings", label: "Settings" },
-        ].map(({ id, label }) => (
-          <button
-            key={id}
-            className={`px-4 py-2 rounded-lg transition-colors duration-200 ${
-              activeTab === id
-                ? "bg-blue-600 text-white shadow"
-                : "bg-white text-blue-600 border border-blue-600 hover:bg-blue-100 dark:bg-gray-800 dark:text-blue-300 dark:border-blue-300"
-            }`}
-            onClick={() => setActiveTab(id)}
-          >
-            {label}
-          </button>
-        ))}
-      </div>
+              <div className="flex justify-center mb-6 flex-wrap gap-2">
+                {[{ id: "dashboard", label: "Dashboard" }, { id: "timeline", label: "Timeline" },
+                  { id: "analytics", label: "Analytics" }, { id: "calendar", label: "Calendar" },
+                  { id: "tasks", label: "Tasks" }, { id: "cog", label: "COG" },
+                  { id: "recipes", label: "Recipes" }, { id: "strains", label: "Strains" },
+                  { id: "labels", label: "Labels" }, { id: "settings", label: "Settings" },
+                ].map(({ id, label }) => (
+                  <button
+                    key={id}
+                    className={`px-4 py-2 rounded-lg transition-colors duration-200 ${
+                      activeTab === id
+                        ? "bg-blue-600 text-white shadow"
+                        : "bg-white text-blue-600 border border-blue-600 hover:bg-blue-100 dark:bg-gray-800 dark:text-blue-300 dark:border-blue-300"
+                    }`}
+                    onClick={() => setActiveTab(id)}
+                  >
+                    {label}
+                  </button>
+                ))}
+                <button
+                  onClick={() => setShowScanner(true)}
+                  className="px-4 py-2 rounded-lg bg-green-600 text-white hover:bg-green-700"
+                >
+                  📷 Scan Grow
+                </button>
+              </div>
 
-      <div className="space-y-6 pb-10">
-        {activeTab === "dashboard" && (
-          <>
-            <DashboardStats grows={grows} />
-            <GrowForm
-              grows={grows}
-              setGrows={setGrows}
-              editingGrow={editingGrow}
-              setEditingGrow={setEditingGrow}
-            />
-            <GrowFilters filter={filter} setFilter={setFilter} />
-            <GrowList grows={filteredGrows} setGrows={setGrows} setEditingGrow={setEditingGrow} />
-            <PhotoUpload grows={grows} setGrows={setGrows} />
-            <TaskReminder grows={grows} />
-            <ImportExportButtons grows={grows} setGrows={setGrows} />
-          </>
-        )}
-        {activeTab === "timeline" && (
-          <GrowTimeline
-            grows={grows}
-            setGrows={setGrows}
-            updateGrowStage={updateGrowStage}
-          />
-        )}
-        {activeTab === "analytics" && <Analytics grows={grows} supplies={supplies} />}
-        {activeTab === "calendar" && <CalendarView grows={grows} />}
-        {activeTab === "tasks" && <TaskManager selectedGrowId={null} />}
-        {activeTab === "cog" && <COGManager />}
-        {activeTab === "recipes" && <RecipeManager />}
-        {activeTab === "strains" && <StrainManager />}
-        {activeTab === "labels" && <LabelPrintWrapper grows={grows} />}
-        {activeTab === "settings" && <Settings />}
-      </div>
-    </div>
+              <div className="space-y-6 pb-10">
+                {activeTab === "dashboard" && (
+                  <>
+                    <DashboardStats grows={grows} recipes={recipes} supplies={supplies} />
+                    {editingGrow ? (
+                      <GrowForm
+                        grows={grows}
+                        setGrows={setGrows}
+                        editingGrow={editingGrow}
+                        setEditingGrow={setEditingGrow}
+                      />
+                    ) : (
+                      <div className="flex justify-end">
+                        <button
+                          onClick={() => setEditingGrow({})}
+                          className="px-4 py-2 bg-blue-600 text-white rounded shadow hover:bg-blue-700"
+                        >
+                          Add New Grow
+                        </button>
+                      </div>
+                    )}
+                    <GrowFilters filter={filter} setFilter={setFilter} />
+                    <GrowList grows={filteredGrows} setGrows={setGrows} setEditingGrow={setEditingGrow} />
+                    <PhotoUpload grows={grows} setGrows={setGrows} />
+                    <TaskReminder grows={grows} />
+                    <ImportExportButtons grows={grows} setGrows={setGrows} />
+                  </>
+                )}
+                {activeTab === "timeline" && <GrowTimeline grows={grows} setGrows={setGrows} updateGrowStage={updateGrowStage} />}
+                {activeTab === "analytics" && <Analytics grows={grows} supplies={supplies} />}
+                {activeTab === "calendar" && <CalendarView grows={grows} />}
+                {activeTab === "tasks" && <TaskManager selectedGrowId={null} />}
+                {activeTab === "cog" && <COGManager />}
+                {activeTab === "recipes" && <RecipeManager />}
+                {activeTab === "strains" && <StrainManager />}
+                {activeTab === "labels" && <LabelPrintWrapper grows={grows} />}
+                {activeTab === "settings" && <Settings />}
+              </div>
+            </div>
+          }
+        />
+      </Routes>
+    </>
   );
 }
