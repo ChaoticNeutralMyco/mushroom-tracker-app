@@ -1,4 +1,4 @@
-// src/components/COGManager.jsx
+// src/components/recipes/COGManager.jsx
 import React, { useEffect, useState } from "react";
 import { db, auth } from "../../firebase-config";
 import {
@@ -41,48 +41,38 @@ export default function COGManager() {
     setAuditLogs(auditsSnap.docs.map((doc) => doc.data()));
   };
 
-  useEffect(() => {
-    fetchData();
-  }, []);
+  useEffect(() => { fetchData(); }, []);
 
   const logAudit = async (supplyId, action, amount, note = "") => {
     const user = auth.currentUser;
     if (!user) return;
     await addDoc(collection(db, "users", user.uid, "supply_audits"), {
-      supplyId,
-      action,
-      amount,
-      note,
-      timestamp: Timestamp.now().toDate().toISOString(),
+      supplyId, action, amount, note, timestamp: Timestamp.now().toDate().toISOString(),
     });
   };
 
-  const handleChange = (e) => {
-    setForm({ ...form, [e.target.name]: e.target.value });
-  };
+  const handleChange = (e) => setForm({ ...form, [e.target.name]: e.target.value });
 
   const handleAdd = async () => {
     const user = auth.currentUser;
     if (!user) return;
-
     const newSupply = {
       ...form,
       cost: parseFloat(form.cost),
       quantity: parseFloat(form.quantity || 0),
       reorderLink: form.reorderLink || "",
     };
-
     const docRef = await addDoc(collection(db, "users", user.uid, "supplies"), newSupply);
     await logAudit(docRef.id, "add", newSupply.quantity, "Initial supply added");
     setForm({ name: "", cost: "", type: "", unit: "", quantity: "", reorderLink: "" });
     fetchData();
   };
 
-  const handleDelete = async (id) => {
+  const handleDelete = async (id, name) => {
     const user = auth.currentUser;
     if (!user) return;
     await deleteDoc(doc(db, "users", user.uid, "supplies", id));
-    await logAudit(id, "delete", 0, "Supply deleted");
+    await logAudit(id, "delete", 0, `Supply deleted: ${name || id}`);
     fetchData();
   };
 
@@ -121,10 +111,7 @@ export default function COGManager() {
     if (!user || !supply || isNaN(restockAmount) || restockAmount <= 0) return;
 
     const newQuantity = (supply.quantity || 0) + restockAmount;
-    await updateDoc(doc(db, "users", user.uid, "supplies", id), {
-      quantity: newQuantity,
-    });
-
+    await updateDoc(doc(db, "users", user.uid, "supplies", id), { quantity: newQuantity });
     await logAudit(id, "restock", restockAmount, "Manual restock");
     setRestockAmounts({ ...restockAmounts, [id]: "" });
     fetchData();
@@ -164,12 +151,22 @@ export default function COGManager() {
         <input name="reorderLink" value={form.reorderLink} onChange={handleChange} placeholder="Reorder URL (optional)" className="p-2 rounded border dark:bg-zinc-800 col-span-full" />
       </div>
 
-      {/* Action Buttons */}
+      {/* Actions */}
       <div className="flex flex-wrap gap-4">
-        <button onClick={handleAdd} className="flex items-center gap-1 bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded shadow">
+        <button
+          onClick={handleAdd}
+          aria-label="Add Supply"
+          data-testid="add-supply"
+          className="flex items-center gap-1 bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded shadow"
+        >
           <PlusCircle className="w-4 h-4" /> Add Supply
         </button>
-        <button onClick={exportAuditCSV} className="flex items-center gap-1 bg-green-600 hover:bg-green-700 text-white px-4 py-2 rounded shadow">
+        <button
+          onClick={exportAuditCSV}
+          aria-label="Export Audit Log"
+          data-testid="export-audit-log"
+          className="flex items-center gap-1 bg-green-600 hover:bg-green-700 text-white px-4 py-2 rounded shadow"
+        >
           <FileDown className="w-4 h-4" /> Export Audit Log
         </button>
       </div>
@@ -223,9 +220,14 @@ export default function COGManager() {
               return (
                 <tr key={supply.id} className={`border-t border-zinc-200 dark:border-zinc-700 ${supply.quantity < 1 ? 'bg-yellow-100 dark:bg-yellow-900' : ''}`}>
                   <td className="p-2">
-                    <input type="checkbox" checked={isChecked} onChange={() =>
-                      setSelected(prev => isChecked ? prev.filter(id => id !== supply.id) : [...prev, supply.id])
-                    } />
+                    <input
+                      type="checkbox"
+                      checked={isChecked}
+                      aria-label={`Select ${supply.name}`}
+                      onChange={() =>
+                        setSelected(prev => isChecked ? prev.filter(id => id !== supply.id) : [...prev, supply.id])
+                      }
+                    />
                   </td>
                   <td className="p-2">{supply.name}</td>
                   <td className="p-2">${supply.cost?.toFixed(2)}</td>
@@ -244,16 +246,30 @@ export default function COGManager() {
                         setRestockAmounts({ ...restockAmounts, [supply.id]: e.target.value })
                       }
                     />
-                    <button onClick={() => handleRestock(supply.id)} className="text-green-600 hover:underline">
+                    <button
+                      onClick={() => handleRestock(supply.id)}
+                      aria-label={`Restock ${supply.name}`}
+                      className="text-green-600 hover:underline"
+                    >
                       <PlusCircle className="w-4 h-4" />
                     </button>
                   </td>
                   <td className="p-2 space-x-2">
-                    <button onClick={() => handleDelete(supply.id)} className="text-red-500 hover:underline">
+                    <button
+                      onClick={() => handleDelete(supply.id, supply.name)}
+                      aria-label={`Delete supply ${supply.name || supply.id}`}
+                      className="text-red-500 hover:underline"
+                    >
                       <Trash2 className="inline w-4 h-4" />
                     </button>
                     {supply.reorderLink && (
-                      <a href={supply.reorderLink} target="_blank" rel="noopener noreferrer" className="text-blue-500 hover:underline">
+                      <a
+                        href={supply.reorderLink}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        aria-label={`Open reorder link for ${supply.name}`}
+                        className="text-blue-500 hover:underline"
+                      >
                         <ExternalLink className="inline w-4 h-4" />
                       </a>
                     )}

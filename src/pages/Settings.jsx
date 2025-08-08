@@ -436,6 +436,7 @@ export default function Settings({
         <ClearGrowDataButton />
 
         <button
+          data-testid="clear-all-data"
           onClick={handleClearAllData}
           disabled={wiping}
           className="px-4 py-2 rounded-lg bg-red-600 hover:bg-red-700 disabled:opacity-60 text-white font-medium shadow"
