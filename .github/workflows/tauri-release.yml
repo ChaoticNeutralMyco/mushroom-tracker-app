@@ -1,0 +1,61 @@
+name: Tauri Desktop Release (Windows)
+
+on:
+  push:
+    tags: [ "v*" ]   # trigger on v1.2.3-style tags
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Setup Rust (stable)
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            src-tauri/target/
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-
+
+      - name: Install JS deps & build web
+        run: |
+          npm ci
+          npm run build
+
+      # Build MSI using your src-tauri + dist output
+      - name: Build Tauri (MSI)
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }} # provided by GitHub; no setup needed
+        with:
+          projectPath: .
+          distPath: dist
+          args: --bundles msi
+
+      # Upload artifacts for CI browsing
+      - name: Upload MSI Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: tauri-msi
+          path: src-tauri/target/**/bundle/msi/*.msi
+
+      # Create or update a GitHub Release and attach the MSI
+      - name: Attach MSI to Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: src-tauri/target/**/bundle/msi/*.msi

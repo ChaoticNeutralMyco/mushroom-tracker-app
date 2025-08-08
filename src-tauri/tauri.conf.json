@@ -1,0 +1,38 @@
+{
+  "package": {
+    "productName": "Mushroom Tracker",
+    "version": "1.0.0"
+  },
+  "build": {
+    "beforeBuildCommand": "",
+    "beforeDevCommand": "",
+    "devPath": "http://localhost:5173",
+    "distDir": "../dist"
+  },
+  "tauri": {
+    "bundle": {
+      "identifier": "com.chaoticneutral.tracker",
+      "active": true,
+      "targets": "all",
+      "windows": {
+        "wix": {
+          "language": "en-US"
+        }
+      }
+    },
+    "updater": { "active": false },
+    "allowlist": {
+      "all": false,
+      "shell": { "all": false, "open": false }
+    },
+    "windows": [
+      {
+        "label": "main",
+        "title": "Mushroom Tracker",
+        "width": 1280,
+        "height": 800,
+        "resizable": true
+      }
+    ]
+  }
+}

@@ -1,0 +1,53 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Light mode defaults */
+:root {
+  --background-color: #ffffff;
+  --text-color: #000000;
+}
+
+/* Global styles */
+html,
+body {
+  @apply font-sans min-h-screen;
+  background-color: var(--background-color);
+  color: var(--text-color);
+  transition: background-color 0.3s ease, color 0.3s ease;
+}
+
+/* Dark mode overrides */
+html.dark,
+body.dark {
+  --background-color: #0f172a; /* Tailwind slate-900 */
+  --text-color: #ffffff;
+}
+
+/* Optional global utility override (if not using variables) */
+body.dark {
+  @apply bg-slate-900 text-white;
+}
+
+/* Tailwind form inputs dark mode fix */
+input,
+select,
+textarea {
+  @apply text-black dark:text-white bg-white dark:bg-slate-800;
+}
+
+/* Fix background color of buttons on dark mode */
+button {
+  @apply transition-colors;
+}
+
+button:hover {
+  @apply brightness-110;
+}
+
+/* === Dark Mode Calendar Visibility Fix === */
+.dark .rbc-today {
+  background-color: rgba(255, 255, 255, 0.1) !important;
+  border: 2px solid #00f7ff !important;
+  box-shadow: 0 0 6px #00f7ff80;
+}

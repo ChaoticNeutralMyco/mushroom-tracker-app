@@ -1,0 +1,48 @@
+name: Web Build & Release
+
+on:
+  push:
+    tags: [ "v*" ]  # runs on tag pushes like v1.2.3
+
+jobs:
+  build-web:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+
+      - name: Install deps
+        run: npm ci
+
+      - name: Build
+        run: npm run build
+
+      - name: Zip dist
+        run: cd dist && zip -r ../build.zip .
+
+      - name: Upload build.zip artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: web-build
+          path: build.zip
+
+      - name: Create/Update GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: build.zip
+          generate_release_notes: true
+
+      # Optional: trigger Vercel via a Deploy Hook URL secret
+      - name: Trigger Vercel Deploy Hook (optional)
+        if: ${{ secrets.VERCEL_DEPLOY_HOOK_URL != '' }}
+        run: |
+          curl -X POST -fsSL "$VERCEL_DEPLOY_HOOK_URL" || true
+        env:
+          VERCEL_DEPLOY_HOOK_URL: ${{ secrets.VERCEL_DEPLOY_HOOK_URL }}

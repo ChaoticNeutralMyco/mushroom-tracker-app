@@ -1,0 +1,57 @@
+/* src/styles/theme.css */
+/* Accent theme tokens + tiny utility classes. Works with Tailwind since we only set colors. */
+
+:root{
+  /* default = emerald */
+  --accent-50:#ecfdf5;
+  --accent-100:#d1fae5;
+  --accent-500:#10b981;
+  --accent-600:#059669;
+  --accent-700:#047857;
+  --accent-rgb:5,150,105;
+}
+
+/* --- Theme palettes --- */
+.theme-emerald{
+  --accent-50:#ecfdf5; --accent-100:#d1fae5;
+  --accent-500:#10b981; --accent-600:#059669; --accent-700:#047857;
+  --accent-rgb:5,150,105;
+}
+.theme-violet{
+  --accent-50:#f5f3ff; --accent-100:#ede9fe;
+  --accent-500:#8b5cf6; --accent-600:#7c3aed; --accent-700:#6d28d9;
+  --accent-rgb:124,58,237;
+}
+.theme-amber{
+  --accent-50:#fffbeb; --accent-100:#fef3c7;
+  --accent-500:#f59e0b; --accent-600:#d97706; --accent-700:#b45309;
+  --accent-rgb:217,119,6;
+}
+.theme-rose{
+  --accent-50:#fff1f2; --accent-100:#ffe4e6;
+  --accent-500:#f43f5e; --accent-600:#e11d48; --accent-700:#be123c;
+  --accent-rgb:225,29,72;
+}
+.theme-slate{
+  --accent-50:#f8fafc; --accent-100:#f1f5f9;
+  --accent-500:#64748b; --accent-600:#475569; --accent-700:#334155;
+  --accent-rgb:71,85,105;
+}
+
+/* --- Utilities --- */
+.accent-bg{ background-color: var(--accent-600) !important; color:#fff !important; }
+.accent-bg:hover{ background-color: var(--accent-700) !important; }
+.accent-text{ color: var(--accent-600) !important; }
+.accent-border{ border-color: var(--accent-600) !important; }
+.accent-chip{ background-color: var(--accent-600) !important; color:#fff !important; border-color: var(--accent-700) !important; }
+.accent-selected{ border-color: var(--accent-600) !important; background-color: rgba(var(--accent-rgb),0.10) !important; }
+
+/* Splash spinner */
+@keyframes spinApp { to { transform: rotate(360deg); } }
+.splash-spinner{
+  width: 42px; height:42px; border-radius:50%;
+  border: 3px solid rgba(0,0,0,0.12);
+  border-top-color: var(--accent-600);
+  animation: spinApp 1s linear infinite;
+}
+html.dark .splash-spinner{ border-color: rgba(255,255,255,0.15); border-top-color: var(--accent-500); }

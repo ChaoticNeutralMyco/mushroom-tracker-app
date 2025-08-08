@@ -1,0 +1,26 @@
+<!-- index.html -->
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" href="/logo.png" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Mushroom Tracker</title>
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <meta name="theme-color" content="#0f172a" />
+    <script>
+      (function () {
+        try {
+          var theme = localStorage.getItem("theme") || "dark";
+          var accent = localStorage.getItem("accent") || "theme-emerald";
+          if (theme === "dark") document.documentElement.classList.add("dark");
+          document.documentElement.classList.add(accent);
+        } catch (e) {}
+      })();
+    </script>
+  </head>
+  <body class="bg-white dark:bg-zinc-900 text-black dark:text-white">
+    <div id="root"></div>
+    <script type="module" src="/src/main.jsx"></script>
+  </body>
+</html>
