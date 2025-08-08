@@ -1,0 +1,24 @@
+[package]
+name = "mushroom-tracker"
+version = "1.0.0"
+description = "Chaotic Neutral Mycology — Mushroom Tracker"
+authors = ["Chaotic Neutral Mycology"]
+edition = "2021"
+default-run = "mushroom-tracker"
+license = "MIT"
+
+[build-dependencies]
+tauri-build = { version = "1", features = [] }
+
+[dependencies]
+tauri = { version = "1", features = [] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Optional: smaller/faster release builds
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = "symbols"
