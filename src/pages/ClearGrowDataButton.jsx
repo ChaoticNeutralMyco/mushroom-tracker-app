@@ -1,3 +1,4 @@
+// src/pages/ClearGrowDataButton.jsx
 import React, { useState } from "react";
 import {
   collection,
@@ -26,7 +27,6 @@ export default function ClearGrowDataButton({ className = "" }) {
       const uid = auth.currentUser?.uid;
       if (!uid) throw new Error("Not signed in.");
 
-      // 1) Pull all grows
       const growsCol = collection(db, "users", uid, "grows");
       const growsSnap = await getDocs(growsCol);
       if (growsSnap.empty) {
@@ -35,7 +35,6 @@ export default function ClearGrowDataButton({ className = "" }) {
         return;
       }
 
-      // Helper to push an item into Trash
       const addToTrash = async (payload) => {
         const trashCol = collection(db, "users", uid, "settings", "trash");
         const trashRef = doc(trashCol);
@@ -46,29 +45,19 @@ export default function ClearGrowDataButton({ className = "" }) {
         });
       };
 
-      // We’ll process grows in manageable batches
-      const itemsPerBatch = 400;
-
       const growIds = [];
       for (const g of growsSnap.docs) {
-        // Save to trash (original grow doc snapshot)
-        await addToTrash({
-          type: "grow",
-          id: g.id,
-          data: g.data(),
-        });
+        await addToTrash({ type: "grow", id: g.id, data: g.data() });
         growIds.push(g.id);
       }
 
-      // 2) Delete linked tasks/photos/notes for each grow (if these collections exist)
       const collectionsToSweep = [
         { name: "tasks", field: "growId" },
         { name: "photos", field: "growId" },
-        { name: "notes", field: "growId" }, // if notes are embedded in the grow doc, the grow delete will handle them
+        { name: "notes", field: "growId" },
       ];
 
       for (const { name, field } of collectionsToSweep) {
-        // Sweep in chunks of 10 (Firestore "in" limits) by querying per growId to be safe
         for (const gid of growIds) {
           const col = collection(db, "users", uid, name);
           const snap = await getDocs(query(col, where(field, "==", gid)));
@@ -76,14 +65,10 @@ export default function ClearGrowDataButton({ className = "" }) {
             let batch = writeBatch(db);
             let count = 0;
             for (const d of snap.docs) {
-              await addToTrash({
-                type: name.slice(0, -1), // task/photo/note
-                id: d.id,
-                data: d.data(),
-              });
+              await addToTrash({ type: name.slice(0, -1), id: d.id, data: d.data() });
               batch.delete(doc(db, "users", uid, name, d.id));
               count++;
-              if (count >= itemsPerBatch) {
+              if (count >= 400) {
                 await batch.commit();
                 batch = writeBatch(db);
                 count = 0;
@@ -94,14 +79,13 @@ export default function ClearGrowDataButton({ className = "" }) {
         }
       }
 
-      // 3) Delete the grows themselves
       {
         let batch = writeBatch(db);
         let count = 0;
         for (const g of growsSnap.docs) {
           batch.delete(doc(db, "users", uid, "grows", g.id));
           count++;
-          if (count >= itemsPerBatch) {
+          if (count >= 400) {
             await batch.commit();
             batch = writeBatch(db);
             count = 0;
@@ -123,6 +107,7 @@ export default function ClearGrowDataButton({ className = "" }) {
     <button
       onClick={clearGrowData}
       disabled={busy}
+      data-testid="clear-grow-data"
       className={
         "px-4 py-2 rounded-lg font-medium shadow bg-amber-600 hover:bg-amber-700 disabled:opacity-60 text-white " +
         className
