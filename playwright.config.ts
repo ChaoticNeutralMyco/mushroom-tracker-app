@@ -2,6 +2,8 @@
 // Runs tests against the production build to avoid `virtual:pwa-register` issues.
 import { defineConfig, devices } from '@playwright/test';
 
+const SUBPATH = process.env.CI ? '/mushroom-tracker-app/' : '/';
+
 export default defineConfig({
   testDir: './e2e',
   timeout: 30_000,
@@ -15,13 +17,15 @@ export default defineConfig({
   // Always serve the built site for tests (stable for PWA virtual modules)
   webServer: {
     command: 'npm run build && npm run preview -- --strictPort --port=5173',
-    url: 'http://localhost:5173',
-    reuseExistingServer: false, // keep it deterministic
+    // Playwright will wait for this URL to respond; point at the subpath in CI.
+    url: `http://localhost:5173${SUBPATH}`,
+    reuseExistingServer: false,
     timeout: 120_000,
   },
 
   use: {
-    baseURL: 'http://localhost:5173',
+    // Make navigation and request.get() resolve relative to the right base.
+    baseURL: `http://localhost:5173${SUBPATH}`,
     trace: 'retain-on-failure',
     screenshot: 'only-on-failure',
     video: 'retain-on-failure',
