@@ -3,11 +3,18 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <link rel="icon" href="/logo.png" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Mushroom Tracker</title>
-    <!-- PWA manifest will be injected by vite-plugin-pwa -->
+
+    <!-- Icons (use %BASE_URL% so they work on the GitHub Pages subpath) -->
+    <link rel="icon" type="image/svg+xml" href="%BASE_URL%app-logo.svg" />
+    <link rel="apple-touch-icon" href="%BASE_URL%app-logo.png" />
     <meta name="theme-color" content="#0f172a" />
+
+    <!-- Manifest (served from /mushroom-tracker-app/manifest.webmanifest on Pages) -->
+    <link rel="manifest" href="%BASE_URL%manifest.webmanifest" />
+
+    <!-- Keep your theme + accent bootstrapping -->
     <script>
       (function () {
         try {
@@ -21,6 +28,8 @@
   </head>
   <body class="bg-white dark:bg-zinc-900 text-black dark:text-white">
     <div id="root"></div>
+
+    <!-- Vite dev will resolve this; build rewrites to the bundled entry -->
     <script type="module" src="/src/main.jsx"></script>
   </body>
 </html>
