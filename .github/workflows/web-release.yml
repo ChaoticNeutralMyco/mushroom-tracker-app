@@ -2,8 +2,18 @@ name: Web Release
 
 on:
   push:
-    tags:
-      - 'v*.*.*'
+    branches: [ main ]
+    paths:
+      - "src/**"
+      - "public/**"
+      - "index.html"
+      - "vite.config.*"
+      - "package.json"
+      - "pnpm-lock.yaml"
+      - "yarn.lock"
+      - "package-lock.json"
+      - ".github/workflows/web-release.yml"
+  workflow_dispatch: {}   # <-- enables the “Run workflow” button
 
 permissions:
   contents: read
@@ -11,7 +21,7 @@ permissions:
   id-token: write
 
 concurrency:
-  group: 'pages'
+  group: "pages"
   cancel-in-progress: true
 
 jobs:
@@ -20,19 +30,21 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Setup Node
-        uses: actions/setup-node@v4
+      - uses: actions/setup-node@v4
         with:
           node-version: 20
-          cache: 'npm'
+          cache: "npm"
 
-      - name: Install deps
-        run: npm ci
-
+      - run: npm ci
       - name: Build site
-        env:
-          NODE_OPTIONS: --max-old-space-size=4096
         run: npm run build
+        env:
+          VITE_FB_API_KEY: ${{ vars.VITE_FB_API_KEY }}
+          VITE_FB_AUTH_DOMAIN: ${{ vars.VITE_FB_AUTH_DOMAIN }}
+          VITE_FB_PROJECT_ID: ${{ vars.VITE_FB_PROJECT_ID }}
+          VITE_FB_STORAGE_BUCKET: ${{ vars.VITE_FB_STORAGE_BUCKET }}
+          VITE_FB_MESSAGING_SENDER_ID: ${{ vars.VITE_FB_MESSAGING_SENDER_ID }}
+          VITE_FB_APP_ID: ${{ vars.VITE_FB_APP_ID }}
 
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3
@@ -46,5 +58,6 @@ jobs:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
-      - id: deployment
+      - name: Deploy to GitHub Pages
+        id: deployment
         uses: actions/deploy-pages@v4
