@@ -1,48 +1,50 @@
-name: Web Build & Release
+name: Web Release
 
 on:
   push:
-    tags: [ "v*" ]  # runs on tag pushes like v1.2.3
+    tags:
+      - 'v*.*.*'
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: 'pages'
+  cancel-in-progress: true
 
 jobs:
-  build-web:
+  build:
     runs-on: ubuntu-latest
-
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
-          node-version: "20"
-          cache: "npm"
+          node-version: 20
+          cache: 'npm'
 
       - name: Install deps
         run: npm ci
 
-      - name: Build
+      - name: Build site
+        env:
+          NODE_OPTIONS: --max-old-space-size=4096
         run: npm run build
 
-      - name: Zip dist
-        run: cd dist && zip -r ../build.zip .
-
-      - name: Upload build.zip artifact
-        uses: actions/upload-artifact@v4
+      - name: Upload artifact
+        uses: actions/upload-pages-artifact@v3
         with:
-          name: web-build
-          path: build.zip
+          path: dist
 
-      - name: Create/Update GitHub Release
-        uses: softprops/action-gh-release@v2
-        with:
-          files: build.zip
-          generate_release_notes: true
-
-      # Optional: trigger Vercel via a Deploy Hook URL secret
-      - name: Trigger Vercel Deploy Hook (optional)
-        if: ${{ secrets.VERCEL_DEPLOY_HOOK_URL != '' }}
-        run: |
-          curl -X POST -fsSL "$VERCEL_DEPLOY_HOOK_URL" || true
-        env:
-          VERCEL_DEPLOY_HOOK_URL: ${{ secrets.VERCEL_DEPLOY_HOOK_URL }}
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

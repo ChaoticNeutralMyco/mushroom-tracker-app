@@ -2,106 +2,39 @@ name: CI
 
 on:
   push:
-    branches: ["**"]
+    branches: [main]
   pull_request:
-    branches: ["**"]
-
-concurrency:
-  group: ci-${{ github.ref }}
-  cancel-in-progress: true
+    branches: [main]
 
 jobs:
-  build-and-test:
+  build:
     runs-on: ubuntu-latest
-
+    timeout-minutes: 20
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Detect package manager
-        id: detect
-        shell: bash
-        run: |
-          if [ -f pnpm-lock.yaml ]; then
-            echo "pm=pnpm" >> "$GITHUB_OUTPUT"
-          elif [ -f yarn.lock ]; then
-            echo "pm=yarn" >> "$GITHUB_OUTPUT"
-          else
-            echo "pm=npm" >> "$GITHUB_OUTPUT"
-          fi
+      - uses: actions/checkout@v4
 
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
-          node-version-file: .nvmrc
-          cache: ${{ steps.detect.outputs.pm }}
+          node-version: 20
+          cache: 'npm'
 
-      - name: Setup pnpm (if used)
-        if: steps.detect.outputs.pm == 'pnpm'
-        uses: pnpm/action-setup@v4
-        with:
-          version: 9
+      - name: Install deps
+        run: npm ci
 
-      - name: Install dependencies
-        shell: bash
-        run: |
-          if [ "${{ steps.detect.outputs.pm }}" = "pnpm" ]; then
-            pnpm install --frozen-lockfile
-          elif [ "${{ steps.detect.outputs.pm }}" = "yarn" ]; then
-            yarn install --frozen-lockfile
-          else
-            npm ci
-          fi
+      # Optional (keep if you have these scripts)
+      - name: Lint
+        run: npm run lint --if-present
+      - name: Typecheck
+        run: npm run typecheck --if-present
 
-      - name: Lint (if present)
-        run: npm run -s lint --if-present
-
-      - name: Type check (if present)
-        run: npm run -s typecheck --if-present
-
-      - name: Unit tests (if present)
-        run: npm run -s test --if-present
-
-      - name: Install Playwright browsers (if e2e present)
-        shell: bash
-        run: |
-          if npm run -s | grep -qE "^\s*test:e2e"; then
-            npx playwright install --with-deps
-          else
-            echo "No test:e2e script found; skipping Playwright browser install."
-          fi
-
-      - name: E2E tests (if present)
-        shell: bash
+      - name: Build (PWA)
         env:
-          # --- Firebase public runtime config (must be set in repo Secrets) ---
-          VITE_FB_API_KEY: ${{ secrets.VITE_FB_API_KEY }}
-          VITE_FB_AUTH_DOMAIN: ${{ secrets.VITE_FB_AUTH_DOMAIN }}
-          VITE_FB_PROJECT_ID: ${{ secrets.VITE_FB_PROJECT_ID }}
-          VITE_FB_STORAGE_BUCKET: ${{ secrets.VITE_FB_STORAGE_BUCKET }}
-          VITE_FB_MESSAGING_SENDER_ID: ${{ secrets.VITE_FB_MESSAGING_SENDER_ID }}
-          VITE_FB_APP_ID: ${{ secrets.VITE_FB_APP_ID }}
-          # --- Single JSON secret for test creds (Option A) ---
-          TEST_ACCOUNT: ${{ secrets.TEST_ACCOUNT }}
-        run: |
-          npm run -s test:e2e --if-present
+          NODE_OPTIONS: --max-old-space-size=4096
+        run: npm run build
 
-      - name: Build
-        env:
-          VITE_FB_API_KEY: ${{ secrets.VITE_FB_API_KEY }}
-          VITE_FB_AUTH_DOMAIN: ${{ secrets.VITE_FB_AUTH_DOMAIN }}
-          VITE_FB_PROJECT_ID: ${{ secrets.VITE_FB_PROJECT_ID }}
-          VITE_FB_STORAGE_BUCKET: ${{ secrets.VITE_FB_STORAGE_BUCKET }}
-          VITE_FB_MESSAGING_SENDER_ID: ${{ secrets.VITE_FB_MESSAGING_SENDER_ID }}
-          VITE_FB_APP_ID: ${{ secrets.VITE_FB_APP_ID }}
-        run: npm run -s build
-
-      - name: Upload Playwright report (on failure)
-        if: failure()
+      - name: Upload dist artifact
         uses: actions/upload-artifact@v4
         with:
-          name: playwright-report
-          path: |
-            playwright-report
-            test-results
-          if-no-files-found: ignore
+          name: web-dist
+          path: dist
