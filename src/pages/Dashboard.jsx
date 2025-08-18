@@ -1,39 +1,50 @@
 // src/pages/Dashboard.jsx
 import React, { useEffect, useMemo, useState } from "react";
-
-// Fallback-only Firebase imports (used iff App doesn't pass props yet)
 import { collection, getDocs } from "firebase/firestore";
 import { db, auth } from "../firebase-config";
+import { isActiveGrow } from "../lib/growFilters";
 
-/**
- * Dashboard (standalone page)
- * Preferred: pass `grows` from App to avoid reads here.
- * Fallback: if no `grows` prop, it fetches once so the page still works.
- */
+// small stat card
+function Stat({ label, value }) {
+  return (
+    <div className="bg-gray-100 dark:bg-gray-700 p-4 rounded shadow">
+      <p className="text-sm text-gray-600 dark:text-gray-300">{label}</p>
+      <p className="text-lg font-bold">{value}</p>
+    </div>
+  );
+}
+
 export default function Dashboard({ grows: growsProp }) {
   const [growsLocal, setGrowsLocal] = useState(Array.isArray(growsProp) ? growsProp : []);
   const [strainFilter, setStrainFilter] = useState("");
   const [stageFilter, setStageFilter] = useState("All Stages");
   const [dateRange, setDateRange] = useState({ start: "", end: "" });
 
-  // Keep local in sync with prop
+  // keep in sync with props
   useEffect(() => {
     if (Array.isArray(growsProp)) setGrowsLocal(growsProp);
   }, [growsProp]);
 
-  // Fallback fetch (one-shot)
+  // fallback fetch (only if parent didn't pass grows)
   useEffect(() => {
     if (Array.isArray(growsProp)) return;
     (async () => {
       const user = auth.currentUser;
       if (!user) return;
-      const snapshot = await getDocs(collection(db, "users", user.uid, "grows"));
-      setGrowsLocal(snapshot.docs.map((d) => ({ id: d.id, ...d.data() })));
+      const snap = await getDocs(collection(db, "users", user.uid, "grows"));
+      setGrowsLocal(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
     })();
   }, [growsProp]);
 
+  // ---- ACTIVE set (single source of truth) ----
+  const activeGrows = useMemo(
+    () => (Array.isArray(growsLocal) ? growsLocal.filter(isActiveGrow) : []),
+    [growsLocal]
+  );
+
+  // filters operate on ACTIVE set
   const filteredGrows = useMemo(() => {
-    let data = Array.isArray(growsLocal) ? growsLocal : [];
+    let data = [...activeGrows];
     if (strainFilter) {
       const f = strainFilter.toLowerCase();
       data = data.filter((g) => (g.strain || "").toLowerCase().includes(f));
@@ -52,8 +63,18 @@ export default function Dashboard({ grows: growsProp }) {
       );
     }
     return data;
-  }, [growsLocal, strainFilter, stageFilter, dateRange]);
+  }, [activeGrows, strainFilter, stageFilter, dateRange]);
 
+  // cards (ACTIVE ONLY)
+  const totalActive = filteredGrows.length;
+  const uniqueStrains = useMemo(
+    () => new Set(filteredGrows.map((g) => g.strain).filter(Boolean)).size,
+    [filteredGrows]
+  );
+  const uniqueTypes = useMemo(() => {
+    const getType = (g) => g?.type || g?.growType || g?.container || "";
+    return new Set(filteredGrows.map(getType).filter(Boolean)).size;
+  }, [filteredGrows]);
   const totalCost = useMemo(
     () => filteredGrows.reduce((sum, g) => sum + Number(g.cost || 0), 0),
     [filteredGrows]
@@ -68,11 +89,6 @@ export default function Dashboard({ grows: growsProp }) {
     return acc;
   }, [filteredGrows]);
 
-  const uniqueStrains = useMemo(
-    () => new Set(filteredGrows.map((g) => g.strain).filter(Boolean)).size,
-    [filteredGrows]
-  );
-
   return (
     <div className="p-4">
       <div className="bg-white dark:bg-gray-800 p-4 rounded shadow mb-4">
@@ -80,27 +96,29 @@ export default function Dashboard({ grows: growsProp }) {
           📊 Dashboard Stats
         </h2>
 
-        {/* Cards */}
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-          <Stat label="Total Grows" value={filteredGrows.length} />
+          <Stat label="Total Active Grows" value={totalActive} />
           <Stat label="Active Strains" value={uniqueStrains} />
+          <Stat label="Types" value={uniqueTypes} />
           <Stat label="Total Cost" value={`$${totalCost.toFixed(2)}`} />
-          <div className="bg-gray-100 dark:bg-gray-700 p-4 rounded shadow">
-            <p className="text-sm text-gray-600 dark:text-gray-300 font-semibold mb-1">
-              By Stage
-            </p>
-            <ul className="text-sm text-gray-700 dark:text-gray-300 pl-4 list-disc space-y-0.5">
-              {stages.map((s) => (
-                <li key={s}>
-                  {s}: {stageCounts[s] || 0}
-                </li>
-              ))}
-            </ul>
-          </div>
+        </div>
+
+        {/* By Stage (of ACTIVE only) */}
+        <div className="bg-gray-100 dark:bg-gray-700 p-4 rounded shadow mt-4">
+          <p className="text-sm text-gray-600 dark:text-gray-300 font-semibold mb-1">
+            By Stage
+          </p>
+          <ul className="text-sm text-gray-700 dark:text-gray-300 pl-4 list-disc space-y-0.5">
+            {stages.map((s) => (
+              <li key={s}>
+                {s}: {stageCounts[s] || 0}
+              </li>
+            ))}
+          </ul>
         </div>
       </div>
 
-      {/* Filters */}
+      {/* Filters (operate on ACTIVE set) */}
       <div className="bg-white dark:bg-gray-800 p-4 rounded shadow mb-4">
         <h2 className="text-xl font-bold mb-2">Filter Grows</h2>
         <label className="block mb-2">
@@ -157,15 +175,27 @@ export default function Dashboard({ grows: growsProp }) {
           </label>
         </div>
       </div>
-    </div>
-  );
-}
 
-function Stat({ label, value }) {
-  return (
-    <div className="bg-gray-100 dark:bg-gray-700 p-4 rounded shadow">
-      <p className="text-sm text-gray-600 dark:text-gray-300">{label}</p>
-      <p className="text-lg font-bold">{value}</p>
+      {/* My Grows (active only) */}
+      <div className="bg-white dark:bg-gray-800 p-4 rounded shadow">
+        <h3 className="text-lg font-semibold mb-2">My Grows</h3>
+        {activeGrows.length === 0 ? (
+          <div className="text-sm opacity-70">No grows yet.</div>
+        ) : (
+          <ul className="space-y-2">
+            {activeGrows.slice(0, 6).map((g) => (
+              <li key={g.id} className="p-2 rounded bg-gray-100 dark:bg-gray-700">
+                <div className="font-medium">
+                  {g.abbreviation || g.strain || g.id}
+                </div>
+                <div className="text-xs opacity-80">
+                  {(g.growType || g.type || g.container || "—")} — {g.stage || "—"}
+                </div>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
     </div>
   );
 }

@@ -1,0 +1,14 @@
+{
+  "cookies": [],
+  "origins": [
+    {
+      "origin": "https://mushroom-tracker-app.vercel.app",
+      "localStorage": [
+        {
+          "name": "firebase:authUser:AIzaSyAk1paC3CBjU1RH2cXf_8m6xOnZkH_xYWg:[DEFAULT]",
+          "value": "{\"uid\":\"fId2dYKl08dg3hWlDV7lOgOnPTH2\",\"email\":\"admin@chaoticmyco.com\",\"emailVerified\":false,\"isAnonymous\":false,\"providerData\":[{\"providerId\":\"password\",\"uid\":\"admin@chaoticmyco.com\",\"displayName\":null,\"email\":\"admin@chaoticmyco.com\",\"phoneNumber\":null,\"photoURL\":null}],\"stsTokenManager\":{\"refreshToken\":\"AMf-vBzGSfRP3FVFph5v6gP03r_DmHAs2ajhU-1G-5ioGjoeBYEbwMKgAWMPHFirvYdtzi6FXuO0qeEZF3vCfOZHWGakPTOWSZOOq9y-XqKVCQnD1qEWsxVulICuvQwTTptFupYAT6P1p7DHcblocdDv6_r7LsNf17f7jpYI4jva9M0T-B_Bp36vY3ZWD1bI1yN8IesZ5A9QEU-Y-oDVIae-MkLjk9EGGOwOd_WJyjcT86ljlDqgp9s\",\"accessToken\":\"eyJhbGciOiJSUzI1NiIsImtpZCI6IjJiN2JhZmIyZjEwY2FlMmIxZjA3ZjM4MTZjNTQyMmJlY2NhNWMyMjMiLCJ0eXAiOiJKV1QifQ.eyJpc3MiOiJodHRwczovL3NlY3VyZXRva2VuLmdvb2dsZS5jb20vY2hhb3RpYy1uZXV0cmFsLXRyYWNrZXIiLCJhdWQiOiJjaGFvdGljLW5ldXRyYWwtdHJhY2tlciIsImF1dGhfdGltZSI6MTc1NDYzNjg4MywidXNlcl9pZCI6ImZJZDJkWUtsMDhkZzNoV2xEVjdsT2dPblBUSDIiLCJzdWIiOiJmSWQyZFlLbDA4ZGczaFdsRFY3bE9nT25QVEgyIiwiaWF0IjoxNzU0NjM2ODgzLCJleHAiOjE3NTQ2NDA0ODMsImVtYWlsIjoiYWRtaW5AY2hhb3RpY215Y28uY29tIiwiZW1haWxfdmVyaWZpZWQiOmZhbHNlLCJmaXJlYmFzZSI6eyJpZGVudGl0aWVzIjp7ImVtYWlsIjpbImFkbWluQGNoYW90aWNteWNvLmNvbSJdfSwic2lnbl9pbl9wcm92aWRlciI6InBhc3N3b3JkIn19.rsW4Mc1X-ZdC53Hn_cNmAKDzVcwJoSaljKy6b6_GCDkKiuDZSpAmx3qyH5496OM-qZ_ina4ytQq_ZqnittU72MaZ-jP2EbCOui2NR0ipIyWwyvp9WGEfgTUFRB3HtbImG9wt5l1gDkYcEpQDhhlqrAGn1Nw_13q1WwMu4VdUxWWxmzcERd_jTrAJXpz2WzjctmSBcM6PHHKlgJQ3sTeLFsssK3kW1noFoiZxZHGY7J3nQyZiNbjmKZuLTRAF0O7r7KZwsdtMAWG4p1U7IpJ3-5LzcbYu6flo_wBfax6uh0JUihnsJCy2ltZniy3qxLXu48N1vITSXCm-eD6kiTPu1Q\",\"expirationTime\":1754640483863},\"createdAt\":\"1754632583485\",\"lastLoginAt\":\"1754636883779\",\"apiKey\":\"AIzaSyAk1paC3CBjU1RH2cXf_8m6xOnZkH_xYWg\",\"appName\":\"[DEFAULT]\"}"
+        }
+      ]
+    }
+  ]
+}

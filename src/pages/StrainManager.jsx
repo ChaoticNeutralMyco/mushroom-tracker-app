@@ -14,6 +14,8 @@ import {
 import { auth, db, storage } from "../firebase-config";
 import { ref as storageRef, uploadBytes, getDownloadURL } from "firebase/storage";
 import { UploadCloud, Trash2, Pencil } from "lucide-react";
+// ✅ Use the same active-grow rule everywhere
+import { isActiveGrow } from "../lib/growFilters";
 
 /**
  * StrainManager
@@ -201,39 +203,76 @@ export default function StrainManager({
 
   // ---- Stats from grows (works in both modes) ----
   const calculateStats = (strainName) => {
-    const related = (Array.isArray(localGrows) ? localGrows : []).filter(
-      (g) => (g.strain || "") === strainName
-    );
-    const activeCount = related.filter((g) => g.stage !== "Harvested").length;
+    const norm = (s) => String(s || "").trim().toLowerCase();
 
-    const asDays = (from, to) => {
-      const f = from ? new Date(from) : null;
-      const t = to ? new Date(to) : null;
+    // Only grows that exactly match this strain (case-insensitive)
+    const related = (Array.isArray(localGrows) ? localGrows : []).filter(
+      (g) => norm(g.strain) === norm(strainName)
+    );
+
+    // Active count using the unified app rule
+    const activeCount = related.filter(isActiveGrow).length;
+
+    // Helpers
+    const asDate = (v) => {
+      if (!v) return null;
+      if (v?.toDate) return v.toDate();
+      if (v instanceof Date) return v;
+      const d = new Date(v);
+      return isNaN(d) ? null : d;
+    };
+    const daysBetween = (from, to) => {
+      const f = asDate(from);
+      const t = asDate(to);
       return f && t ? (t - f) / (1000 * 60 * 60 * 24) : null;
     };
-    const take = (arr) => (arr.length ? (arr.reduce((a, b) => a + b, 0) / arr.length) : null);
-    const fmt = (v) => (v == null ? "—" : v.toFixed(1));
+    const avg = (arr) =>
+      arr.length ? arr.reduce((a, b) => a + b, 0) / arr.length : null;
+    const fmt = (v) => (v == null ? "—" : Number(v).toFixed(1));
 
-    const colonize = related
-      .map((g) => asDays(g?.stageDates?.Inoculated, g?.stageDates?.Colonized))
+    // Stage duration averages (ignore items missing either date)
+    const colonizeDays = related
+      .map((g) => daysBetween(g?.stageDates?.Inoculated, g?.stageDates?.Colonized))
       .filter((n) => Number.isFinite(n));
-    const fruit = related
-      .map((g) => asDays(g?.stageDates?.Colonized, g?.stageDates?.Fruiting))
+    const fruitDays = related
+      .map((g) => daysBetween(g?.stageDates?.Colonized, g?.stageDates?.Fruiting))
       .filter((n) => Number.isFinite(n));
-    const harvest = related
-      .map((g) => asDays(g?.stageDates?.Fruiting, g?.stageDates?.Harvested))
+    const harvestDays = related
+      .map((g) => daysBetween(g?.stageDates?.Fruiting, g?.stageDates?.Harvested))
       .filter((n) => Number.isFinite(n));
 
-    const wet = related.map((g) => Number(g.wetYield)).filter((n) => Number.isFinite(n));
-    const dry = related.map((g) => Number(g.dryYield)).filter((n) => Number.isFinite(n));
+    // ✅ Yield from flushes (fallback to top-level fields if present)
+    const sumFromFlushes = (g) => {
+      const list = Array.isArray(g?.flushes)
+        ? g.flushes
+        : Array.isArray(g?.harvest?.flushes)
+        ? g.harvest.flushes
+        : [];
+      const wet = list.reduce((s, f) => s + (Number(f?.wet) || 0), 0);
+      const dry = list.reduce((s, f) => s + (Number(f?.dry) || 0), 0);
+      // keep old schema support if someone stored flat totals
+      const flatWet = Number(g?.wetYield) || 0;
+      const flatDry = Number(g?.dryYield) || 0;
+      return {
+        wet: wet || flatWet,
+        dry: dry || flatDry,
+      };
+    };
+
+    const wetVals = related
+      .map((g) => sumFromFlushes(g).wet)
+      .filter((n) => Number.isFinite(n));
+    const dryVals = related
+      .map((g) => sumFromFlushes(g).dry)
+      .filter((n) => Number.isFinite(n));
 
     return {
       activeCount,
-      avgColonize: fmt(take(colonize) ?? null),
-      avgFruit: fmt(take(fruit) ?? null),
-      avgHarvest: fmt(take(harvest) ?? null),
-      avgWet: fmt(take(wet) ?? null),
-      avgDry: fmt(take(dry) ?? null),
+      avgColonize: fmt(avg(colonizeDays)),
+      avgFruit: fmt(avg(fruitDays)),
+      avgHarvest: fmt(avg(harvestDays)),
+      avgWet: fmt(avg(wetVals)),
+      avgDry: fmt(avg(dryVals)),
     };
   };
 

@@ -1,38 +1,41 @@
 {
-  "package": {
-    "productName": "Mushroom Tracker",
-    "version": "1.0.0"
-  },
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Mushroom Tracker",
+  "version": "1.0.2",
+  "identifier": "com.chaoticneutral.myco",
+
   "build": {
-    "beforeBuildCommand": "",
-    "beforeDevCommand": "",
-    "devPath": "http://localhost:5173",
-    "distDir": "../dist"
+    "beforeDevCommand": "npm run dev",
+    "beforeBuildCommand": "npm run build",
+    "devUrl": "http://localhost:5173",
+    "frontendDist": "../dist"
   },
-  "tauri": {
-    "bundle": {
-      "identifier": "com.chaoticneutral.tracker",
-      "active": true,
-      "targets": "all",
-      "windows": {
-        "wix": {
-          "language": "en-US"
-        }
-      }
-    },
-    "updater": { "active": false },
-    "allowlist": {
-      "all": false,
-      "shell": { "all": false, "open": false }
-    },
+
+  "app": {
     "windows": [
-      {
-        "label": "main",
-        "title": "Mushroom Tracker",
-        "width": 1280,
-        "height": 800,
-        "resizable": true
-      }
-    ]
+      { "title": "Mushroom Tracker", "width": 1200, "height": 800, "visible": true }
+    ],
+    "security": { "csp": null }
+  },
+
+  "bundle": {
+    "active": true,
+    "targets": "msi",
+    "icon": ["icons/icon.png", "icons/icon.ico"],
+    "windows": {
+      "webviewInstallMode": { "type": "downloadBootstrapper" },
+      "allowDowngrades": false
+    }
+  },
+
+  "plugins": {
+    "updater": {
+      "active": true,
+      "endpoints": [
+        "https://github.com/ChaoticNeutralMyco/mushroom-tracker-app/releases/latest/download/latest.json"
+      ],
+      "dialog": true,
+      "pubkey": "untrusted comment: minisign public key: 8475A57AD8FB6230\nRWQwYvvYeqV1hFzY7NSm28Snpmd+efreHX70Xh7My0YWC2Io2Faj5jni"
+    }
   }
 }

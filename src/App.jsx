@@ -1,5 +1,5 @@
 // src/App.jsx
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState, Suspense } from "react";
 import { Routes, Route } from "react-router-dom";
 import { auth, db, storage } from "./firebase-config";
 import { onAuthStateChanged, signOut } from "firebase/auth";
@@ -18,32 +18,44 @@ import "./styles/theme.css";
 
 // Pages
 import Auth from "./pages/Auth";
-import Analytics from "./pages/Analytics";
-import CalendarView from "./pages/CalendarView";
-import Settings from "./pages/Settings";
-import StrainManager from "./pages/StrainManager";
-import QuickEdit from "./pages/QuickEdit";
-import Archive from "./pages/Archive";
-
 // Grow components
 import GrowForm from "./components/Grow/GrowForm";
 import GrowList from "./components/Grow/GrowList";
 import GrowDetail from "./components/Grow/GrowDetail";
-import GrowTimeline from "./components/Grow/GrowTimeline";
 import EditStageStatusModal from "./components/Grow/EditStageStatusModal";
-import LabelPrintWrapper from "./components/Grow/LabelPrintWrapper";
-
-// Recipes / COG
-import RecipeManager from "./components/recipes/RecipeManager";
-import COGManager from "./components/recipes/COGManager.jsx";
-
 // UI
-import TaskManager from "./components/Tasks/TaskManager";
 import DashboardStats from "./components/ui/DashboardStats";
 import OnboardingModal from "./components/ui/OnboardingModal";
-import ScanBarcodeModal from "./components/ui/ScanBarcodeModal";
 import SplashScreen from "./components/ui/SplashScreen";
-import PhotoUpload from "./components/ui/PhotoUpload";
+
+// Lazy-loaded heavy routes/components for code-splitting
+const Analytics = React.lazy(() => import("./pages/Analytics"));
+const CalendarView = React.lazy(() => import("./pages/CalendarView"));
+const Settings = React.lazy(() => import("./pages/Settings"));
+const StrainManager = React.lazy(() => import("./pages/StrainManager"));
+const QuickEdit = React.lazy(() => import("./pages/QuickEdit"));
+const Archive = React.lazy(() => import("./pages/Archive"));
+const LabelPrintWrapper = React.lazy(() => import("./components/Grow/LabelPrintWrapper"));
+const RecipeManager = React.lazy(() => import("./components/recipes/RecipeManager"));
+const COGManager = React.lazy(() => import("./components/recipes/COGManager.jsx"));
+const TaskManager = React.lazy(() => import("./components/Tasks/TaskManager"));
+const GrowTimeline = React.lazy(() => import("./components/Grow/GrowTimeline"));
+const ScanBarcodeModal = React.lazy(() => import("./components/ui/ScanBarcodeModal"));
+const PhotoUpload = React.lazy(() => import("./components/ui/PhotoUpload"));
+
+// Prefetch bundles on hover/focus so first click is instant
+const prefetchers = {
+  analytics: () => import("./pages/Analytics"),
+  calendar: () => import("./pages/CalendarView"),
+  timeline: () => import("./components/Grow/GrowTimeline"),
+  cog: () => import("./components/recipes/COGManager.jsx"),
+  recipes: () => import("./components/recipes/RecipeManager"),
+  strains: () => import("./pages/StrainManager"),
+  labels: () => import("./components/Grow/LabelPrintWrapper"),
+  archive: () => import("./pages/Archive"),
+  settings: () => import("./pages/Settings"),
+  tasks: () => import("./components/Tasks/TaskManager"),
+};
 
 // ---- Prevent theme flash early ----
 (function applyInitialTheme() {
@@ -65,6 +77,7 @@ import PhotoUpload from "./components/ui/PhotoUpload";
   }
 })();
 
+/* -------------------------- GLOBAL CONSTANTS -------------------------- */
 const DEFAULT_PREFS = {
   theme: "emerald",
   darkMode: true,
@@ -114,6 +127,188 @@ const DEFAULT_PREFS = {
 };
 
 const THEMES = ["emerald", "violet", "amber", "rose", "slate"];
+
+/* ---------------------------- tiny skeletons ---------------------------- */
+const Skel = ({ className = "" }) => (
+  <div className={`animate-pulse rounded-md bg-zinc-200/80 dark:bg-zinc-800 ${className}`} />
+);
+
+const CardShell = ({ children }) => (
+  <div className="bg-white dark:bg-zinc-900 rounded-2xl shadow p-4 border border-zinc-200/60 dark:border-zinc-800/60">
+    {children}
+  </div>
+);
+
+const DashboardSkeleton = () => (
+  <div className="space-y-6">
+    <Skel className="h-24 w-full rounded-xl" />
+    <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+      <CardShell>
+        <Skel className="h-6 w-40 mb-4" />
+        <div className="space-y-2">
+          <Skel className="h-4 w-full" />
+          <Skel className="h-4 w-11/12" />
+          <Skel className="h-4 w-10/12" />
+        </div>
+      </CardShell>
+      <CardShell>
+        <Skel className="h-6 w-32 mb-4" />
+        <div className="grid grid-cols-3 gap-2">
+          {Array.from({ length: 6 }).map((_, i) => (
+            <Skel key={i} className="h-20 w-full rounded-lg" />
+          ))}
+        </div>
+      </CardShell>
+    </div>
+  </div>
+);
+
+const AnalyticsSkeleton = () => (
+  <CardShell>
+    <Skel className="h-6 w-32 mb-4" />
+    <div className="grid grid-cols-12 gap-2">
+      {Array.from({ length: 12 }).map((_, i) => (
+        <Skel key={i} className="h-40 w-full" />
+      ))}
+    </div>
+  </CardShell>
+);
+
+const CalendarSkeleton = () => (
+  <CardShell>
+    <Skel className="h-6 w-28 mb-4" />
+    <Skel className="h-[540px] w-full rounded-xl" />
+  </CardShell>
+);
+
+const TimelineSkeleton = () => (
+  <CardShell>
+    <Skel className="h-6 w-28 mb-4" />
+    <div className="space-y-4">
+      {Array.from({ length: 5 }).map((_, i) => (
+        <div key={i} className="flex items-start gap-3">
+          <Skel className="h-8 w-8 rounded-full" />
+          <div className="flex-1 space-y-2">
+            <Skel className="h-4 w-4/5" />
+            <Skel className="h-3 w-3/5" />
+          </div>
+        </div>
+      ))}
+    </div>
+  </CardShell>
+);
+
+const TasksSkeleton = () => (
+  <CardShell>
+    <Skel className="h-6 w-28 mb-4" />
+    <div className="space-y-3">
+      {Array.from({ length: 6 }).map((_, i) => (
+        <Skel key={i} className="h-5 w-full" />
+      ))}
+    </div>
+  </CardShell>
+);
+
+const RecipesSkeleton = () => (
+  <CardShell>
+    <Skel className="h-6 w-24 mb-4" />
+    <div className="space-y-3">
+      {Array.from({ length: 5 }).map((_, i) => (
+        <Skel key={i} className="h-5 w-full" />
+      ))}
+    </div>
+  </CardShell>
+);
+
+const COGSkeleton = () => (
+  <CardShell>
+    <Skel className="h-6 w-16 mb-4" />
+    <div className="space-y-2">
+      {Array.from({ length: 6 }).map((_, i) => (
+        <Skel key={i} className="h-10 w-full" />
+      ))}
+    </div>
+  </CardShell>
+);
+
+const StrainsSkeleton = () => (
+  <CardShell>
+    <Skel className="h-6 w-24 mb-4" />
+    <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
+      {Array.from({ length: 6 }).map((_, i) => (
+        <Skel key={i} className="h-24 w-full rounded-lg" />
+      ))}
+    </div>
+  </CardShell>
+);
+
+const LabelsSkeleton = () => (
+  <CardShell>
+    <Skel className="h-6 w-24 mb-4" />
+    <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
+      {Array.from({ length: 6 }).map((_, i) => (
+        <Skel key={i} className="h-16 w-full rounded-lg" />
+      ))}
+    </div>
+  </CardShell>
+);
+
+const ArchiveSkeleton = () => (
+  <CardShell>
+    <Skel className="h-6 w-24 mb-4" />
+    <div className="space-y-3">
+      {Array.from({ length: 6 }).map((_, i) => (
+        <Skel key={i} className="h-5 w-full" />
+      ))}
+    </div>
+  </CardShell>
+);
+
+const SettingsSkeleton = () => (
+  <CardShell>
+    <Skel className="h-6 w-24 mb-4" />
+    <div className="space-y-3">
+      <Skel className="h-10 w-full" />
+      <Skel className="h-10 w-3/4" />
+      <Skel className="h-10 w-2/3" />
+    </div>
+  </CardShell>
+);
+
+const QuickEditSkeleton = () => (
+  <div className="p-6">
+    <div className="max-w-3xl mx-auto space-y-3">
+      <Skel className="h-6 w-40" />
+      <Skel className="h-10 w-full" />
+      <Skel className="h-10 w-5/6" />
+      <Skel className="h-10 w-4/6" />
+    </div>
+  </div>
+);
+
+const ModalSkeleton = () => (
+  <div className="fixed inset-0 bg-black/40 backdrop-blur-sm flex items-center justify-center p-6">
+    <div className="w-full max-w-md">
+      <CardShell>
+        <Skel className="h-6 w-32 mb-4" />
+        <Skel className="h-10 w-full mb-2" />
+        <Skel className="h-10 w-5/6" />
+      </CardShell>
+    </div>
+  </div>
+);
+
+const PhotoUploadSkeleton = () => (
+  <div className="space-y-3">
+    <Skel className="h-10 w-full" />
+    <div className="grid grid-cols-3 gap-2">
+      {Array.from({ length: 6 }).map((_, i) => (
+        <Skel key={i} className="h-20 w-full rounded-lg" />
+      ))}
+    </div>
+  </div>
+);
+/* ---------------------------------------------------------------------- */
 
 export default function App() {
   const [user, setUser] = useState(null);
@@ -309,7 +504,7 @@ export default function App() {
     };
   }, []);
 
-  // actions (same as before) ...
+  // actions
   const handleSignOut = async () => { await signOut(auth); };
 
   const onUpdateStage = async (growId, nextStage) => {
@@ -422,6 +617,24 @@ export default function App() {
     applyAppearance(data);
   };
 
+  // choose the right Suspense fallback per tab — before any early returns to keep hook order stable
+  const tabFallback = useMemo(() => {
+    switch (activeTab) {
+      case "analytics": return <AnalyticsSkeleton />;
+      case "calendar": return <CalendarSkeleton />;
+      case "timeline": return <TimelineSkeleton />;
+      case "cog": return <COGSkeleton />;
+      case "recipes": return <RecipesSkeleton />;
+      case "strains": return <StrainsSkeleton />;
+      case "labels": return <LabelsSkeleton />;
+      case "archive": return <ArchiveSkeleton />;
+      case "settings": return <SettingsSkeleton />;
+      case "tasks": return <TasksSkeleton />;
+      default: return <DashboardSkeleton />;
+    }
+  }, [activeTab]);
+
+  // splash/auth gates
   if (showSplash) return <SplashScreen />;
   if (!user) return <Auth setUser={setUser} />;
 
@@ -430,8 +643,14 @@ export default function App() {
 
   return (
     <>
-      {showScanner && <ScanBarcodeModal onClose={() => setShowScanner(false)} />}
+      {/* Scanner modal (lazy) */}
+      {showScanner && (
+        <Suspense fallback={<ModalSkeleton />}>
+          <ScanBarcodeModal onClose={() => setShowScanner(false)} />
+        </Suspense>
+      )}
 
+      {/* Edit modal */}
       {isEditingExisting && (
         <EditStageStatusModal
           grow={editingGrow}
@@ -441,6 +660,7 @@ export default function App() {
         />
       )}
 
+      {/* Add new grow form */}
       {isAddingNew && (
         <GrowForm
           editingGrow={editingGrow}
@@ -456,21 +676,25 @@ export default function App() {
       )}
 
       <Routes>
+        {/* Quick edit (lazy) */}
         <Route
           path="/quick/:growId"
           element={
-            <QuickEdit
-              grows={grows}
-              notesByGrowStage={notesByGrowStage}
-              photosByGrowStage={photosByGrowStage}
-              onUpdateStage={onUpdateStage}
-              onUpdateStatus={onUpdateStatus}
-              onAddNote={onAddNote}
-              onUploadStagePhoto={onUploadStagePhoto}
-            />
+            <Suspense fallback={<QuickEditSkeleton />}>
+              <QuickEdit
+                grows={grows}
+                notesByGrowStage={notesByGrowStage}
+                photosByGrowStage={photosByGrowStage}
+                onUpdateStage={onUpdateStage}
+                onUpdateStatus={onUpdateStatus}
+                onAddNote={onAddNote}
+                onUploadStagePhoto={onUploadStagePhoto}
+              />
+            </Suspense>
           }
         />
 
+        {/* Grow detail (non-lazy) */}
         <Route
           path="/grow/:growId"
           element={
@@ -482,6 +706,7 @@ export default function App() {
           }
         />
 
+        {/* Main app */}
         <Route
           path="/"
           element={
@@ -490,13 +715,26 @@ export default function App() {
                 <div className="max-w-7xl mx-auto px-4 py-3 flex items-center gap-3">
                   <h1 className="text-xl font-bold">Chaotic Neutral Tracker</h1>
                   <div className="ml-auto flex items-center gap-2">
-                    <button onClick={() => setShowScanner(true)} className="px-3 py-1.5 rounded-lg accent-bg text-sm" aria-label="Open scanner">Scan</button>
-                    <button onClick={handleSignOut} className="px-3 py-1.5 rounded-lg bg-zinc-200 dark:bg-zinc-800 hover:bg-zinc-300 dark:hover:bg-zinc-700 text-sm" aria-label="Sign out">Sign out</button>
+                    <button
+                      onClick={() => setShowScanner(true)}
+                      className="px-3 py-1.5 rounded-lg accent-bg text-sm"
+                      aria-label="Open scanner"
+                    >
+                      Scan
+                    </button>
+                    <button
+                      onClick={async () => { await signOut(auth); }}
+                      className="px-3 py-1.5 rounded-lg bg-zinc-200 dark:bg-zinc-800 hover:bg-zinc-300 dark:hover:bg-zinc-700 text-sm"
+                      aria-label="Sign out"
+                    >
+                      Sign out
+                    </button>
                   </div>
                 </div>
               </header>
 
               <div className="max-w-7xl mx-auto px-4 py-4">
+                {/* Tabs */}
                 <div className="flex flex-wrap gap-2 mb-4">
                   {[
                     ["dashboard", "Dashboard"],
@@ -514,6 +752,8 @@ export default function App() {
                     <button
                       key={key}
                       onClick={() => setActiveTab(key)}
+                      onMouseEnter={() => prefetchers[key]?.()}
+                      onFocus={() => prefetchers[key]?.()}
                       className={`px-3 py-1.5 rounded-full text-sm border ${
                         activeTab === key
                           ? "accent-chip"
@@ -525,149 +765,158 @@ export default function App() {
                   ))}
                 </div>
 
-                {activeTab === "dashboard" && (
-                  <>
-                    <div className="mb-4 flex items-center gap-2">
-                      <input
-                        type="text"
-                        value={filter}
-                        onChange={(e) => setFilter(e.target.value)}
-                        placeholder="Search grows…"
-                        className="w-full sm:w-72 rounded-lg border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-900 px-3 py-2"
-                      />
-                      <button
-                        className="px-3 py-2 rounded-lg bg-zinc-200 dark:bg-zinc-800 hover:bg-zinc-300 dark:hover:bg-zinc-700 text-sm"
-                        onClick={() => setEditingGrow({})}
-                      >
-                        + New Grow
-                      </button>
-                    </div>
+                {/* Lazy-loaded tab content */}
+                <Suspense fallback={tabFallback}>
+                  {activeTab === "dashboard" && (
+                    <>
+                      <div className="mb-4 flex items-center gap-2">
+                        <input
+                          type="text"
+                          value={filter}
+                          onChange={(e) => setFilter(e.target.value)}
+                          placeholder="Search grows…"
+                          className="w-full sm:w-72 rounded-lg border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-900 px-3 py-2"
+                        />
+                        <button
+                          className="px-3 py-2 rounded-lg bg-zinc-200 dark:bg-zinc-800 hover:bg-zinc-300 dark:hover:bg-zinc-700 text-sm"
+                          onClick={() => setEditingGrow({})}
+                        >
+                          + New Grow
+                        </button>
+                      </div>
 
-                    <div className="space-y-6">
-                      <DashboardStats
-                        grows={grows}
-                        recipes={recipes}
-                        supplies={supplies}
-                        loading={
-                          grows === undefined ||
-                          recipes === undefined ||
-                          supplies === undefined
-                        }
-                      />
+                      <div className="space-y-6">
+                        <DashboardStats
+                          grows={grows}
+                          recipes={recipes}
+                          supplies={supplies}
+                          loading={
+                            grows === undefined ||
+                            recipes === undefined ||
+                            supplies === undefined
+                          }
+                        />
 
-                      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-                        <div className="bg-white dark:bg-zinc-900 rounded-2xl shadow p-4">
-                          <GrowList
-                            grows={filteredGrows}
-                            setGrows={setRawGrows}
-                            setEditingGrow={setEditingGrow}
-                            showAddButton={false}
-                          />
-                        </div>
-                        <div className="bg-white dark:bg-zinc-900 rounded-2xl shadow p-4">
-                          <h2 className="text-lg font-semibold mb-3">Photos</h2>
-                          <PhotoUpload
-                            grows={activeGrowsBase}
-                            photosByGrow={photosByGrow}
-                            onUpload={onUploadPhoto}
-                          />
+                        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                          <div className="bg-white dark:bg-zinc-900 rounded-2xl shadow p-4">
+                            <GrowList
+                              grows={filteredGrows}
+                              setGrows={setRawGrows}
+                              setEditingGrow={setEditingGrow}
+                              showAddButton={false}
+                            />
+                          </div>
+
+                          <div className="bg-white dark:bg-zinc-900 rounded-2xl shadow p-4">
+                            <h2 className="text-lg font-semibold mb-3">Photos</h2>
+
+                            {/* PhotoUpload (lazy) with its own fallback */}
+                            <Suspense fallback={<PhotoUploadSkeleton />}>
+                              <PhotoUpload
+                                grows={activeGrowsBase}
+                                photosByGrow={photosByGrow}
+                                onUpload={onUploadPhoto}
+                              />
+                            </Suspense>
+                          </div>
                         </div>
                       </div>
+                    </>
+                  )}
+
+                  {activeTab === "tasks" && (
+                    <div className="bg-white dark:bg-zinc-900 rounded-2xl shadow p-4">
+                      <TaskManager
+                        tasks={Array.isArray(tasks) ? tasks : []}
+                        onCreate={onCreateTask}
+                        onUpdate={onUpdateTask}
+                        onDelete={onDeleteTask}
+                      />
                     </div>
-                  </>
-                )}
+                  )}
 
-                {activeTab === "tasks" && (
-                  <div className="bg-white dark:bg-zinc-900 rounded-2xl shadow p-4">
-                    <TaskManager
+                  {activeTab === "analytics" && (
+                    <Analytics
+                      grows={grows}
+                      recipes={Array.isArray(recipes) ? recipes : []}
+                      supplies={Array.isArray(supplies) ? supplies : []}
                       tasks={Array.isArray(tasks) ? tasks : []}
-                      onCreate={onCreateTask}
-                      onUpdate={onUpdateTask}
-                      onDelete={onDeleteTask}
                     />
-                  </div>
-                )}
+                  )}
 
-                {activeTab === "analytics" && (
-                  <Analytics
-                    grows={grows}
-                    recipes={Array.isArray(recipes) ? recipes : []}
-                    supplies={Array.isArray(supplies) ? supplies : []}
-                    tasks={Array.isArray(tasks) ? tasks : []}
-                  />
-                )}
+                  {activeTab === "calendar" && (
+                    <CalendarView grows={grows} tasks={Array.isArray(tasks) ? tasks : []} />
+                  )}
 
-                {activeTab === "calendar" && (
-                  <CalendarView grows={grows} tasks={Array.isArray(tasks) ? tasks : []} />
-                )}
+                  {activeTab === "timeline" && (
+                    <div className="bg-white dark:bg-zinc-900 rounded-2xl shadow p-4">
+                      <GrowTimeline
+                        grows={grows}
+                        onUpdateStage={onUpdateStage}
+                        onUpdateStageDate={onUpdateStageDate}
+                        notesByGrowStage={notesByGrowStage}
+                        photosByGrowStage={photosByGrowStage}
+                        onAddNote={onAddNote}
+                        onUploadStagePhoto={onUploadStagePhoto}
+                      />
+                    </div>
+                  )}
 
-                {activeTab === "timeline" && (
-                  <div className="bg-white dark:bg-zinc-900 rounded-2xl shadow p-4">
-                    <GrowTimeline
-                      grows={grows}
-                      onUpdateStage={onUpdateStage}
-                      onUpdateStageDate={onUpdateStageDate}
-                      notesByGrowStage={notesByGrowStage}
-                      photosByGrowStage={photosByGrowStage}
-                      onAddNote={onAddNote}
-                      onUploadStagePhoto={onUploadStagePhoto}
+                  {activeTab === "cog" && (
+                    <div className="bg-white dark:bg-zinc-900 rounded-2xl shadow p-4">
+                      <COGManager />
+                    </div>
+                  )}
+
+                  {activeTab === "recipes" && (
+                    <div className="bg-white dark:bg-zinc-900 rounded-2xl shadow p-4">
+                      <RecipeManager />
+                    </div>
+                  )}
+
+                  {activeTab === "strains" && (
+                    <div className="bg-white dark:bg-zinc-900 rounded-2xl shadow p-4">
+                      <StrainManager
+                        strains={Array.isArray(strains) ? strains : []}
+                        grows={grows}
+                        onCreateStrain={onCreateStrain}
+                        onUpdateStrain={onUpdateStrain}
+                        onDeleteStrain={onDeleteStrain}
+                        onUploadStrainImage={onUploadStrainImage}
+                      />
+                    </div>
+                  )}
+
+                  {activeTab === "labels" && (
+                    <div className="bg-white dark:bg-zinc-900 rounded-2xl shadow p-4">
+                      <LabelPrintWrapper grows={grows} prefs={prefs} />
+                    </div>
+                  )}
+
+                  {activeTab === "archive" && (
+                    <div className="bg-white dark:bg-zinc-900 rounded-2xl shadow p-4">
+                      <Archive grows={grows} />
+                    </div>
+                  )}
+
+                  {activeTab === "settings" && (
+                    <Settings
+                      /* compatibility with either Settings.jsx version */
+                      preferences={prefs}
+                      prefs={prefs}
+                      onSaved={() => {}}
+                      onSavePrefs={savePrefs}
+                      applyAppearance={applyAppearance}
                     />
-                  </div>
-                )}
+                  )}
+                </Suspense>
 
-                {activeTab === "cog" && (
-                  <div className="bg-white dark:bg-zinc-900 rounded-2xl shadow p-4">
-                    <COGManager />
-                  </div>
-                )}
-
-                {activeTab === "recipes" && (
-                  <div className="bg-white dark:bg-zinc-900 rounded-2xl shadow p-4">
-                    <RecipeManager />
-                  </div>
-                )}
-
-                {activeTab === "strains" && (
-                  <div className="bg-white dark:bg-zinc-900 rounded-2xl shadow p-4">
-                    <StrainManager
-                      strains={Array.isArray(strains) ? strains : []}
-                      grows={grows}
-                      onCreateStrain={onCreateStrain}
-                      onUpdateStrain={onUpdateStrain}
-                      onDeleteStrain={onDeleteStrain}
-                      onUploadStrainImage={onUploadStrainImage}
-                    />
-                  </div>
-                )}
-
-                {activeTab === "labels" && (
-                  <div className="bg-white dark:bg-zinc-900 rounded-2xl shadow p-4">
-                    <LabelPrintWrapper grows={grows} prefs={prefs} />
-                  </div>
-                )}
-
-                {activeTab === "archive" && (
-                  <div className="bg-white dark:bg-zinc-900 rounded-2xl shadow p-4">
-                    <Archive grows={grows} />
-                  </div>
-                )}
-
-                {activeTab === "settings" && (
-                  <Settings
-                    /* compatibility with either Settings.jsx version */
-                    preferences={prefs}
-                    prefs={prefs}
-                    onSaved={() => {}}
-                    onSavePrefs={savePrefs}
-                    applyAppearance={applyAppearance}
-                  />
-                )}
+                {/* Onboarding lives inside the root element */}
+                <OnboardingModal
+                  visible={showOnboarding}
+                  onClose={() => setShowOnboarding(false)}
+                />
               </div>
-
-              <OnboardingModal
-                visible={showOnboarding}
-                onClose={() => setShowOnboarding(false)}
-              />
             </div>
           }
         />

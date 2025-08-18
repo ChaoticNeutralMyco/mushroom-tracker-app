@@ -1,11 +1,15 @@
-name: Tauri Desktop Release (Windows)
+name: Tauri Desktop Release
 
 on:
   push:
-    tags: [ "v*" ]   # trigger on v1.2.3-style tags
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
 
 jobs:
-  build-windows:
+  build:
     runs-on: windows-latest
 
     steps:
@@ -17,45 +21,24 @@ jobs:
         with:
           node-version: "20"
 
-      - name: Setup Rust (stable)
+      - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
-
-      - name: Cache Cargo
-        uses: actions/cache@v4
         with:
-          path: |
-            ~/.cargo/bin/
-            ~/.cargo/registry/index/
-            ~/.cargo/registry/cache/
-            ~/.cargo/git/db/
-            src-tauri/target/
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: ${{ runner.os }}-cargo-
+          toolchain: stable
 
-      - name: Install JS deps & build web
-        run: |
-          npm ci
-          npm run build
+      - name: Install frontend deps
+        run: npm ci
 
-      # Build MSI using your src-tauri + dist output
-      - name: Build Tauri (MSI)
+      - name: Build Tauri (sign + create GitHub Release)
         uses: tauri-apps/tauri-action@v0
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }} # provided by GitHub; no setup needed
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_PRIVATE_KEY: ${{ secrets.TAURI_PRIVATE_KEY }}
+          TAURI_KEY_PASSWORD: ${{ secrets.TAURI_KEY_PASSWORD }}
         with:
-          projectPath: .
-          distPath: dist
-          args: --bundles msi
-
-      # Upload artifacts for CI browsing
-      - name: Upload MSI Artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: tauri-msi
-          path: src-tauri/target/**/bundle/msi/*.msi
-
-      # Create or update a GitHub Release and attach the MSI
-      - name: Attach MSI to Release
-        uses: softprops/action-gh-release@v2
-        with:
-          files: src-tauri/target/**/bundle/msi/*.msi
+          tagName: ${{ github.ref_name }}
+          releaseName: "Desktop ${{ github.ref_name }}"
+          releaseBody: "Auto-generated desktop build."
+          releaseDraft: false
+          prerelease: false
+          tauriScript: "tauri"
