@@ -14,6 +14,12 @@ jobs:
   e2e:
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    env:
+      # Vite uses this in your config to set the GH Pages base during CI
+      CI: true
+      # Pass login creds to tests (set these as repo secrets)
+      E2E_AUTH_EMAIL: ${{ secrets.E2E_AUTH_EMAIL }}
+      E2E_AUTH_PASSWORD: ${{ secrets.E2E_AUTH_PASSWORD }}
 
     steps:
       - name: Checkout
@@ -32,9 +38,6 @@ jobs:
         run: npx playwright install --with-deps
 
       - name: Run E2E tests
-        env:
-          # CI=true makes vite.config.js use the GH Pages base, which your Playwright config handles
-          CI: true
         run: npm run test:e2e
 
       - name: Upload Playwright report (always)
