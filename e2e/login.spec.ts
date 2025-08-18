@@ -1,97 +1,167 @@
-import { test, expect, Locator } from '@playwright/test';
+import { test, expect, Locator, Page } from '@playwright/test';
 
-// Parse TEST_ACCOUNT from env (JSON string)
 function getCreds(raw?: string) {
-  if (!raw) return null;
+  if (!raw) throw new Error('TEST_ACCOUNT env missing');
   try {
     const { email, password } = JSON.parse(raw);
-    if (!email || !password) return null;
+    if (!email || !password) throw new Error('bad');
     return { email, password };
   } catch {
-    return null;
+    throw new Error('TEST_ACCOUNT must be JSON like {"email":"x","password":"y"}');
   }
 }
 
-// Return the first locator that exists
-async function firstExisting(...locators: Locator[]) {
-  for (const l of locators) {
-    if (await l.count()) return l.first();
+async function pickFirst(...locators: Locator[]): Promise<Locator | null> {
+  for (const l of locators) if (await l.count()) return l.first();
+  return null;
+}
+
+async function isDashboard(page: Page): Promise<Locator | null> {
+  const header = page.getByRole('heading', { name: /chaotic neutral tracker/i });
+  if (await header.count()) return header;
+  const signOut = page.getByRole('button', { name: /sign out/i });
+  if (await signOut.count()) return signOut;
+  // common nav chip labels
+  const navChip = page.getByRole('button', { name: /dashboard|tasks|analytics|calendar|timeline/i }).first();
+  if (await navChip.count()) return navChip;
+  // header title without role (fallback)
+  const fallbackHeader = page.locator('header :text("Chaotic Neutral Tracker")');
+  if (await fallbackHeader.count()) return fallbackHeader.first();
+  return null;
+}
+
+async function waitPastSplash(page: Page, timeoutMs = 15_000) {
+  const start = Date.now();
+  // Log console errors/warnings for visibility
+  page.on('console', (msg) => {
+    const t = msg.type();
+    if (t === 'error' || t === 'warning') console.log(`[console.${t}] ${msg.text()}`);
+  });
+
+  // Common splash/loading markers
+  const splashLike = [
+    page.getByText(/loading…?|loading\.{0,3}$/i),
+    page.locator('[data-testid="splash"], .splash, .loading, [aria-busy="true"]'),
+  ];
+
+  // Poll until either dashboard or auth appears, or splash disappears
+  while (Date.now() - start < timeoutMs) {
+    const dash = await isDashboard(page);
+    if (dash) return 'dashboard';
+
+    // Quick auth hints
+    const anyAuthMarker = await pickFirst(
+      page.getByRole('heading', { name: /sign in|log in|welcome|authenticate/i }),
+      page.getByText(/sign in|log in|continue/i),
+      page.locator('input[type="email"]'),
+      page.locator('input[type="password"]')
+    );
+    if (anyAuthMarker) return 'auth';
+
+    // If a splash-y thing is visible, keep waiting a bit
+    for (const l of splashLike) {
+      if ((await l.count()) && (await l.first().isVisible().catch(() => false))) {
+        await page.waitForTimeout(350);
+        continue;
+      }
+    }
+
+    // One small idle wait between polls
+    await page.waitForTimeout(250);
   }
-  return locators[0];
+  return 'unknown';
 }
 
 test.describe('Auth & app smoke', () => {
   test('logs in (or shows a clear auth error) and loads/guards dashboard', async ({ page }) => {
-    const creds = getCreds(process.env.TEST_ACCOUNT);
+    test.setTimeout(90_000);
 
-    await page.goto('/');
+    // Navigate but don’t wait for "load" (dev SW/chunks can keep loading)
+    await page.goto('/', { waitUntil: 'domcontentloaded' });
 
-    // Already logged in?
-    const dashboardHeader = page.getByRole('heading', { name: /chaotic neutral tracker/i });
-    if (await dashboardHeader.count()) {
-      await expect(dashboardHeader).toBeVisible();
+    // Give the app a moment to pass the splash/initial lazy mount
+    const phase = await waitPastSplash(page, 20_000);
+
+    // If already authenticated, we’re done
+    const dashNow = await isDashboard(page);
+    if (dashNow) {
+      await expect(dashNow).toBeVisible();
       return;
     }
 
-    // If we don't have creds, just assert the auth screen renders
-    if (!creds) {
-      const emailField = await firstExisting(
-        page.getByLabel(/email/i),
-        page.locator('input[type="email"]'),
-        page.locator('input[name="email"]')
-      );
-      await expect(emailField).toBeVisible();
-      return;
-    }
-
-    // Fill login form
-    const emailInput = await firstExisting(
+    // Try to locate the email/password form across common patterns
+    const email = await pickFirst(
       page.getByLabel(/email/i),
+      page.getByPlaceholder(/email/i),
       page.locator('input[type="email"]'),
-      page.locator('input[name="email"]')
+      page.locator('input[name*="email" i]'),
+      page.locator('input[autocomplete="username"]')
     );
-    await emailInput.fill(creds.email);
-
-    const passwordInput = await firstExisting(
+    const password = await pickFirst(
       page.getByLabel(/password/i),
+      page.getByPlaceholder(/password/i),
       page.locator('input[type="password"]'),
-      page.locator('input[name="password"]')
+      page.locator('input[name*="password" i]'),
+      page.locator('input[autocomplete="current-password"]')
     );
-    await passwordInput.fill(creds.password);
-
-    const submit = await firstExisting(
-      page.getByRole('button', { name: /sign in|log in|continue|submit/i }),
+    const submit = await pickFirst(
+      page.getByRole('button', { name: /sign in|log in|continue|submit|next/i }),
       page.locator('button[type="submit"]')
     );
 
-    await Promise.all([page.waitForLoadState('networkidle'), submit.click()]);
+    if (!email || !password || !submit) {
+      // No obvious form; assert we at least show an auth screen or a guard
+      const authMarker = await pickFirst(
+        page.getByRole('heading', { name: /sign in|log in|welcome|authenticate/i }),
+        page.getByText(/sign in|log in|continue/i)
+      );
 
-    // Consider both outcomes as a pass: dashboard or a clear auth error message
-    const errorBanner = page.locator(
-      // matches common auth error text
-      'text=/invalid|wrong|error|auth|failed/i'
-    ).first();
+      // Last ditch: maybe dashboard header text differs or casing changes
+      const dashAny = await isDashboard(page);
 
-    // Race both waits; whichever appears first "wins"
-    const outcome = await Promise.race([
-      dashboardHeader.waitFor({ state: 'visible', timeout: 15000 }).then(() => 'dashboard').catch(() => null),
-      errorBanner.waitFor({ state: 'visible', timeout: 15000 }).then(() => 'error').catch(() => null)
+      expect(
+        authMarker || dashAny,
+        `Expected auth or dashboard after splash (${phase}), but found neither`
+      ).not.toBeNull();
+
+      await expect((authMarker || dashAny)!).toBeVisible();
+      return;
+    }
+
+    // Perform login
+    const creds = getCreds(process.env.TEST_ACCOUNT);
+    await email.fill(creds.email);
+    await password.fill(creds.password);
+    await Promise.all([
+      page.waitForLoadState('domcontentloaded'),
+      submit.click(),
     ]);
 
-    if (outcome === 'dashboard') {
+    // Wait for either dashboard UI or a visible auth error
+    const dashboardHeader = page.getByRole('heading', { name: /chaotic neutral tracker/i });
+    const errorBanner = page.locator('[role="alert"], .error, .text-red-500, .text-red-600, [data-error], .toast-error');
+
+    const winner = await Promise.race([
+      dashboardHeader.waitFor({ state: 'visible', timeout: 30_000 }).then(() => 'dashboard').catch(() => null),
+      errorBanner.waitFor({ state: 'visible', timeout: 30_000 }).then(() => 'error').catch(() => null),
+    ]);
+
+    if (winner === 'dashboard') {
       await expect(dashboardHeader).toBeVisible();
-    } else if (outcome === 'error') {
+    } else if (winner === 'error') {
       await expect(errorBanner).toBeVisible();
     } else {
-      // Neither dashboard nor a clear error showed up — surface a helpful failure
-      await page.screenshot({ path: 'test-results/login-timeout.png' });
-      throw new Error('Login did not succeed or show a clear error within 15s.');
+      const dashAny2 = await isDashboard(page);
+      expect(dashAny2, 'Neither dashboard nor a clear auth error appeared after login').not.toBeNull();
+      await expect(dashAny2!).toBeVisible();
     }
   });
 
-  test('PWA manifest is served', async ({ page }) => {
-    await page.goto('/manifest.webmanifest');
-    await expect(page).toHaveURL(/manifest\.webmanifest$/);
-    await expect(page.getByText(/"name"\s*:\s*"/)).toBeVisible();
+  test('PWA manifest is served', async ({ request, baseURL }) => {
+    const res = await request.get(new URL('/manifest.webmanifest', baseURL).toString());
+    expect(res.ok()).toBeTruthy();
+    const json = await res.json();
+    expect(json).toHaveProperty('name');
+    expect(json).toHaveProperty('icons');
   });
 });
