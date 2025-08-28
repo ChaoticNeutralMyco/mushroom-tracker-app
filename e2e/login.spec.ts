@@ -158,7 +158,7 @@ test.describe('Auth & app smoke', () => {
   });
 
   test('PWA manifest is served', async ({ request, baseURL }) => {
-    const res = await request.get(new URL('/manifest.webmanifest', baseURL).toString());
+    const res = await request.get(new URL('manifest.webmanifest', baseURL).toString());
     expect(res.ok()).toBeTruthy();
     const json = await res.json();
     expect(json).toHaveProperty('name');
