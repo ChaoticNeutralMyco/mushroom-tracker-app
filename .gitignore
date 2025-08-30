@@ -48,3 +48,8 @@ Thumbs.db
 *.tar
 *.gz
 Myco Tracker App.zip
+
+# Playwright reports
+playwright-report/
+playwright-report-ci/
+
