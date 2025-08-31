@@ -1,11 +1,21 @@
 ﻿# Node / Vite
 node_modules/
 dist/
-.vite/
 dev-dist/
+.vite/
+.vs/
+
+# Local caches / build outputs
+.deploy/
+deploy/
+.vercel/
+.next/
+.cache/
+coverage/
 
 # Playwright
 playwright-report/
+playwright-report-ci/
 test-results/
 
 # Logs
@@ -15,30 +25,10 @@ pnpm-debug.log*
 
 # Env (keep examples)
 .env
-.env.*
+.env.*.local
 !.env.example
 
-# Vercel
-.vercel/
-
-# Rust / Tauri
-target/
-src-tauri/target/
-**/*.pdb
-**/*.lib
-**/*.rlib
-**/*.exe
-src-tauri/wix/*.wixobj
-src-tauri/wix/*.wixpdb
-
-# Maps & caches
-*.map
-
-# IDE
-.vscode/
-.idea/
-
-# OS
+# OS junk
 .DS_Store
 Thumbs.db
 
@@ -49,7 +39,8 @@ Thumbs.db
 *.gz
 Myco Tracker App.zip
 
-# Playwright reports
-playwright-report/
-playwright-report-ci/
+# IDE
+*.code-workspace
 
+# Project-specific stray folder (duplicate old root files)
+Main Root Files/
