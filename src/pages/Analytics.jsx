@@ -10,7 +10,6 @@ function isActiveGrow(g) {
   const s = String(g?.stage || "").toLowerCase();
   const status = String(g?.status || "").toLowerCase();
 
-  // archive/finish markers (support many possible field names)
   const archivedLike =
     g?.archived === true ||
     g?.isArchived === true ||
@@ -39,9 +38,8 @@ function isActiveGrow(g) {
 
   if (archivedLike || consumedLike || contaminatedLike || finishedLike) return false;
   if (g?.active === false) return false;
-  if (g?.active === true) return true; // explicit override
+  if (g?.active === true) return true;
 
-  // Positive set of stages that we consider active
   return ["inoculated", "colonizing", "colonized", "fruiting"].includes(s);
 }
 
@@ -112,20 +110,23 @@ function getRefDate(g) {
 /* ---------- component ---------- */
 /**
  * Props:
- *  - grows:           array
- *  - activeGrows:     array of *active* grows (optional, preferred for stage pie)
- *  - archivedGrows:   array of archived grows (used for non-pie charts)
- *  - recipes, supplies: kept for future cross-refs
+ *  - grows, activeGrows, archivedGrows   (existing)
+ *  - growsActive, growsAll               (new, from App)
+ *  - recipes, supplies, tasks
  */
 export default function Analytics({
   grows = [],
   activeGrows = null,
+  growsActive = null,
   archivedGrows = [],
+  growsAll = null,
   recipes = [],
   supplies = [],
+  tasks = [],
 }) {
   const [chartKey, setChartKey] = useState("avgYieldPerStrain");
   const [showValues, setShowValues] = useState(true);
+  const [showAll, setShowAll] = useState(false);
 
   // Filters (strain + date)
   const allStrainOptions = useMemo(() => {
@@ -154,6 +155,22 @@ export default function Analytics({
     return Array.from(byId.values());
   }, [grows, archivedGrows]);
 
+  // Toggle sources
+  const datasetActive = useMemo(
+    () => (
+      Array.isArray(growsActive) ? growsActive
+      : Array.isArray(activeGrows) ? activeGrows
+      : Array.isArray(grows) ? grows.filter(isActiveGrow)
+      : []
+    ),
+    [growsActive, activeGrows, grows]
+  );
+
+  const datasetAll = useMemo(
+    () => (Array.isArray(growsAll) ? growsAll : allGrows),
+    [growsAll, allGrows]
+  );
+
   // Filter predicate (strain/date)
   const filterPredicate = useMemo(() => {
     const wantStrain = strainFilter !== "All strains" ? String(strainFilter) : null;
@@ -170,17 +187,17 @@ export default function Analytics({
   }, [strainFilter, fromDate, toDate]);
 
   /* ===== Stage pie source ===== */
-  const activeSource = useMemo(
-    () => (Array.isArray(activeGrows) ? activeGrows : (Array.isArray(grows) ? grows : [])),
-    [activeGrows, grows]
-  );
+  const activeSource = useMemo(() => datasetActive, [datasetActive]);
   const activeFiltered = useMemo(
     () => activeSource.filter(isActiveGrow).filter(filterPredicate),
     [activeSource, filterPredicate]
   );
-  const filteredAll = useMemo(() => allGrows.filter(filterPredicate), [allGrows, filterPredicate]);
+  const filteredAll = useMemo(
+    () => (showAll ? datasetAll : datasetActive).filter(filterPredicate),
+    [showAll, datasetAll, datasetActive, filterPredicate]
+  );
 
-  // NEW: tiny active-only overview (cards)
+  // Tiny active-only overview (cards)
   const overview = useMemo(() => {
     const totalActive = activeFiltered.length;
     const uniqueStrains = new Set(activeFiltered.map((g) => g.strain || "Unknown")).size;
@@ -286,7 +303,7 @@ export default function Analytics({
     };
   }, [activeFiltered, filteredAll]);
 
-  // CSV export
+  // CSV export (existing)
   const exportCSV = () => {
     const lines = [
       "Type,Name,ValueA,ValueB",
@@ -301,6 +318,35 @@ export default function Analytics({
     const a = document.createElement("a");
     a.href = URL.createObjectURL(blob);
     a.download = "analytics.csv";
+    a.click();
+    URL.revokeObjectURL(a.href);
+  };
+
+  // NEW: JSON backup export
+  const exportJSON = () => {
+    const chosenGrows = showAll ? datasetAll : datasetActive;
+    const payload = {
+      app: "Mushroom Tracker",
+      schemaVersion: 1,
+      exportedAt: new Date().toISOString(),
+      dataset: showAll ? "all" : "active",
+      counts: {
+        grows: Array.isArray(chosenGrows) ? chosenGrows.length : 0,
+        tasks: Array.isArray(tasks) ? tasks.length : 0,
+        recipes: Array.isArray(recipes) ? recipes.length : 0,
+        supplies: Array.isArray(supplies) ? supplies.length : 0,
+      },
+      data: {
+        grows: Array.isArray(chosenGrows) ? chosenGrows : [],
+        tasks: Array.isArray(tasks) ? tasks : [],
+        recipes: Array.isArray(recipes) ? recipes : [],
+        supplies: Array.isArray(supplies) ? supplies : [],
+      },
+    };
+    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = `myco-backup-${payload.dataset}-${new Date().toISOString().slice(0,10)}.json`;
     a.click();
     URL.revokeObjectURL(a.href);
   };
@@ -415,7 +461,7 @@ export default function Analytics({
 
   return (
     <div className="space-y-4 p-4 bg-white dark:bg-zinc-900 rounded-2xl shadow">
-      {/* NEW: active-only overview cards */}
+      {/* overview cards */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
         <StatCard label="Active Grows" value={overview.totalActive} />
         <StatCard label="Unique Strains" value={overview.uniqueStrains} />
@@ -424,6 +470,7 @@ export default function Analytics({
       </div>
 
       <div className="flex flex-wrap items-center gap-2">
+        {/* Left controls */}
         <select
           className="rounded-lg border border-gray-300 dark:border-zinc-700 bg-white dark:bg-zinc-800 text-gray-900 dark:text-white px-3 py-2"
           value={chartKey}
@@ -478,12 +525,46 @@ export default function Analytics({
           Show values
         </label>
 
-        <button
-          onClick={exportCSV}
-          className="ml-auto px-3 py-2 rounded-lg bg-emerald-600 text-white hover:bg-emerald-700"
-        >
-          Export CSV
-        </button>
+        {/* Right-side controls (dataset toggle + exports) */}
+        <div className="ml-auto flex items-center gap-2">
+          <div className="inline-flex items-center gap-0 rounded-lg overflow-hidden border border-zinc-300 dark:border-zinc-700">
+            <span className="px-2 py-2 text-xs uppercase tracking-wide bg-zinc-100 dark:bg-zinc-800 text-zinc-700 dark:text-zinc-300 border-r border-zinc-300 dark:border-zinc-700 select-none">Dataset</span>
+            <button
+              type="button"
+              onClick={() => setShowAll(false)}
+              className={`px-3 py-2 text-sm border-r border-zinc-300 dark:border-zinc-700 ${!showAll ? "bg-emerald-600 text-white" : "bg-white text-zinc-900 dark:bg-zinc-900 dark:text-zinc-200"}`}
+              aria-pressed={!showAll}
+              title="Show only active grows"
+            >
+              Active only
+            </button>
+            <button
+              type="button"
+              onClick={() => setShowAll(true)}
+              className={`px-3 py-2 text-sm ${showAll ? "bg-emerald-600 text-white" : "bg-white text-zinc-900 dark:bg-zinc-900 dark:text-zinc-200"}`}
+              aria-pressed={showAll}
+              title="Include archived and contaminated"
+            >
+              All
+            </button>
+          </div>
+
+          <button
+            onClick={exportCSV}
+            className="px-3 py-2 rounded-lg bg-emerald-600 text-white hover:bg-emerald-700"
+          >
+            Export CSV
+          </button>
+
+          {/* NEW: Export JSON */}
+          <button
+            onClick={exportJSON}
+            className="px-3 py-2 rounded-lg bg-zinc-800 text-white hover:bg-zinc-700 border border-zinc-700"
+            title="Export grows, tasks, recipes, supplies as JSON"
+          >
+            Export JSON
+          </button>
+        </div>
       </div>
 
       <div className="text-xs opacity-60">

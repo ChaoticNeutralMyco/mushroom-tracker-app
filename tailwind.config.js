@@ -1,23 +1,16 @@
-// tailwind.config.js (ESM)
 /** @type {import('tailwindcss').Config} */
-export default {
-  content: ["./index.html", "./src/**/*.{js,jsx,ts,tsx,html}"],
-  darkMode: "class",
+module.exports = {
+  // IMPORTANT: use the 'dark' class on <html> to switch themes
+  darkMode: 'class',
+  content: [
+    './index.html',
+    './src/**/*.{js,jsx,ts,tsx}',
+  ],
   theme: {
     extend: {
-      colors: {
-        pastel: {
-          bg: "#fef6fb",
-          card: "#ffeaf1",
-          text: "#542c3e"
-        },
-        contrast: {
-          bg: "#000000",
-          card: "#1a1a1a",
-          text: "#ffffff"
-        }
-      }
-    }
+      // You can later map your accent via CSS variables if you want
+      // and read from document.documentElement.dataset.accent
+    },
   },
-  plugins: []
+  plugins: [],
 };

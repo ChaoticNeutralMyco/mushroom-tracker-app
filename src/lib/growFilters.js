@@ -1,100 +1,73 @@
 // src/lib/growFilters.js
 
-/** Is this a bulk run? */
-export function isBulkGrow(g) {
-  if (g?.isBulk === true) return true;
-  const t = String(g?.type || g?.growType || g?.container || "").toLowerCase();
-  return t.includes("bulk") || t.includes("tub") || t.includes("monotub");
-}
-
-/** Is this a consumable seed culture (LC/agar/grain jar/etc)? */
-export function isConsumableType(g) {
-  const t = String(g?.type || g?.growType || g?.container || "").toLowerCase();
+/** Identify bulk runs (best-effort; covers your data shapes). */
+export function isBulkGrow(g = {}) {
+  const v = String(g?.growType || g?.type || "").toLowerCase();
   return (
-    t.includes("grain") ||
-    t.includes("jar") ||    // e.g. "grain jar"
-    t.includes("lc") ||
-    t.includes("liquid") ||
-    t.includes("agar") ||
-    t.includes("plate") ||
-    t.includes("slant")
+    g?.isBulk === true ||
+    v.includes("bulk") ||
+    v.includes("tub") ||
+    v.includes("bag")
   );
 }
 
-function numOrNull(v) {
-  const n = Number(v);
-  return Number.isFinite(n) ? n : null;
-}
-function firstNumber(values) {
-  for (const v of values) {
-    const n = numOrNull(v);
-    if (n !== null) return n;
-  }
-  return null;
-}
+/** Matches the Archive page’s heuristic (plus a couple synonyms). */
+export function isArchivedish(g = {}) {
+  const stage = String(g?.stage || "").toLowerCase();
+  const status = String(g?.status || "").toLowerCase();
 
-/**
- * Unified "active grows" filter used by cards/stats/searches.
- * - hides explicit archived/contaminated/inactive
- * - hides harvested bulk
- * - hides seed cultures that are empty/consumed
- */
-export function isActiveGrow(g) {
-  if (!g) return false;
+  const archivedLike =
+    g?.archived === true ||
+    g?.isArchived === true ||
+    !!g?.archivedAt ||
+    !!g?.archived_on ||
+    !!g?.archivedOn ||
+    stage === "archived" ||
+    status === "archived";
 
-  // Explicit inactive markers
-  if (g.archived === true) return false;
-  const status = String(g.status || "").toLowerCase();
-  if (status === "archived" || status === "contaminated") return false;
-  if (g.active === false) return false;
+  const contaminatedLike =
+    g?.contaminated === true ||
+    g?.isContaminated === true ||
+    status === "contaminated" ||
+    stage === "contaminated";
 
-  // Bulk: not active once harvested
-  if (isBulkGrow(g) && String(g.stage || "").toLowerCase() === "harvested") {
-    return false;
-  }
+  // Many apps record “consumed” by zeroing inventory, but support it if flagged:
+  const consumedLike =
+    g?.consumed === true ||
+    g?.isConsumed === true ||
+    status === "consumed" ||
+    stage === "consumed";
 
-  // Seed cultures: not active when empty/consumed
-  if (isConsumableType(g)) {
-    const remaining =
-      firstNumber([
-        g.amountAvailable,
-        g.unitsRemaining,
-        g.volumeRemaining,
-        g.jarsRemaining,
-      ]) ?? Infinity;
-    if (remaining <= 0) return false;
-    if (g.empty || g.consumed || g.usedUp) return false;
-  }
+  const harvestedLike = stage === "harvested" || stage === "finished";
 
-  return true;
+  // Emptied jars/bags (your Archive page treats amountAvailable <= 0 as archived)
+  const zeroInventory = Number(g?.amountAvailable ?? Infinity) <= 0;
+
+  return (
+    archivedLike ||
+    contaminatedLike ||
+    consumedLike ||
+    harvestedLike ||
+    zeroInventory
+  );
 }
 
-/**
- * Timeline visibility: slightly looser than isActiveGrow.
- * Keep bulk grows visible even at Harvested so user can add flushes
- * and click "Finish harvest & Archive" on the Timeline.
- */
-export function isTimelineVisible(g) {
-  if (!g) return false;
+/** “Active” = not archived-ish. */
+export function isActiveGrow(g = {}) {
+  if (isArchivedish(g)) return false;
+  if (g?.active === true) return true;
+  if (g?.active === false) return false;
 
-  if (g.archived === true) return false;
-  const status = String(g.status || "").toLowerCase();
-  if (status === "archived" || status === "contaminated") return false;
-  if (g.active === false) return false;
+  const stage = String(g?.stage || "").toLowerCase();
+  return ["inoculated", "colonizing", "colonized", "fruiting"].includes(stage);
+}
 
-  // Seed cultures disappear once consumed/empty
-  if (isConsumableType(g)) {
-    const remaining =
-      firstNumber([
-        g.amountAvailable,
-        g.unitsRemaining,
-        g.volumeRemaining,
-        g.jarsRemaining,
-      ]) ?? Infinity;
-    if (remaining <= 0) return false;
-    if (g.empty || g.consumed || g.usedUp) return false;
+/** Convenience splitter. */
+export function partitionGrows(grows = []) {
+  const active = [];
+  const archived = [];
+  for (const g of Array.isArray(grows) ? grows : []) {
+    (isActiveGrow(g) ? active : archived).push(g);
   }
-
-  // IMPORTANT: bulk @ Harvested stays visible on Timeline
-  return true;
+  return { active, archived };
 }

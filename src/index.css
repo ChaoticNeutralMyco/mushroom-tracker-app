@@ -2,52 +2,204 @@
 @tailwind components;
 @tailwind utilities;
 
-/* Light mode defaults */
+/* ------------------------------------------------------------
+   Base theme variables (accent-only, safe to override by class)
+   Your app sets a theme-* class on <html> or <body>.
+   These set --_accent-* tokens used by components below.
+   ------------------------------------------------------------ */
 :root {
-  --background-color: #ffffff;
-  --text-color: #000000;
+  /* Fallbacks if no theme-* class is present */
+  --_accent-50:  #eef2ff;
+  --_accent-100: #e0e7ff;
+  --_accent-200: #c7d2fe;
+  --_accent-300: #a5b4fc;
+  --_accent-400: #818cf8;
+  --_accent-500: #6366f1;
+  --_accent-600: #4f46e5;
+  --_accent-700: #4338ca;
+  --_accent-800: #3730a3;
+  --_accent-900: #312e81;
+  --_accent-on:  #ffffff; /* text color on accent */
 }
 
-/* Global styles */
-html,
-body {
-  @apply font-sans min-h-screen;
-  background-color: var(--background-color);
-  color: var(--text-color);
-  transition: background-color 0.3s ease, color 0.3s ease;
+/* Emerald */
+.theme-emerald {
+  --_accent-50:  #ecfdf5;
+  --_accent-100: #d1fae5;
+  --_accent-200: #a7f3d0;
+  --_accent-300: #6ee7b7;
+  --_accent-400: #34d399;
+  --_accent-500: #10b981;
+  --_accent-600: #059669;
+  --_accent-700: #047857;
+  --_accent-800: #065f46;
+  --_accent-900: #064e3b;
+  --_accent-on:  #ffffff;
 }
 
-/* Dark mode overrides */
-html.dark,
-body.dark {
-  --background-color: #0f172a; /* Tailwind slate-900 */
-  --text-color: #ffffff;
+/* Violet */
+.theme-violet {
+  --_accent-50:  #f5f3ff;
+  --_accent-100: #ede9fe;
+  --_accent-200: #ddd6fe;
+  --_accent-300: #c4b5fd;
+  --_accent-400: #a78bfa;
+  --_accent-500: #8b5cf6;
+  --_accent-600: #7c3aed;
+  --_accent-700: #6d28d9;
+  --_accent-800: #5b21b6;
+  --_accent-900: #4c1d95;
+  --_accent-on:  #ffffff;
 }
 
-/* Optional global utility override (if not using variables) */
-body.dark {
-  @apply bg-slate-900 text-white;
+/* Amber */
+.theme-amber {
+  --_accent-50:  #fffbeb;
+  --_accent-100: #fef3c7;
+  --_accent-200: #fde68a;
+  --_accent-300: #fcd34d;
+  --_accent-400: #fbbf24;
+  --_accent-500: #f59e0b;
+  --_accent-600: #d97706;
+  --_accent-700: #b45309;
+  --_accent-800: #92400e;
+  --_accent-900: #78350f;
+  --_accent-on:  #111827; /* better contrast on amber */
 }
 
-/* Tailwind form inputs dark mode fix */
-input,
-select,
-textarea {
-  @apply text-black dark:text-white bg-white dark:bg-slate-800;
+/* Rose */
+.theme-rose {
+  --_accent-50:  #fff1f2;
+  --_accent-100: #ffe4e6;
+  --_accent-200: #fecdd3;
+  --_accent-300: #fda4af;
+  --_accent-400: #fb7185;
+  --_accent-500: #f43f5e;
+  --_accent-600: #e11d48;
+  --_accent-700: #be123c;
+  --_accent-800: #9f1239;
+  --_accent-900: #881337;
+  --_accent-on:  #ffffff;
 }
 
-/* Fix background color of buttons on dark mode */
-button {
-  @apply transition-colors;
+/* Slate (as an accent option) */
+.theme-slate {
+  --_accent-50:  #f8fafc;
+  --_accent-100: #f1f5f9;
+  --_accent-200: #e2e8f0;
+  --_accent-300: #cbd5e1;
+  --_accent-400: #94a3b8;
+  --_accent-500: #64748b;
+  --_accent-600: #475569;
+  --_accent-700: #334155;
+  --_accent-800: #1e293b;
+  --_accent-900: #0f172a;
+  --_accent-on:  #ffffff;
 }
 
-button:hover {
-  @apply brightness-110;
+/* ------------------------------------------------------------
+   Accent-aware components
+   ------------------------------------------------------------ */
+@layer components {
+  /* ---------- Chips (pills) ---------- */
+  .chip {
+    @apply inline-flex items-center gap-2 rounded-full text-sm font-medium select-none;
+    @apply px-3 py-1 border transition-colors;
+    /* Neutral base that works in light/dark */
+    background-color: rgba(0,0,0,0.03);
+    border-color: rgba(0,0,0,0.1);
+    color: inherit;
+  }
+  .dark .chip {
+    background-color: rgba(255,255,255,0.06);
+    border-color: rgba(255,255,255,0.16);
+    color: #e5e7eb; /* slate-200 */
+  }
+  .chip:hover {
+    background-color: rgba(0,0,0,0.06);
+  }
+  .dark .chip:hover {
+    background-color: rgba(255,255,255,0.1);
+  }
+
+  /* Active/selected state */
+  .chip--active,
+  .chip[aria-selected="true"],
+  .chip[data-active="true"] {
+    background-color: var(--_accent-600);
+    border-color: var(--_accent-600);
+    color: var(--_accent-on);
+  }
+  .chip--active:hover,
+  .chip[aria-selected="true"]:hover,
+  .chip[data-active="true"]:hover {
+    background-color: var(--_accent-700, var(--_accent-600));
+    border-color: var(--_accent-700, var(--_accent-600));
+  }
+
+  /* ---------- Buttons ---------- */
+  .btn {
+    @apply inline-flex items-center justify-center gap-2 rounded-lg text-sm font-medium;
+    @apply px-3.5 py-2.5 border transition-colors;
+    /* Neutral base */
+    background-color: rgba(0,0,0,0.03);
+    border-color: rgba(0,0,0,0.1);
+    color: inherit;
+  }
+  .dark .btn {
+    background-color: rgba(255,255,255,0.06);
+    border-color: rgba(255,255,255,0.16);
+    color: #e5e7eb;
+  }
+  .btn:hover {
+    background-color: rgba(0,0,0,0.06);
+  }
+  .dark .btn:hover {
+    background-color: rgba(255,255,255,0.1);
+  }
+
+  /* Primary (accent) */
+  .btn-accent {
+    background-color: var(--_accent-600);
+    border-color: var(--_accent-600);
+    color: var(--_accent-on);
+  }
+  .btn-accent:hover {
+    background-color: var(--_accent-700, var(--_accent-600));
+    border-color: var(--_accent-700, var(--_accent-600));
+  }
+
+  /* Outline (accent border, subtle hover) */
+  .btn-outline {
+    background-color: transparent;
+    border-color: var(--_accent-600);
+    color: var(--_accent-700, var(--_accent-600));
+  }
+  .btn-outline:hover {
+    /* Subtle, theme-safe hover: faint tint in light, soft veil in dark */
+    background-color: rgba(0,0,0,0.04);
+  }
+  .dark .btn-outline:hover {
+    background-color: rgba(255,255,255,0.08);
+  }
+
+  /* Disabled state */
+  .btn:disabled,
+  .chip:disabled {
+    opacity: 0.55;
+    cursor: not-allowed;
+  }
+
+  /* Focus-visible (keyboard) */
+  .btn:focus-visible,
+  .chip:focus-visible {
+    outline: 2px solid var(--_accent-600);
+    outline-offset: 2px;
+  }
 }
 
-/* === Dark Mode Calendar Visibility Fix === */
-.dark .rbc-today {
-  background-color: rgba(255, 255, 255, 0.1) !important;
-  border: 2px solid #00f7ff !important;
-  box-shadow: 0 0 6px #00f7ff80;
+/* Reduced motion */
+@media (prefers-reduced-motion: reduce) {
+  .btn,
+  .chip { transition: none !important; }
 }

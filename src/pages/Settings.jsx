@@ -1,449 +1,341 @@
-// src/pages/Settings.jsx
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
+import { auth, db } from "../firebase-config";
 import {
-  collection,
-  getDocs,
-  writeBatch,
   doc,
+  getDoc,
   setDoc,
-  serverTimestamp,
-  query,
-  where,
 } from "firebase/firestore";
-import { db, auth } from "../firebase-config";
-
-// Lives in the same folder as this file
-import ClearGrowDataButton from "./ClearGrowDataButton";
 
 /**
- * Settings Page
- * - Prop-driven for existing preferences (App.jsx owns listeners)
- * - Can use onSavePrefs (if provided) to persist + apply theme immediately
- * - Otherwise, writes directly to Firestore here
- *
- * Accepted props (supports both old/new):
- *  - preferences | prefs: object
- *  - onSaved?: function
- *  - onSavePrefs?: function
- *  - applyAppearance?: function
+ * Accent options and preview swatches (600 tone).
+ * Keep hex in sync with index.css theme-* --_accent-600 values.
  */
+const ACCENTS = [
+  { id: "emerald", label: "Emerald", hex600: "#059669" },
+  { id: "violet",  label: "Violet",  hex600: "#7c3aed" },
+  { id: "amber",   label: "Amber",   hex600: "#d97706" },
+  { id: "rose",    label: "Rose",    hex600: "#e11d48" },
+  { id: "slate",   label: "Slate",   hex600: "#475569" },
+];
+
+const MODES = [
+  { id: "system", label: "System" },
+  { id: "light",  label: "Light"  },
+  { id: "dark",   label: "Dark"   },
+];
+
+const TABS = [
+  { id: "general", label: "General" },
+  { id: "data",    label: "Data" },
+  { id: "adv",     label: "Advanced" },
+];
+
+const defaultPrefs = {
+  mode: "system",      // "system" | "light" | "dark"
+  accent: "emerald",   // matches ACCENTS ids
+};
+
+/**
+ * Apply theme classes directly (used if App-level callback not provided).
+ * - Adds .dark for dark mode
+ * - Adds one of .theme-emerald|violet|amber|rose|slate
+ */
+function applyThemeDOM(prefs) {
+  const root = document.documentElement;
+
+  // Mode
+  const mq = window.matchMedia?.("(prefers-color-scheme: dark)");
+  const isSystemDark = mq ? mq.matches : false;
+  const dark =
+    prefs.mode === "dark" || (prefs.mode === "system" && isSystemDark);
+
+  root.classList.toggle("dark", !!dark);
+
+  // Accent theme class
+  const accentClasses = [
+    "theme-emerald",
+    "theme-violet",
+    "theme-amber",
+    "theme-rose",
+    "theme-slate",
+  ];
+  accentClasses.forEach((c) => root.classList.remove(c));
+  root.classList.add(`theme-${prefs.accent || "emerald"}`);
+}
+
 export default function Settings({
-  preferences,
-  prefs,
-  onSaved,
-  onSavePrefs,
-  applyAppearance,
+  /** Optional props from App (use if provided to avoid duplicate state) */
+  preferences: externalPrefs,
+  onSavePreferences, // (nextPrefs) => void
+  // Optional callbacks for data actions (kept minimal; no-ops if absent)
+  onExportJSON,
+  onImportJSON,
+  onClearAllData,
 }) {
-  const incoming = preferences ?? prefs ?? {};
-  // ---------- Local state mirrored from props (with safe defaults) ----------
-  const [notifTime, setNotifTime] = useState("09:00");
-  const [highlightOverdue, setHighlightOverdue] = useState(true);
-  const [enableStageReminders, setEnableStageReminders] = useState(false);
+  const [activeTab, setActiveTab] = useState("general");
 
-  const [exportFormat, setExportFormat] = useState("csv");
-  const [deleteConfirmations, setDeleteConfirmations] = useState("bulk");
-  const [anonymousAnalytics, setAnonymousAnalytics] = useState(false);
+  // Internal prefs state mirrors external if provided, or loads Firestore once
+  const [prefs, setPrefs] = useState(defaultPrefs);
+  const uid = auth.currentUser?.uid || null;
 
-  const [enableBackup, setEnableBackup] = useState(false);
-  const [backupFrequency, setBackupFrequency] = useState("weekly");
-  const [backupDestination, setBackupDestination] = useState("local");
-
-  const [developerMode, setDeveloperMode] = useState(false);
-  const [showOnboardingAgain, setShowOnboardingAgain] = useState(false);
-
-  const [saving, setSaving] = useState(false);
-  const [wiping, setWiping] = useState(false);
-
-  // Hydrate from props when they arrive/update
+  // Load preferences from Firestore if no external prefs provided
   useEffect(() => {
-    if (!incoming) return;
-    setNotifTime(incoming.notifTime ?? "09:00");
-    setHighlightOverdue(!!incoming.highlightOverdue);
-    setEnableStageReminders(!!incoming.enableStageReminders);
+    let unsub = null;
+    let isMounted = true;
 
-    setExportFormat(incoming.exportFormat ?? "csv");
-    setDeleteConfirmations(incoming.deleteConfirmations ?? "bulk");
-    setAnonymousAnalytics(!!incoming.anonymousAnalytics);
+    const bootstrap = async () => {
+      if (externalPrefs) {
+        setPrefs((p) => ({ ...p, ...externalPrefs }));
+        return;
+      }
+      if (!uid) {
+        // Use localStorage fallback if signed-out view
+        try {
+          const ls = localStorage.getItem("preferences");
+          if (ls) setPrefs({ ...defaultPrefs, ...JSON.parse(ls) });
+        } catch {}
+        return;
+      }
+      // One-time fetch; App owns live listeners elsewhere
+      const ref = doc(db, "users", uid, "settings", "preferences");
+      const snap = await getDoc(ref);
+      const next = snap.exists()
+        ? { ...defaultPrefs, ...snap.data() }
+        : defaultPrefs;
 
-    setEnableBackup(!!incoming.enableBackup);
-    setBackupFrequency(incoming.backupFrequency ?? "weekly");
-    setBackupDestination(incoming.backupDestination ?? "local");
+      if (!snap.exists()) {
+        await setDoc(ref, next, { merge: true });
+      }
+      if (isMounted) setPrefs(next);
+    };
 
-    setDeveloperMode(!!incoming.developerMode);
-    setShowOnboardingAgain(!!incoming.showOnboardingAgain);
-  }, [incoming]);
+    bootstrap();
 
-  const uid = useMemo(() => auth.currentUser?.uid || null, [auth?.currentUser]);
+    return () => {
+      isMounted = false;
+      if (typeof unsub === "function") unsub();
+    };
+  }, [uid, externalPrefs]);
 
-  // Build the payload from current state
-  const buildPrefs = () => ({
-    notifTime,
-    highlightOverdue,
-    enableStageReminders,
-    exportFormat,
-    deleteConfirmations,
-    anonymousAnalytics,
-    enableBackup,
-    backupFrequency,
-    backupDestination,
-    developerMode,
-    showOnboardingAgain,
-    updatedAt: serverTimestamp(),
-  });
-
-  // ---------- Actions ----------
-  const saveSettings = async () => {
-    if (!uid) {
-      alert("You must be signed in to save settings.");
-      return;
+  // Keep DOM/theme in sync if there is no parent handler controlling it.
+  useEffect(() => {
+    if (!onSavePreferences && prefs) {
+      applyThemeDOM(prefs);
     }
-    try {
-      setSaving(true);
-      const newPrefs = buildPrefs();
+  }, [onSavePreferences, prefs]);
 
-      if (typeof onSavePrefs === "function") {
-        // Prefer App-managed save so it can also apply theme instantly
-        await onSavePrefs(newPrefs);
-        if (typeof applyAppearance === "function") {
-          // Apply locally right away for instant UI feedback
-          try {
-            const now = { ...incoming, ...newPrefs };
-            // remove serverTimestamp for local apply
-            delete now.updatedAt;
-            applyAppearance(now);
-          } catch {}
-        }
-      } else {
-        // Fallback: write directly here
-        const prefRef = doc(db, "users", uid, "settings", "preferences");
-        await setDoc(prefRef, newPrefs, { merge: true });
+  // If using system mode, react to OS change (only when not App-controlled)
+  useEffect(() => {
+    if (onSavePreferences) return;
+    const mq = window.matchMedia?.("(prefers-color-scheme: dark)");
+    if (!mq) return;
+    const handler = () => {
+      if (prefs.mode === "system") applyThemeDOM(prefs);
+    };
+    mq.addEventListener?.("change", handler);
+    return () => mq.removeEventListener?.("change", handler);
+  }, [onSavePreferences, prefs]);
+
+  const savePrefs = useCallback(
+    async (next) => {
+      setPrefs(next);
+
+      // Mirror to localStorage (fast)
+      try {
+        localStorage.setItem("preferences", JSON.stringify(next));
+      } catch {}
+
+      if (onSavePreferences) {
+        // Let App own persistence + DOM toggles to avoid double-work
+        onSavePreferences(next);
+        return;
       }
 
-      if (typeof onSaved === "function") onSaved();
-      alert("Settings saved.");
-    } catch (e) {
-      console.error(e);
-      alert(`Failed to save settings: ${e.message}`);
-    } finally {
-      setSaving(false);
-    }
-  };
+      // Local DOM update if App isn't handling it
+      applyThemeDOM(next);
 
-  // Full wipe (moves everything to Trash first, then deletes)
-  const handleClearAllData = async () => {
-    if (wiping) return;
-    const step1 = window.confirm(
-      "This will delete ALL grows, recipes, supplies and linked tasks/photos/notes. Items will be moved to Trash first. Continue?"
-    );
-    if (!step1) return;
-    const step2 = window.confirm("Are you 100% sure? This is a destructive action.");
-    if (!step2) return;
-
-    try {
-      setWiping(true);
-      if (!uid) throw new Error("Not signed in.");
-
-      const addToTrash = async (payload) => {
-        const trashRef = doc(collection(db, "users", uid, "settings", "trash"));
-        await setDoc(trashRef, {
-          ...payload,
-          deletedAt: serverTimestamp(),
-          source: "clearAllData",
-        });
-      };
-
-      // 1) Get grows (we also need to delete linked collections per grow)
-      const growsSnap = await getDocs(collection(db, "users", uid, "grows"));
-      const growIds = [];
-      for (const d of growsSnap.docs) {
-        await addToTrash({ type: "grow", id: d.id, data: d.data() });
-        growIds.push(d.id);
+      // Firestore persistence (lightweight, merge)
+      if (!uid) return;
+      try {
+        await setDoc(
+          doc(db, "users", uid, "settings", "preferences"),
+          next,
+          { merge: true }
+        );
+      } catch (e) {
+        // Non-fatal; preference still lives in localStorage and DOM
+        // console.warn("Failed to persist preferences:", e);
       }
+    },
+    [onSavePreferences, uid]
+  );
 
-      // 2) Delete linked docs for each grow (tasks, photos, notes)
-      const linked = [
-        { name: "tasks", field: "growId" },
-        { name: "photos", field: "growId" },
-        { name: "notes", field: "growId" },
-      ];
+  const setMode = useCallback(
+    (modeId) => savePrefs({ ...prefs, mode: modeId }),
+    [prefs, savePrefs]
+  );
 
-      for (const { name, field } of linked) {
-        for (const gid of growIds) {
-          const col = collection(db, "users", uid, name);
-          const snap = await getDocs(query(col, where(field, "==", gid)));
-          if (!snap.empty) {
-            let batch = writeBatch(db);
-            let count = 0;
-            for (const d of snap.docs) {
-              await addToTrash({ type: name.slice(0, -1), id: d.id, data: d.data() });
-              batch.delete(doc(db, "users", uid, name, d.id));
-              count++;
-              if (count >= 400) {
-                await batch.commit();
-                batch = writeBatch(db);
-                count = 0;
-              }
-            }
-            if (count > 0) await batch.commit();
-          }
-        }
-      }
+  const setAccent = useCallback(
+    (accentId) => {
+      // Guard unknown accents
+      const exists = ACCENTS.some((a) => a.id === accentId);
+      const next = { ...prefs, accent: exists ? accentId : "emerald" };
+      savePrefs(next);
+    },
+    [prefs, savePrefs]
+  );
 
-      // 3) Delete grows
-      {
-        let batch = writeBatch(db);
-        let count = 0;
-        for (const d of growsSnap.docs) {
-          batch.delete(doc(db, "users", uid, "grows", d.id));
-          count++;
-          if (count >= 400) {
-            await batch.commit();
-            batch = writeBatch(db);
-            count = 0;
-          }
-        }
-        if (count > 0) await batch.commit();
-      }
+  // Derived helpers
+  const isActiveTab = useCallback((id) => activeTab === id, [activeTab]);
+  const modeIs = useCallback((id) => prefs.mode === id, [prefs.mode]);
+  const accentIs = useCallback((id) => prefs.accent === id, [prefs.accent]);
 
-      // 4) Recipes
-      const recipesSnap = await getDocs(collection(db, "users", uid, "recipes"));
-      {
-        let batch = writeBatch(db);
-        let count = 0;
-        for (const d of recipesSnap.docs) {
-          await addToTrash({ type: "recipe", id: d.id, data: d.data() });
-          batch.delete(doc(db, "users", uid, "recipes", d.id));
-          count++;
-          if (count >= 400) {
-            await batch.commit();
-            batch = writeBatch(db);
-            count = 0;
-          }
-        }
-        if (count > 0) await batch.commit();
-      }
+  // Minimal Data/Advanced buttons call optional handlers
+  const onExport = useCallback(() => onExportJSON && onExportJSON(), [onExportJSON]);
+  const onImport = useCallback(() => onImportJSON && onImportJSON(), [onImportJSON]);
+  const onClear  = useCallback(() => onClearAllData && onClearAllData(), [onClearAllData]);
 
-      // 5) Supplies
-      const suppliesSnap = await getDocs(collection(db, "users", uid, "supplies"));
-      {
-        let batch = writeBatch(db);
-        let count = 0;
-        for (const d of suppliesSnap.docs) {
-          await addToTrash({ type: "supply", id: d.id, data: d.data() });
-          batch.delete(doc(db, "users", uid, "supplies", d.id));
-          count++;
-          if (count >= 400) {
-            await batch.commit();
-            batch = writeBatch(db);
-            count = 0;
-          }
-        }
-        if (count > 0) await batch.commit();
-      }
+  // Accent chip content (swatch + label)
+  const AccentChip = useCallback(({ a }) => (
+    <button
+      type="button"
+      className={`chip ${accentIs(a.id) ? "chip--active" : ""}`}
+      aria-pressed={accentIs(a.id)}
+      aria-label={`Set accent ${a.label}`}
+      onClick={() => setAccent(a.id)}
+    >
+      <span
+        className="h-2.5 w-2.5 rounded-full"
+        style={{ backgroundColor: a.hex600 }}
+        aria-hidden="true"
+      />
+      <span>{a.label}</span>
+    </button>
+  ), [accentIs, setAccent]);
 
-      alert("All data cleared (moved to Trash).");
-    } catch (e) {
-      console.error(e);
-      alert(`Failed to clear data: ${e.message}`);
-    } finally {
-      setWiping(false);
-    }
-  };
+  // Mode chip content
+  const ModeChip = useCallback(({ m }) => (
+    <button
+      type="button"
+      className={`chip ${modeIs(m.id) ? "chip--active" : ""}`}
+      aria-pressed={modeIs(m.id)}
+      onClick={() => setMode(m.id)}
+    >
+      {m.label}
+    </button>
+  ), [modeIs, setMode]);
 
-  // ---------- Render ----------
   return (
-    <div className="max-w-5xl mx-auto px-4 py-6">
-      <h1 className="text-2xl font-semibold text-gray-900 dark:text-white mb-6">
-        Chaotic Neutral Tracker
-      </h1>
+    <div className="mx-auto max-w-5xl px-4 py-6">
+      <h1 className="text-2xl font-semibold mb-4">Settings</h1>
 
-      {/* Notifications */}
-      <section className="mb-10">
-        <h2 className="text-lg font-medium text-gray-900 dark:text-gray-100 mb-4">
-          Notifications
-        </h2>
-        <div className="space-y-4">
-          <div className="sm:w-64">
-            <label className="block text-sm text-gray-600 dark:text-gray-300 mb-1">
-              Daily reminder time
-            </label>
-            <input
-              type="time"
-              value={notifTime}
-              onChange={(e) => setNotifTime(e.target.value)}
-              className="w-full rounded-lg border border-transparent bg-gray-100 dark:bg-zinc-800 text-gray-900 dark:text-gray-100 px-3 py-2 focus:outline-none focus:ring-2 focus:ring-indigo-500"
-            />
-          </div>
-
-          <label className="flex items-center gap-3">
-            <input
-              type="checkbox"
-              checked={highlightOverdue}
-              onChange={(e) => setHighlightOverdue(e.target.checked)}
-            />
-            <span className="text-sm text-gray-800 dark:text-gray-200">
-              Highlight overdue tasks
-            </span>
-          </label>
-
-          <label className="flex items-center gap-3">
-            <input
-              type="checkbox"
-              checked={enableStageReminders}
-              onChange={(e) => setEnableStageReminders(e.target.checked)}
-            />
-            <span className="text-sm text-gray-800 dark:text-gray-200">
-              Enable stage-duration reminders
-            </span>
-          </label>
-        </div>
-      </section>
-
-      {/* Data & Privacy */}
-      <section className="mb-10">
-        <h2 className="text-lg font-medium text-gray-900 dark:text-gray-100 mb-4">
-          Data & Privacy
-        </h2>
-        <div className="grid sm:grid-cols-2 gap-6">
-          <div>
-            <label className="block text-sm text-gray-600 dark:text-gray-300 mb-1">
-              Export format (default)
-            </label>
-            <select
-              value={exportFormat}
-              onChange={(e) => setExportFormat(e.target.value)}
-              className="w-full rounded-lg border border-transparent bg-gray-100 dark:bg-zinc-800 text-gray-900 dark:text-gray-100 px-3 py-2"
-            >
-              <option value="csv">csv</option>
-              <option value="json">json</option>
-              <option value="pdf">pdf</option>
-            </select>
-          </div>
-
-          <div>
-            <label className="block text-sm text-gray-600 dark:text-gray-300 mb-1">
-              Delete confirmations
-            </label>
-            <select
-              value={deleteConfirmations}
-              onChange={(e) => setDeleteConfirmations(e.target.value)}
-              className="w-full rounded-lg border border-transparent bg-gray-100 dark:bg-zinc-800 text-gray-900 dark:text-gray-100 px-3 py-2"
-            >
-              <option value="bulk">Bulk only</option>
-              <option value="always">Always</option>
-              <option value="never">Never</option>
-            </select>
-          </div>
-        </div>
-
-        <div className="mt-4 space-y-3">
-          <label className="flex items-center gap-3">
-            <input
-              type="checkbox"
-              checked={anonymousAnalytics}
-              onChange={(e) => setAnonymousAnalytics(e.target.checked)}
-            />
-            <span className="text-sm text-gray-800 dark:text-gray-200">
-              Anonymous analytics
-            </span>
-          </label>
-
-          <label className="flex items-center gap-3">
-            <input
-              type="checkbox"
-              checked={enableBackup}
-              onChange={(e) => setEnableBackup(e.target.checked)}
-            />
-            <span className="text-sm text-gray-800 dark:text-gray-200">
-              Enable backup
-            </span>
-          </label>
-
-          <div className="grid sm:grid-cols-2 gap-6">
-            <div>
-              <label className="block text-sm text-gray-600 dark:text-gray-300 mb-1">
-                Backup frequency
-              </label>
-              <select
-                value={backupFrequency}
-                onChange={(e) => setBackupFrequency(e.target.value)}
-                className="w-full rounded-lg border border-transparent bg-gray-100 dark:bg-zinc-800 text-gray-900 dark:text-gray-100 px-3 py-2"
-                disabled={!enableBackup}
-              >
-                <option value="daily">daily</option>
-                <option value="weekly">weekly</option>
-                <option value="monthly">monthly</option>
-              </select>
-            </div>
-
-            <div>
-              <label className="block text-sm text-gray-600 dark:text-gray-300 mb-1">
-                Destination
-              </label>
-              <select
-                value={backupDestination}
-                onChange={(e) => setBackupDestination(e.target.value)}
-                className="w-full rounded-lg border border-transparent bg-gray-100 dark:bg-zinc-800 text-gray-900 dark:text-gray-100 px-3 py-2"
-                disabled={!enableBackup}
-              >
-                <option value="local">local</option>
-                <option value="cloud">cloud</option>
-              </select>
-            </div>
-          </div>
-        </div>
-      </section>
-
-      {/* Advanced */}
-      <section className="mb-10">
-        <h2 className="text-lg font-medium text-gray-900 dark:text-gray-100 mb-4">Advanced</h2>
-        <div className="space-y-3">
-          <label className="flex items-center gap-3">
-            <input
-              type="checkbox"
-              checked={developerMode}
-              onChange={(e) => setDeveloperMode(e.target.checked)}
-            />
-            <span className="text-sm text-gray-800 dark:text-gray-200">
-              Developer mode (show IDs, extra logs)
-            </span>
-          </label>
-
-          <label className="flex items-center gap-3">
-            <input
-              type="checkbox"
-              checked={showOnboardingAgain}
-              onChange={(e) => setShowOnboardingAgain(e.target.checked)}
-            />
-            <span className="text-sm text-gray-800 dark:text-gray-200">
-              Show onboarding again
-            </span>
-          </label>
-        </div>
-      </section>
-
-      {/* Actions */}
-      <div className="flex items-center gap-3">
-        <button
-          onClick={saveSettings}
-          disabled={saving}
-          className="px-4 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-700 disabled:opacity-60 text-white font-medium shadow"
-        >
-          {saving ? "Saving…" : "Save Settings"}
-        </button>
-
-        {/* Clears ONLY grows/tasks/photos/notes; recipes & supplies kept */}
-        <ClearGrowDataButton />
-
-        <button
-          data-testid="clear-all-data"
-          onClick={handleClearAllData}
-          disabled={wiping}
-          className="px-4 py-2 rounded-lg bg-red-600 hover:bg-red-700 disabled:opacity-60 text-white font-medium shadow"
-        >
-          {wiping ? "Clearing…" : "Clear All Data"}
-        </button>
+      {/* Section Tabs */}
+      <div role="tablist" aria-label="Settings Sections" className="flex flex-wrap gap-2 mb-6">
+        {TABS.map((t) => (
+          <button
+            key={t.id}
+            role="tab"
+            aria-selected={isActiveTab(t.id)}
+            className={`chip ${isActiveTab(t.id) ? "chip--active" : ""}`}
+            onClick={() => setActiveTab(t.id)}
+          >
+            {t.label}
+          </button>
+        ))}
       </div>
+
+      {/* Panels */}
+      {activeTab === "general" && (
+        <section role="tabpanel" aria-label="General settings" className="space-y-8">
+          {/* Theme Mode */}
+          <div>
+            <h2 className="text-lg font-medium mb-3">Theme Mode</h2>
+            <div className="flex flex-wrap gap-2">
+              {MODES.map((m) => (
+                <ModeChip key={m.id} m={m} />
+              ))}
+            </div>
+            <p className="text-sm text-slate-500 dark:text-slate-400 mt-2">
+              <span className="font-medium">System</span> follows your OS preference automatically.
+            </p>
+          </div>
+
+          {/* Accent Color */}
+          <div>
+            <h2 className="text-lg font-medium mb-3">Accent Color</h2>
+            <div className="flex flex-wrap gap-2">
+              {ACCENTS.map((a) => (
+                <AccentChip key={a.id} a={a} />
+              ))}
+            </div>
+            <p className="text-sm text-slate-500 dark:text-slate-400 mt-2">
+              Selected items and primary actions use the accent.
+            </p>
+          </div>
+        </section>
+      )}
+
+      {activeTab === "data" && (
+        <section role="tabpanel" aria-label="Data settings" className="space-y-6">
+          <div className="flex flex-wrap gap-2">
+            <button type="button" className="btn btn-outline" onClick={onExport}>
+              Export JSON
+            </button>
+            <button type="button" className="btn" onClick={onImport}>
+              Import JSON
+            </button>
+            <button type="button" className="btn-accent" onClick={onExport}>
+              Backup Now
+            </button>
+          </div>
+          <p className="text-sm text-slate-500 dark:text-slate-400">
+            Exports and backups include grows, recipes, supplies, tasks, and preferences.
+          </p>
+        </section>
+      )}
+
+      {activeTab === "adv" && (
+        <section role="tabpanel" aria-label="Advanced settings" className="space-y-6">
+          <div className="space-y-3">
+            <h2 className="text-lg font-medium">Danger Zone</h2>
+            <div className="flex flex-wrap gap-2">
+              <button
+                type="button"
+                className="btn-outline"
+                onClick={() => {
+                  try {
+                    localStorage.removeItem("preferences");
+                  } catch {}
+                  // Reset to defaults
+                  savePrefs(defaultPrefs);
+                }}
+              >
+                Reset Theme Preferences
+              </button>
+
+              <button
+                type="button"
+                className="btn"
+                onClick={() => {
+                  // Clear local storage cache (non-destructive to Firestore data)
+                  try {
+                    localStorage.clear();
+                  } catch {}
+                }}
+              >
+                Clear Local Cache
+              </button>
+
+              <button type="button" className="btn-accent" onClick={onClear}>
+                Delete All Data
+              </button>
+            </div>
+            <p className="text-sm text-slate-500 dark:text-slate-400">
+              Deleting data cannot be undone. Make sure you have an export/backup first.
+            </p>
+          </div>
+        </section>
+      )}
     </div>
   );
 }

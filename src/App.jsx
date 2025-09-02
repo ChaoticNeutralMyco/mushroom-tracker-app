@@ -1,4 +1,3 @@
-// src/App.jsx
 import React, { useEffect, useMemo, useRef, useState, Suspense } from "react";
 import { Routes, Route } from "react-router-dom";
 import { auth, db, storage } from "./firebase-config";
@@ -11,24 +10,36 @@ import {
   addDoc,
   deleteDoc,
   setDoc,
+  getDoc,
 } from "firebase/firestore";
 import { ref as storageRef, uploadBytes, getDownloadURL } from "firebase/storage";
+import {
+  FlaskConical,
+  TestTube,
+  Wheat,
+  Package,
+  Syringe,
+  CheckCircle2,
+  Sprout,
+  Scissors,
+  AlertTriangle,
+  CircleDot,
+  Utensils,
+} from "lucide-react";
 
-import "./styles/theme.css";
+import "./index.css";
 
-// Pages
 import Auth from "./pages/Auth";
-// Grow components
 import GrowForm from "./components/Grow/GrowForm";
 import GrowList from "./components/Grow/GrowList";
 import GrowDetail from "./components/Grow/GrowDetail";
 import EditStageStatusModal from "./components/Grow/EditStageStatusModal";
-// UI
 import DashboardStats from "./components/ui/DashboardStats";
 import OnboardingModal from "./components/ui/OnboardingModal";
 import SplashScreen from "./components/ui/SplashScreen";
+import { isActiveGrow, isArchivedish } from "./lib/growFilters";
 
-// Lazy-loaded heavy routes/components for code-splitting
+// Lazy pages/blocks
 const Analytics = React.lazy(() => import("./pages/Analytics"));
 const CalendarView = React.lazy(() => import("./pages/CalendarView"));
 const Settings = React.lazy(() => import("./pages/Settings"));
@@ -42,8 +53,9 @@ const TaskManager = React.lazy(() => import("./components/Tasks/TaskManager"));
 const GrowTimeline = React.lazy(() => import("./components/Grow/GrowTimeline"));
 const ScanBarcodeModal = React.lazy(() => import("./components/ui/ScanBarcodeModal"));
 const PhotoUpload = React.lazy(() => import("./components/ui/PhotoUpload"));
+// NEW: recipe instructions panel
+const RecipeStepsPanel = React.lazy(() => import("./components/recipes/RecipeStepsPanel"));
 
-// Prefetch bundles on hover/focus so first click is instant
 const prefetchers = {
   analytics: () => import("./pages/Analytics"),
   calendar: () => import("./pages/CalendarView"),
@@ -57,82 +69,96 @@ const prefetchers = {
   tasks: () => import("./components/Tasks/TaskManager"),
 };
 
-// ---- Prevent theme flash early ----
+const systemPrefersDark =
+  () => window.matchMedia?.("(prefers-color-scheme: dark)")?.matches || false;
+
+function normalizePrefs(input = {}) {
+  const accent = input.accent ?? input.theme ?? "emerald";
+  const mode =
+    input.mode ??
+    (typeof input.darkMode === "boolean" ? (input.darkMode ? "dark" : "light") : "system");
+  const darkMode = mode === "dark" ? true : mode === "light" ? false : systemPrefersDark();
+  return { accent, mode, theme: accent, darkMode };
+}
+
+function applyThemeToDOM(prefsLike) {
+  const p = normalizePrefs(prefsLike);
+  const root = document.documentElement;
+  ["emerald", "violet", "amber", "rose", "slate"].forEach((t) =>
+    root.classList.remove(`theme-${t}`)
+  );
+  root.classList.add(`theme-${p.accent || "emerald"}`);
+  root.classList.toggle("dark", !!p.darkMode);
+
+  root.classList.toggle("compact", !!prefsLike.compactUI);
+  root.classList.toggle("reduce-motion", !!prefsLike.reduceMotion);
+  root.classList.toggle("font-dyslexia", !!prefsLike.dyslexiaFont);
+  root.classList.toggle("high-contrast", !!prefsLike.highContrast);
+  root.classList.toggle("large-taps", !!prefsLike.largeTaps);
+
+  try {
+    localStorage.setItem("theme", p.darkMode ? "dark" : "light");
+    localStorage.setItem("__prefs__", JSON.stringify({ theme: p.accent, darkMode: p.darkMode }));
+  } catch {}
+}
+
+// Apply theme ASAP on boot
 (function applyInitialTheme() {
   try {
-    const stored = JSON.parse(localStorage.getItem("__prefs__") || "{}");
-    const dark =
-      typeof stored.darkMode === "boolean"
-        ? stored.darkMode
-        : (localStorage.getItem("theme") || "dark") === "dark";
-    const theme = stored.theme || "emerald";
-    const el = document.documentElement;
-    const THEMES = ["emerald", "violet", "amber", "rose", "slate"];
-    THEMES.forEach((t) => el.classList.remove(`theme-${t}`));
-    el.classList.add(`theme-${theme}`);
-    el.classList.toggle("dark", !!dark);
+    const lsNew = JSON.parse(localStorage.getItem("preferences") || "null");
+    if (lsNew && (lsNew.mode || lsNew.accent)) return applyThemeToDOM(lsNew);
+    const legacy = JSON.parse(localStorage.getItem("__prefs__") || "{}");
+    if (legacy && (legacy.theme || typeof legacy.darkMode === "boolean"))
+      return applyThemeToDOM(legacy);
+    applyThemeToDOM({ accent: "emerald", mode: "system" });
   } catch {
     document.documentElement.classList.add("theme-emerald");
-    document.documentElement.classList.add("dark");
   }
 })();
 
-/* -------------------------- GLOBAL CONSTANTS -------------------------- */
 const DEFAULT_PREFS = {
+  mode: "system",
+  accent: "emerald",
   theme: "emerald",
-  darkMode: true,
+  darkMode: systemPrefersDark(),
   fontScale: "small",
   dyslexiaFont: false,
   reduceMotion: false,
   compactUI: false,
-
   labelTemplate: "3x2",
   labelQR: true,
   labelFields: { abbr: true, type: true, inocDate: true, parent: true },
-
   qrMode: "quickEditUrl",
   scanAction: "openQuickEdit",
   barcodeType: "qr",
-
   autoStampStageDates: true,
   confirmStageRegression: true,
   defaultStatus: "Active",
-
   quickNoteStage: "current",
   photoQuality: "medium",
   autoCaptionPhotos: true,
-
   taskDigestTime: "09:00",
   taskOverdueHighlight: true,
   stageReminders: false,
   stageMaxDays: {},
-
   backup: { enabled: false, frequency: "weekly", destination: "local" },
   exportFormat: "csv",
   confirmDeletes: "bulkOnly",
   analytics: false,
-
   liveSnapshots: true,
   preloadPhotos: false,
   offlineCache: false,
-
   highContrast: false,
   largeTaps: false,
-
   showSplashOnLoad: true,
   splashMinMs: 1200,
-
   hasSeenOnboarding: true,
   devMode: false,
 };
 
-const THEMES = ["emerald", "violet", "amber", "rose", "slate"];
-
-/* ---------------------------- tiny skeletons ---------------------------- */
 const Skel = ({ className = "" }) => (
   <div className={`animate-pulse rounded-md bg-zinc-200/80 dark:bg-zinc-800 ${className}`} />
 );
-
 const CardShell = ({ children }) => (
   <div className="bg-white dark:bg-zinc-900 rounded-2xl shadow p-4 border border-zinc-200/60 dark:border-zinc-800/60">
     {children}
@@ -162,7 +188,6 @@ const DashboardSkeleton = () => (
     </div>
   </div>
 );
-
 const AnalyticsSkeleton = () => (
   <CardShell>
     <Skel className="h-6 w-32 mb-4" />
@@ -173,97 +198,12 @@ const AnalyticsSkeleton = () => (
     </div>
   </CardShell>
 );
-
 const CalendarSkeleton = () => (
   <CardShell>
     <Skel className="h-6 w-28 mb-4" />
     <Skel className="h-[540px] w-full rounded-xl" />
   </CardShell>
 );
-
-const TimelineSkeleton = () => (
-  <CardShell>
-    <Skel className="h-6 w-28 mb-4" />
-    <div className="space-y-4">
-      {Array.from({ length: 5 }).map((_, i) => (
-        <div key={i} className="flex items-start gap-3">
-          <Skel className="h-8 w-8 rounded-full" />
-          <div className="flex-1 space-y-2">
-            <Skel className="h-4 w-4/5" />
-            <Skel className="h-3 w-3/5" />
-          </div>
-        </div>
-      ))}
-    </div>
-  </CardShell>
-);
-
-const TasksSkeleton = () => (
-  <CardShell>
-    <Skel className="h-6 w-28 mb-4" />
-    <div className="space-y-3">
-      {Array.from({ length: 6 }).map((_, i) => (
-        <Skel key={i} className="h-5 w-full" />
-      ))}
-    </div>
-  </CardShell>
-);
-
-const RecipesSkeleton = () => (
-  <CardShell>
-    <Skel className="h-6 w-24 mb-4" />
-    <div className="space-y-3">
-      {Array.from({ length: 5 }).map((_, i) => (
-        <Skel key={i} className="h-5 w-full" />
-      ))}
-    </div>
-  </CardShell>
-);
-
-const COGSkeleton = () => (
-  <CardShell>
-    <Skel className="h-6 w-16 mb-4" />
-    <div className="space-y-2">
-      {Array.from({ length: 6 }).map((_, i) => (
-        <Skel key={i} className="h-10 w-full" />
-      ))}
-    </div>
-  </CardShell>
-);
-
-const StrainsSkeleton = () => (
-  <CardShell>
-    <Skel className="h-6 w-24 mb-4" />
-    <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
-      {Array.from({ length: 6 }).map((_, i) => (
-        <Skel key={i} className="h-24 w-full rounded-lg" />
-      ))}
-    </div>
-  </CardShell>
-);
-
-const LabelsSkeleton = () => (
-  <CardShell>
-    <Skel className="h-6 w-24 mb-4" />
-    <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
-      {Array.from({ length: 6 }).map((_, i) => (
-        <Skel key={i} className="h-16 w-full rounded-lg" />
-      ))}
-    </div>
-  </CardShell>
-);
-
-const ArchiveSkeleton = () => (
-  <CardShell>
-    <Skel className="h-6 w-24 mb-4" />
-    <div className="space-y-3">
-      {Array.from({ length: 6 }).map((_, i) => (
-        <Skel key={i} className="h-5 w-full" />
-      ))}
-    </div>
-  </CardShell>
-);
-
 const SettingsSkeleton = () => (
   <CardShell>
     <Skel className="h-6 w-24 mb-4" />
@@ -275,45 +215,9 @@ const SettingsSkeleton = () => (
   </CardShell>
 );
 
-const QuickEditSkeleton = () => (
-  <div className="p-6">
-    <div className="max-w-3xl mx-auto space-y-3">
-      <Skel className="h-6 w-40" />
-      <Skel className="h-10 w-full" />
-      <Skel className="h-10 w-5/6" />
-      <Skel className="h-10 w-4/6" />
-    </div>
-  </div>
-);
-
-const ModalSkeleton = () => (
-  <div className="fixed inset-0 bg-black/40 backdrop-blur-sm flex items-center justify-center p-6">
-    <div className="w-full max-w-md">
-      <CardShell>
-        <Skel className="h-6 w-32 mb-4" />
-        <Skel className="h-10 w-full mb-2" />
-        <Skel className="h-10 w-5/6" />
-      </CardShell>
-    </div>
-  </div>
-);
-
-const PhotoUploadSkeleton = () => (
-  <div className="space-y-3">
-    <Skel className="h-10 w-full" />
-    <div className="grid grid-cols-3 gap-2">
-      {Array.from({ length: 6 }).map((_, i) => (
-        <Skel key={i} className="h-20 w-full rounded-lg" />
-      ))}
-    </div>
-  </div>
-);
-/* ---------------------------------------------------------------------- */
-
 export default function App() {
   const [user, setUser] = useState(null);
 
-  // live data
   const [rawGrows, setRawGrows] = useState(undefined);
   const [recipes, setRecipes] = useState(undefined);
   const [supplies, setSupplies] = useState(undefined);
@@ -325,7 +229,6 @@ export default function App() {
   const [prefs, setPrefs] = useState(DEFAULT_PREFS);
 
   const [activeTab, setActiveTab] = useState("dashboard");
-  const [filter, setFilter] = useState("");
   const [editingGrow, setEditingGrow] = useState(null);
   const [showOnboarding, setShowOnboarding] = useState(false);
   const [showScanner, setShowScanner] = useState(false);
@@ -333,24 +236,21 @@ export default function App() {
   const splashStartRef = useRef(Date.now());
   const [showSplash, setShowSplash] = useState(true);
 
+  useEffect(() => {
+    const id = setTimeout(() => setShowSplash(false), 5000);
+    return () => clearTimeout(id);
+  }, []);
+
   const applyAppearance = (p) => {
-    const el = document.documentElement;
-    THEMES.forEach((t) => el.classList.remove(`theme-${t}`));
-    el.classList.add(`theme-${p.theme || "emerald"}`);
-    el.classList.toggle("dark", !!p.darkMode);
-    el.classList.toggle("compact", !!p.compactUI);
-    el.classList.toggle("reduce-motion", !!p.reduceMotion);
-    el.classList.toggle("font-dyslexia", !!p.dyslexiaFont);
-    el.classList.toggle("high-contrast", !!p.highContrast);
-    el.classList.toggle("large-taps", !!p.largeTaps);
+    const n = normalizePrefs(p);
+    const merged = { ...p, ...n };
+    applyThemeToDOM(merged);
     try {
-      localStorage.setItem("theme", p.darkMode ? "dark" : "light");
-      localStorage.setItem("__prefs__", JSON.stringify({ theme: p.theme, darkMode: p.darkMode }));
+      localStorage.setItem("preferences", JSON.stringify({ mode: merged.mode, accent: merged.accent }));
     } catch {}
-    document.documentElement.style.setProperty("--font-scale", p.fontScale || "small");
+    document.documentElement.style.setProperty("--font-scale", merged.fontScale || "small");
   };
 
-  // maps
   const suppliesMap = useMemo(() => {
     const arr = Array.isArray(supplies) ? supplies : [];
     const m = new Map();
@@ -365,7 +265,6 @@ export default function App() {
     return m;
   }, [recipes]);
 
-  // grows with computed cost
   const grows = useMemo(() => {
     const gs = Array.isArray(rawGrows) ? rawGrows : [];
     return gs.map((g) => {
@@ -385,28 +284,92 @@ export default function App() {
     });
   }, [rawGrows, recipesMap, suppliesMap]);
 
-  // derived: active vs archivedish
-  const isArchivedish = (g) =>
-    g.status === "Archived" ||
-    g.status === "Contaminated" ||
-    (Number(g.amountAvailable ?? Infinity) <= 0) ||
-    g.stage === "Harvested";
+  const activeGrowsBase = useMemo(() => grows.filter(isActiveGrow), [grows]);
+  const archivedGrowsBase = useMemo(() => grows.filter(isArchivedish), [grows]);
 
-  const activeGrowsBase = useMemo(() => grows.filter((g) => !isArchivedish(g)), [grows]);
+  const TYPE_META = [
+    { id: "Agar", icon: FlaskConical },
+    { id: "LC", icon: TestTube },
+    { id: "Grain Jar", icon: Wheat },
+    { id: "Bulk", icon: Package },
+  ];
+  const STAGE_META = [
+    { id: "Inoculated", icon: Syringe },
+    { id: "Colonizing", icon: CircleDot },
+    { id: "Colonized", icon: CheckCircle2 },
+    { id: "Fruiting", icon: Sprout },
+    { id: "Harvested", icon: Scissors },
+    { id: "Consumed", icon: Utensils },
+    { id: "Contaminated", icon: AlertTriangle },
+  ];
 
-  const filteredGrows = useMemo(() => {
-    const f = (filter || "").trim().toLowerCase();
-    const base = activeGrowsBase;
-    if (!f) return base;
-    return base.filter((g) => {
-      const fields = [g.strain || "", g.subName || g.abbreviation || "", g.type || "", g.stage || ""]
-        .join(" ")
-        .toLowerCase();
-      return fields.includes(f);
-    });
-  }, [activeGrowsBase, filter]);
+  const normalizeType = (t = "") => {
+    const s = String(t).toLowerCase().replace(/\s+/g, "");
+    if (s.includes("agar")) return "Agar";
+    if (s.includes("lc") || s.includes("liquidculture")) return "LC";
+    if (s.includes("grain") || s.includes("grainjar") || s.includes("gj")) return "Grain Jar";
+    if (s.includes("bulk")) return "Bulk";
+    return "Other";
+  };
 
-  // groupings
+  const normalizeStage = (st = "") => {
+    const s = String(st).toLowerCase();
+    if (s.startsWith("inoc")) return "Inoculated";
+    if (s.includes("colonizing")) return "Colonizing";
+    if (s.includes("colonized")) return "Colonized";
+    if (s.includes("fruit")) return "Fruiting";
+    if (s.includes("harvest")) return "Harvested";
+    if (s.includes("consum")) return "Consumed";
+    if (s.includes("contam")) return "Contaminated";
+    return "Other";
+  };
+
+  const typeCounts = useMemo(() => {
+    const counts = { Agar: 0, LC: 0, "Grain Jar": 0, Bulk: 0, Other: 0 };
+    for (const g of activeGrowsBase) counts[normalizeType(g.type || g.growType)]++;
+    return counts;
+  }, [activeGrowsBase]);
+
+  const stageCounts = useMemo(() => {
+    const counts = {
+      Inoculated: 0,
+      Colonizing: 0,
+      Colonized: 0,
+      Fruiting: 0,
+      Harvested: 0,
+      Consumed: 0,
+      Contaminated: 0,
+      Other: 0,
+    };
+
+    for (const g of activeGrowsBase) {
+      const s = normalizeStage(g.stage);
+      if (s === "Inoculated" || s === "Colonizing" || s === "Colonized" || s === "Fruiting") {
+        counts[s]++;
+      }
+    }
+
+    for (const g of archivedGrowsBase) {
+      const stage = normalizeStage(g.stage);
+      const status = String(g.status || "").toLowerCase();
+      const remain = Number(g?.amountAvailable);
+      const remaining =
+        Number.isFinite(remain) ? remain : Number(g?.remaining) ?? Number.POSITIVE_INFINITY;
+
+      if (remaining <= 0) {
+        counts.Consumed++;
+        continue;
+      }
+      if (status === "contaminated" || stage === "Contaminated") {
+        counts.Contaminated++;
+        continue;
+      }
+      if (stage === "Harvested") counts.Harvested++;
+    }
+
+    return counts;
+  }, [activeGrowsBase, archivedGrowsBase]);
+
   const photosByGrow = useMemo(() => {
     const arr = Array.isArray(photos) ? photos : [];
     const map = new Map();
@@ -442,13 +405,17 @@ export default function App() {
     return map;
   }, [notes]);
 
-  // auth + snapshots
   useEffect(() => {
     let unsubs = [];
-
     const stopAll = () => {
       unsubs.forEach((fn) => fn && fn());
       unsubs = [];
+    };
+
+    const endSplashAfter = (minMs = 0) => {
+      const elapsed = Date.now() - splashStartRef.current;
+      const wait = Math.max(0, Number(minMs) - elapsed);
+      setTimeout(() => setShowSplash(false), wait);
     };
 
     const unsubAuth = onAuthStateChanged(auth, async (u) => {
@@ -464,38 +431,94 @@ export default function App() {
         setNotes(undefined);
         setStrains(undefined);
         setShowOnboarding(false);
-        const min = 400;
-        const elapsed = Date.now() - splashStartRef.current;
-        const wait = Math.max(0, min - elapsed);
-        setTimeout(() => setShowSplash(false), wait);
+        endSplashAfter(400);
         return;
       }
 
-      // prefs
       const prefRef = doc(db, "users", u.uid, "settings", "preferences");
-      await setDoc(prefRef, DEFAULT_PREFS, { merge: true });
-      unsubs.push(
-        onSnapshot(prefRef, (snap) => {
-          const data = snap.exists() ? { ...DEFAULT_PREFS, ...snap.data() } : DEFAULT_PREFS;
-          setPrefs(data);
-          applyAppearance(data);
-          setShowOnboarding(!data.hasSeenOnboarding);
+      let minPref = 0;
 
-          const min = data.showSplashOnLoad ? Number(data.splashMinMs || 1200) : 0;
-          const elapsed = Date.now() - splashStartRef.current;
-          const wait = Math.max(0, min - elapsed);
-          setTimeout(() => setShowSplash(false), wait);
-        })
-      );
+      try {
+        const snap = await getDoc(prefRef);
+        const cloud = snap.exists() ? snap.data() || {} : {};
+
+        let localNew = {};
+        let legacy = {};
+        try {
+          localNew = JSON.parse(localStorage.getItem("preferences") || "{}");
+        } catch {}
+        try {
+          legacy = JSON.parse(localStorage.getItem("__prefs__") || "{}");
+        } catch {}
+
+        const merged = {
+          ...DEFAULT_PREFS,
+          ...normalizePrefs(cloud),
+          ...normalizePrefs(localNew),
+          ...normalizePrefs(legacy),
+          ...cloud,
+        };
+
+        setPrefs(merged);
+        applyAppearance(merged);
+
+        await setDoc(
+          prefRef,
+          {
+            accent: merged.accent,
+            mode: merged.mode,
+            theme: merged.accent,
+            darkMode: merged.darkMode,
+            fontScale: merged.fontScale,
+            dyslexiaFont: merged.dyslexiaFont,
+            reduceMotion: merged.reduceMotion,
+            compactUI: merged.compactUI,
+            highContrast: merged.highContrast,
+            largeTaps: merged.largeTaps,
+            showSplashOnLoad: merged.showSplashOnLoad,
+            splashMinMs: merged.splashMinMs,
+          },
+          { merge: true }
+        );
+
+        minPref = merged.showSplashOnLoad ? Number(merged.splashMinMs || 1200) : 0;
+      } catch {
+        let localNew = {};
+        try {
+          localNew = JSON.parse(localStorage.getItem("preferences") || "{}");
+        } catch {}
+        const fallback = { ...DEFAULT_PREFS, ...normalizePrefs(localNew) };
+        setPrefs(fallback);
+        applyAppearance(fallback);
+        minPref = fallback.showSplashOnLoad ? Number(fallback.splashMinMs || 1200) : 0;
+      } finally {
+        endSplashAfter(minPref);
+      }
 
       const col = (name) => collection(db, "users", u.uid, name);
-      unsubs.push(onSnapshot(col("supplies"), (s) => setSupplies(s.docs.map((d) => ({ id: d.id, ...d.data() })))));
-      unsubs.push(onSnapshot(col("recipes"), (s) => setRecipes(s.docs.map((d) => ({ id: d.id, ...d.data() })))));
-      unsubs.push(onSnapshot(col("grows"), (s) => setRawGrows(s.docs.map((d) => ({ id: d.id, ...d.data() })))));
-      unsubs.push(onSnapshot(col("tasks"), (s) => setTasks(s.docs.map((d) => ({ id: d.id, ...d.data() })))));
-      unsubs.push(onSnapshot(col("photos"), (s) => setPhotos(s.docs.map((d) => ({ id: d.id, ...d.data() })))));
-      unsubs.push(onSnapshot(col("notes"), (s) => setNotes(s.docs.map((d) => ({ id: d.id, ...d.data() })))));
-      unsubs.push(onSnapshot(col("strains"), (s) => setStrains(s.docs.map((d) => ({ id: d.id, ...d.data() })))));
+      unsubs.push(
+        onSnapshot(col("supplies"), (s) =>
+          setSupplies(s.docs.map((d) => ({ id: d.id, ...d.data() })))
+        ),
+        onSnapshot(col("recipes"), (s) =>
+          setRecipes(s.docs.map((d) => ({ id: d.id, ...d.data() })))
+        ),
+        onSnapshot(col("grows"), (s) =>
+          setRawGrows(s.docs.map((d) => ({ id: d.id, ...d.data() })))
+        ),
+        onSnapshot(col("tasks"), (s) =>
+          setTasks(s.docs.map((d) => ({ id: d.id, ...d.data() })))
+        ),
+        onSnapshot(col("photos"), (s) =>
+          setPhotos(s.docs.map((d) => ({ id: d.id, ...d.data() })))
+        ),
+        onSnapshot(col("notes"), (s) =>
+          setNotes(s.docs.map((d) => ({ id: d.id, ...d.data() })))
+        ),
+        onSnapshot(col("strains"), (s) =>
+          setStrains(s.docs.map((d) => ({ id: d.id, ...d.data() })))
+        )
+      );
     });
 
     return () => {
@@ -504,8 +527,9 @@ export default function App() {
     };
   }, []);
 
-  // actions
-  const handleSignOut = async () => { await signOut(auth); };
+  const handleSignOut = async () => {
+    await signOut(auth);
+  };
 
   const onUpdateStage = async (growId, nextStage) => {
     if (!user) return;
@@ -566,9 +590,15 @@ export default function App() {
     return ref.id;
   };
 
-  const onCreateTask = async (payload) => { if (user) await addDoc(collection(db, "users", user.uid, "tasks"), payload); };
-  const onUpdateTask = async (id, patch) => { if (user) await updateDoc(doc(db, "users", user.uid, "tasks", id), patch); };
-  const onDeleteTask = async (id) => { if (user) await deleteDoc(doc(db, "users", user.uid, "tasks", id)); };
+  const onCreateTask = async (payload) => {
+    if (user) await addDoc(collection(db, "users", user.uid, "tasks"), payload);
+  };
+  const onUpdateTask = async (id, patch) => {
+    if (user) await updateDoc(doc(db, "users", user.uid, "tasks", id), patch);
+  };
+  const onDeleteTask = async (id) => {
+    if (user) await deleteDoc(doc(db, "users", user.uid, "tasks", id));
+  };
 
   const onUploadPhoto = async (growId, file, caption) => {
     if (!user || !file) return;
@@ -577,7 +607,11 @@ export default function App() {
     await uploadBytes(r, file);
     const url = await getDownloadURL(r);
     await addDoc(collection(db, "users", user.uid, "photos"), {
-      growId, url, caption: caption || "", stage: null, timestamp: new Date().toISOString(),
+      growId,
+      url,
+      caption: caption || "",
+      stage: null,
+      timestamp: new Date().toISOString(),
     });
   };
 
@@ -589,20 +623,35 @@ export default function App() {
     await uploadBytes(r, file);
     const url = await getDownloadURL(r);
     await addDoc(collection(db, "users", user.uid, "photos"), {
-      growId, url, caption: caption || "", stage: safeStage, timestamp: new Date().toISOString(),
+      growId,
+      url,
+      caption: caption || "",
+      stage: safeStage,
+      timestamp: new Date().toISOString(),
     });
   };
 
   const onAddNote = async (growId, stage, text) => {
     if (!user || !text) return;
     await addDoc(collection(db, "users", user.uid, "notes"), {
-      growId, stage: stage || "General", text, timestamp: new Date().toISOString(),
+      growId,
+      stage: stage || "General",
+      text,
+      timestamp: new Date().toISOString(),
     });
   };
 
-  const onCreateStrain = async (data) => { if (!user) return null; const ref = await addDoc(collection(db, "users", user.uid, "strains"), data); return ref.id; };
-  const onUpdateStrain = async (id, patch) => { if (user) await updateDoc(doc(db, "users", user.uid, "strains", id), patch); };
-  const onDeleteStrain = async (id) => { if (user) await deleteDoc(doc(db, "users", user.uid, "strains", id)); };
+  const onCreateStrain = async (data) => {
+    if (!user) return null;
+    const ref = await addDoc(collection(db, "users", user.uid, "strains"), data);
+    return ref.id;
+  };
+  const onUpdateStrain = async (id, patch) => {
+    if (user) await updateDoc(doc(db, "users", user.uid, "strains", id), patch);
+  };
+  const onDeleteStrain = async (id) => {
+    if (user) await deleteDoc(doc(db, "users", user.uid, "strains", id));
+  };
   const onUploadStrainImage = async (file) => {
     if (!user || !file) return "";
     const path = `users/${user.uid}/strains/${Date.now()}_${file.name}`;
@@ -611,30 +660,50 @@ export default function App() {
     return await getDownloadURL(r);
   };
 
-  const savePrefs = async (data) => {
+  const savePrefs = async (next) => {
+    const merged = { ...prefs, ...next, ...normalizePrefs(next) };
+    setPrefs(merged);
+    applyAppearance(merged);
+
+    try {
+      localStorage.setItem("preferences", JSON.stringify({ mode: merged.mode, accent: merged.accent }));
+      localStorage.setItem("__prefs__", JSON.stringify({ theme: merged.accent, darkMode: merged.darkMode }));
+    } catch {}
+
     if (!user) return;
-    await setDoc(doc(db, "users", user.uid, "settings", "preferences"), data, { merge: true });
-    applyAppearance(data);
+    await setDoc(
+      doc(db, "users", user.uid, "settings", "preferences"),
+      {
+        mode: merged.mode,
+        accent: merged.accent,
+        theme: merged.accent,
+        darkMode: merged.darkMode,
+        fontScale: merged.fontScale,
+        dyslexiaFont: merged.dyslexiaFont,
+        reduceMotion: merged.reduceMotion,
+        compactUI: merged.compactUI,
+        highContrast: merged.highContrast,
+        largeTaps: merged.largeTaps,
+        showSplashOnLoad: merged.showSplashOnLoad,
+        splashMinMs: merged.splashMinMs,
+      },
+      { merge: true }
+    );
   };
 
-  // choose the right Suspense fallback per tab — before any early returns to keep hook order stable
   const tabFallback = useMemo(() => {
     switch (activeTab) {
-      case "analytics": return <AnalyticsSkeleton />;
-      case "calendar": return <CalendarSkeleton />;
-      case "timeline": return <TimelineSkeleton />;
-      case "cog": return <COGSkeleton />;
-      case "recipes": return <RecipesSkeleton />;
-      case "strains": return <StrainsSkeleton />;
-      case "labels": return <LabelsSkeleton />;
-      case "archive": return <ArchiveSkeleton />;
-      case "settings": return <SettingsSkeleton />;
-      case "tasks": return <TasksSkeleton />;
-      default: return <DashboardSkeleton />;
+      case "analytics":
+        return <AnalyticsSkeleton />;
+      case "calendar":
+        return <CalendarSkeleton />;
+      case "settings":
+        return <SettingsSkeleton />;
+      default:
+        return <DashboardSkeleton />;
     }
   }, [activeTab]);
 
-  // splash/auth gates
   if (showSplash) return <SplashScreen />;
   if (!user) return <Auth setUser={setUser} />;
 
@@ -643,14 +712,12 @@ export default function App() {
 
   return (
     <>
-      {/* Scanner modal (lazy) */}
       {showScanner && (
-        <Suspense fallback={<ModalSkeleton />}>
+        <Suspense fallback={<div className="fixed inset-0 bg-black/30" />}>
           <ScanBarcodeModal onClose={() => setShowScanner(false)} />
         </Suspense>
       )}
 
-      {/* Edit modal */}
       {isEditingExisting && (
         <EditStageStatusModal
           grow={editingGrow}
@@ -660,7 +727,6 @@ export default function App() {
         />
       )}
 
-      {/* Add new grow form */}
       {isAddingNew && (
         <GrowForm
           editingGrow={editingGrow}
@@ -676,11 +742,19 @@ export default function App() {
       )}
 
       <Routes>
-        {/* Quick edit (lazy) */}
         <Route
           path="/quick/:growId"
           element={
-            <Suspense fallback={<QuickEditSkeleton />}>
+            <Suspense
+              fallback={
+                <div className="p-6">
+                  <CardShell>
+                    <Skel className="h-6 w-40 mb-4" />
+                    <Skel className="h-10 w-full" />
+                  </CardShell>
+                </div>
+              }
+            >
               <QuickEdit
                 grows={grows}
                 notesByGrowStage={notesByGrowStage}
@@ -694,19 +768,11 @@ export default function App() {
           }
         />
 
-        {/* Grow detail (non-lazy) */}
         <Route
           path="/grow/:growId"
-          element={
-            <GrowDetail
-              grows={grows}
-              onUpdateGrow={onUpdateGrow}
-              onAddNote={onAddNote}
-            />
-          }
+          element={<GrowDetail grows={grows} onUpdateGrow={onUpdateGrow} onAddNote={onAddNote} />}
         />
 
-        {/* Main app */}
         <Route
           path="/"
           element={
@@ -715,17 +781,16 @@ export default function App() {
                 <div className="max-w-7xl mx-auto px-4 py-3 flex items-center gap-3">
                   <h1 className="text-xl font-bold">Chaotic Neutral Tracker</h1>
                   <div className="ml-auto flex items-center gap-2">
+                    {/* Scan button styled like pill/toggles */}
                     <button
                       onClick={() => setShowScanner(true)}
-                      className="px-3 py-1.5 rounded-lg accent-bg text-sm"
-                      aria-label="Open scanner"
+                      className="chip chip--active text-sm"
                     >
                       Scan
                     </button>
                     <button
-                      onClick={async () => { await signOut(auth); }}
+                      onClick={handleSignOut}
                       className="px-3 py-1.5 rounded-lg bg-zinc-200 dark:bg-zinc-800 hover:bg-zinc-300 dark:hover:bg-zinc-700 text-sm"
-                      aria-label="Sign out"
                     >
                       Sign out
                     </button>
@@ -748,41 +813,61 @@ export default function App() {
                     ["labels", "Labels"],
                     ["archive", "Archive"],
                     ["settings", "Settings"],
-                  ].map(([key, label]) => (
-                    <button
-                      key={key}
-                      onClick={() => setActiveTab(key)}
-                      onMouseEnter={() => prefetchers[key]?.()}
-                      onFocus={() => prefetchers[key]?.()}
-                      className={`px-3 py-1.5 rounded-full text-sm border ${
-                        activeTab === key
-                          ? "accent-chip"
-                          : "bg-white dark:bg-zinc-900 border-zinc-300 dark:border-zinc-700 text-zinc-800 dark:text-zinc-100"
-                      }`}
-                    >
-                      {label}
-                    </button>
-                  ))}
+                  ].map(([key, label]) => {
+                    const isActive = activeTab === key;
+                    return (
+                      <button
+                        key={key}
+                        onClick={() => setActiveTab(key)}
+                        onMouseEnter={() => prefetchers[key]?.()}
+                        onFocus={() => prefetchers[key]?.()}
+                        role="tab"
+                        aria-selected={isActive}
+                        className={`chip ${isActive ? "chip--active" : ""}`}
+                      >
+                        {label}
+                      </button>
+                    );
+                  })}
                 </div>
 
-                {/* Lazy-loaded tab content */}
                 <Suspense fallback={tabFallback}>
                   {activeTab === "dashboard" && (
                     <>
-                      <div className="mb-4 flex items-center gap-2">
-                        <input
-                          type="text"
-                          value={filter}
-                          onChange={(e) => setFilter(e.target.value)}
-                          placeholder="Search grows…"
-                          className="w-full sm:w-72 rounded-lg border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-900 px-3 py-2"
-                        />
-                        <button
-                          className="px-3 py-2 rounded-lg bg-zinc-200 dark:bg-zinc-800 hover:bg-zinc-300 dark:hover:bg-zinc-700 text-sm"
-                          onClick={() => setEditingGrow({})}
-                        >
-                          + New Grow
-                        </button>
+                      {/* Type chips */}
+                      <div className="mb-2 flex flex-wrap items-center gap-2">
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <span className="text-xs uppercase tracking-wide text-slate-500 dark:text-slate-400">
+                            Types
+                          </span>
+                          {TYPE_META.map(({ id, icon: Icon }) => {
+                            const count = typeCounts[id] || 0;
+                            return (
+                              <span key={id} className="chip">
+                                <Icon className="h-4 w-4" />
+                                <span>{id}</span>
+                                <span className="opacity-80">({count})</span>
+                              </span>
+                            );
+                          })}
+                        </div>
+                      </div>
+
+                      {/* Stage chips */}
+                      <div className="mb-4 flex flex-wrap items-center gap-2">
+                        <span className="text-xs uppercase tracking-wide text-slate-500 dark:text-slate-400">
+                          Stages
+                        </span>
+                        {STAGE_META.map(({ id, icon: Icon }) => {
+                          const count = stageCounts[id] || 0;
+                          return (
+                            <span key={id} className="chip">
+                              <Icon className="h-4 w-4" />
+                              <span>{id}</span>
+                              <span className="opacity-80">({count})</span>
+                            </span>
+                          );
+                        })}
                       </div>
 
                       <div className="space-y-6">
@@ -791,27 +876,45 @@ export default function App() {
                           recipes={recipes}
                           supplies={supplies}
                           loading={
-                            grows === undefined ||
-                            recipes === undefined ||
-                            supplies === undefined
+                            grows === undefined || recipes === undefined || supplies === undefined
                           }
                         />
+
+                        {/* + New Grow (left-aligned, pill style) */}
+                        <div className="flex">
+                          <button
+                            className="chip chip--active text-sm"
+                            onClick={() => setEditingGrow({})}
+                          >
+                            + New Grow
+                          </button>
+                        </div>
 
                         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
                           <div className="bg-white dark:bg-zinc-900 rounded-2xl shadow p-4">
                             <GrowList
-                              grows={filteredGrows}
-                              setGrows={setRawGrows}
+                              growsActive={activeGrowsBase}
+                              archivedGrows={archivedGrowsBase}
                               setEditingGrow={setEditingGrow}
                               showAddButton={false}
+                              onUpdateStatus={onUpdateStatus}
                             />
                           </div>
 
                           <div className="bg-white dark:bg-zinc-900 rounded-2xl shadow p-4">
                             <h2 className="text-lg font-semibold mb-3">Photos</h2>
-
-                            {/* PhotoUpload (lazy) with its own fallback */}
-                            <Suspense fallback={<PhotoUploadSkeleton />}>
+                            <Suspense
+                              fallback={
+                                <div className="space-y-3">
+                                  <Skel className="h-10 w-full" />
+                                  <div className="grid grid-cols-3 gap-2">
+                                    {Array.from({ length: 6 }).map((_, i) => (
+                                      <Skel key={i} className="h-20 w-full rounded-lg" />
+                                    ))}
+                                  </div>
+                                </div>
+                              }
+                            >
                               <PhotoUpload
                                 grows={activeGrowsBase}
                                 photosByGrow={photosByGrow}
@@ -837,7 +940,9 @@ export default function App() {
 
                   {activeTab === "analytics" && (
                     <Analytics
-                      grows={grows}
+                      growsActive={Array.isArray(grows) ? grows.filter(isActiveGrow) : []}
+                      growsAll={Array.isArray(grows) ? grows : []}
+                      grows={Array.isArray(grows) ? grows.filter(isActiveGrow) : []}
                       recipes={Array.isArray(recipes) ? recipes : []}
                       supplies={Array.isArray(supplies) ? supplies : []}
                       tasks={Array.isArray(tasks) ? tasks : []}
@@ -869,9 +974,23 @@ export default function App() {
                   )}
 
                   {activeTab === "recipes" && (
-                    <div className="bg-white dark:bg-zinc-900 rounded-2xl shadow p-4">
-                      <RecipeManager />
-                    </div>
+                    <>
+                      <div className="bg-white dark:bg-zinc-900 rounded-2xl shadow p-4">
+                        <RecipeManager />
+                      </div>
+
+                      {/* NEW: Steps/Instructions editor under the builder */}
+                      <Suspense
+                        fallback={
+                          <CardShell>
+                            <Skel className="h-6 w-56 mb-3" />
+                            <Skel className="h-40 w-full" />
+                          </CardShell>
+                        }
+                      >
+                        <RecipeStepsPanel />
+                      </Suspense>
+                    </>
                   )}
 
                   {activeTab === "strains" && (
@@ -895,27 +1014,24 @@ export default function App() {
 
                   {activeTab === "archive" && (
                     <div className="bg-white dark:bg-zinc-900 rounded-2xl shadow p-4">
-                      <Archive grows={grows} />
+                      <Archive grows={grows} setEditingGrow={setEditingGrow} />
                     </div>
                   )}
 
                   {activeTab === "settings" && (
                     <Settings
-                      /* compatibility with either Settings.jsx version */
-                      preferences={prefs}
-                      prefs={prefs}
-                      onSaved={() => {}}
-                      onSavePrefs={savePrefs}
+                      preferences={{
+                        mode: prefs.mode ?? (prefs.darkMode ? "dark" : "light"),
+                        accent: prefs.accent ?? prefs.theme,
+                        ...prefs,
+                      }}
+                      onSavePreferences={savePrefs}
                       applyAppearance={applyAppearance}
                     />
                   )}
                 </Suspense>
 
-                {/* Onboarding lives inside the root element */}
-                <OnboardingModal
-                  visible={showOnboarding}
-                  onClose={() => setShowOnboarding(false)}
-                />
+                <OnboardingModal visible={showOnboarding} onClose={() => setShowOnboarding(false)} />
               </div>
             </div>
           }

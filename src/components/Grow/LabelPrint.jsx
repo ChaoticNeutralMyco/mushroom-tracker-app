@@ -26,16 +26,22 @@ const T1_PT = 8.7;   // Strain (bold)
 const T2_PT = 7.2;   // Abbrev/code (semibold)
 const F_PT  = 6.7;   // Type / Inoc lines
 
-// Transparent logo at /public/logo.png
-const LOGO_URL = "/logo.png";
-const LOGO_OPACITY = 0.12;
-// Compensate for transparent padding in the PNG so the visible emblem ≈ QR size
-const LOGO_SCALE = 1.15;
+/** Watermark: try several known paths; fallback to text if none load */
+const WM_CANDIDATES = [
+  "/labels-watermark.png",       // <— added: your preferred filename
+  "/logo.png",
+  "/logo512.png",
+  "/logo192.png",
+  "/android-chrome-192x192.png",
+  "/favicon.png",
+];
+const LOGO_OPACITY = 0.20;
+const LOGO_SCALE = 1.2;
 
 const LOCAL_KEY_WATERMARK = "labels.watermark.enabled";
-const LOCAL_KEY_STARTPOS = "labels.start.position"; // stored as "row,col"
+const LOCAL_KEY_STARTPOS = "labels.start.position";
 
-/* -------------------- helpers -------------------- */
+/* ---------------- helpers ---------------- */
 const toText = (v) => {
   if (v == null) return "";
   if (typeof v === "string") return v;
@@ -98,7 +104,7 @@ const getInoc = (g) => {
 };
 const getType = (g) => toText(g?.type ?? g?.growType ?? g?.container ?? g?.kind ?? g?.category);
 
-/** ---------- inline preview styles (true-size 5160/8160) ---------- */
+/** ---------- styles ---------- */
 const sheetStyle = {
   width: SHEET_W,
   minHeight: SHEET_H,
@@ -142,7 +148,8 @@ const blankLabelStyle = {
 const selectBadgeStyle = (selected) => ({
   position: "absolute",
   top: "0.04in",
-  left: "0.04in",
+  right: "0.04in",
+  left: "auto",
   zIndex: 5,
   width: "0.16in",
   height: "0.16in",
@@ -150,6 +157,7 @@ const selectBadgeStyle = (selected) => ({
   border: "1px solid #bdbdbd",
   background: selected ? "#2563eb" : "#fff",
   boxShadow: "0 0 0 1px rgba(0,0,0,0.03)",
+  pointerEvents: "none",
 });
 const rowStyle = {
   position: "relative",
@@ -159,14 +167,16 @@ const rowStyle = {
   gap: "0.10in",
   alignItems: "stretch",
 };
-const t1Style = { position: "relative", zIndex: 2, fontWeight: 700, fontSize: `${T1_PT}pt`, lineHeight: 1.05, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" };
-const t2Style = { position: "relative", zIndex: 2, fontWeight: 600, fontSize: `${T2_PT}pt`, lineHeight: 1.05, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" };
+/* Keep text readable on top of watermark */
+const TEXT_SHADOW = "0 0 2px rgba(255,255,255,0.95), 0 0 1px rgba(255,255,255,0.95)";
+const t1Style = { position: "relative", zIndex: 2, fontWeight: 700, fontSize: `${T1_PT}pt`, lineHeight: 1.05, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", textShadow: TEXT_SHADOW };
+const t2Style = { position: "relative", zIndex: 2, fontWeight: 600, fontSize: `${T2_PT}pt`, lineHeight: 1.05, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", textShadow: TEXT_SHADOW };
 const fieldsWrapStyle = { marginTop: "0.02in", position: "relative", zIndex: 2 };
-const fStyle = { position: "relative", zIndex: 2, fontSize: `${F_PT}pt`, lineHeight: 1.05, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" };
-// Text column fills row height so watermark can center
+const fStyle = { position: "relative", zIndex: 2, fontSize: `${F_PT}pt`, lineHeight: 1.05, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", textShadow: TEXT_SHADOW };
 const contentContainerStyle = { position: "relative", minWidth: 0, height: "100%", minHeight: QR_SIZE };
-// Watermark centered in text column, visually ~ QR size
-const wmTextStyle = {
+
+/* Watermark image style */
+const wmImgStyle = {
   position: "absolute",
   left: "50%", top: "50%",
   transform: "translate(-50%, -50%)",
@@ -174,30 +184,44 @@ const wmTextStyle = {
   height: `calc(${QR_SIZE} * ${LOGO_SCALE})`,
   opacity: LOGO_OPACITY,
   pointerEvents: "none",
-  filter: "grayscale(100%)",
+  filter: "grayscale(100%) contrast(0.9) brightness(1.15)",
   objectFit: "contain",
   zIndex: 1,
+  mixBlendMode: "multiply",
+};
+/* Text fallback watermark */
+const wmTextStyle = {
+  position: "absolute",
+  left: "50%", top: "50%",
+  transform: "translate(-50%, -50%)",
+  width: `calc(${QR_SIZE} * ${LOGO_SCALE})`,
+  height: `calc(${QR_SIZE} * ${LOGO_SCALE})`,
+  display: "flex",
+  alignItems: "center",
+  justifyContent: "center",
+  fontWeight: 800,
+  fontSize: "0.42in",
+  letterSpacing: "0.02in",
+  color: "rgba(0,0,0,0.85)",
+  opacity: LOGO_OPACITY,
+  pointerEvents: "none",
+  filter: "grayscale(100%)",
+  zIndex: 1,
+  mixBlendMode: "multiply",
 };
 
-/* -------------------- pagination helpers -------------------- */
-function pagesWithOffset(items, skipCount) {
-  const pages = [];
-  let i = 0;
-  const firstCap = Math.max(0, PER_SHEET - skipCount);
-  const firstSlice = items.slice(i, i + firstCap);
-  pages.push({ prefill: skipCount, grows: firstSlice });
-  i += firstSlice.length;
-  while (i < items.length) {
-    const slice = items.slice(i, i + PER_SHEET);
-    pages.push({ prefill: 0, grows: slice });
-    i += slice.length;
-  }
-  return pages;
-}
+/* ---------- small util to test image existence ---------- */
+const preloadOK = (url) =>
+  new Promise((resolve) => {
+    if (!url) return resolve(false);
+    const img = new Image();
+    img.onload = () => resolve(true);
+    img.onerror = () => resolve(false);
+    img.src = url;
+  });
 
-/* -------------------- component -------------------- */
+/* ---------------- component ---------------- */
 export default function LabelPrint(props) {
-  // Detect whether the parent actually provided the 'grows' prop.
   const hasGrowsProp = Object.prototype.hasOwnProperty.call(props || {}, "grows");
   const propGrows = hasGrowsProp ? (props.grows || []) : undefined;
 
@@ -206,19 +230,44 @@ export default function LabelPrint(props) {
   const [watermarkEnabled, setWatermarkEnabled] = useState(true);
   const [selectedIds, setSelectedIds] = useState(() => new Set());
 
-  // Start position (Row 1..10, Col 1..3)
   const [startRow, setStartRow] = useState(1);
   const [startCol, setStartCol] = useState(1);
 
-  // Use parent-provided grows if present (even if it's an empty array).
-  // Only use the Firestore fallback when the prop is NOT provided at all.
+  // Watermark resolution
+  const [wmUrl, setWmUrl] = useState("");           // resolved image URL (if any)
+  const [wmTextFallback, setWmTextFallback] = useState(false);
+
   const allGrows = hasGrowsProp ? propGrows : fetched;
 
-  // Ref to MULTI-SHEET hidden container (for printing)
   const printSheetsRef = useRef(null);
   const selectAllRef = useRef(null);
 
-  // Default select all on first load / when grows change
+  /* Resolve watermark URL once */
+  useEffect(() => {
+    let abort = false;
+    (async () => {
+      // Allow overriding via localStorage key labels.watermark.url
+      let custom = "";
+      try { custom = localStorage.getItem("labels.watermark.url") || ""; } catch {}
+      const list = [custom, ...(props.watermarkUrl ? [props.watermarkUrl] : []), ...WM_CANDIDATES]
+        .filter(Boolean)
+        .filter((v, i, a) => a.indexOf(v) === i);
+      for (const url of list) {
+        // eslint-disable-next-line no-await-in-loop
+        const ok = await preloadOK(url);
+        if (abort) return;
+        if (ok) {
+          setWmUrl(url);
+          setWmTextFallback(false);
+          return;
+        }
+      }
+      setWmUrl("");
+      setWmTextFallback(true);
+    })();
+    return () => { abort = true; };
+  }, [props.watermarkUrl]);
+
   useEffect(() => {
     if (!allGrows.length) {
       setSelectedIds(new Set());
@@ -243,12 +292,10 @@ export default function LabelPrint(props) {
   const noneSelected = selectedIds.size === 0;
   const someSelected = !noneSelected && !allSelected;
 
-  // Indeterminate visual state for "Select all"
   useEffect(() => {
     if (selectAllRef.current) selectAllRef.current.indeterminate = someSelected;
   }, [someSelected]);
 
-  // Watermark preference
   useEffect(() => {
     try {
       const raw = localStorage.getItem(LOCAL_KEY_WATERMARK);
@@ -259,7 +306,6 @@ export default function LabelPrint(props) {
     try { localStorage.setItem(LOCAL_KEY_WATERMARK, String(watermarkEnabled)); } catch {}
   }, [watermarkEnabled]);
 
-  // Start position persistence
   useEffect(() => {
     try {
       const raw = localStorage.getItem(LOCAL_KEY_STARTPOS);
@@ -273,21 +319,37 @@ export default function LabelPrint(props) {
     try { localStorage.setItem(LOCAL_KEY_STARTPOS, `${startRow},${startCol}`); } catch {}
   }, [startRow, startCol]);
 
-  // Firestore fallback — ONLY when the prop isn't present at all
   useEffect(() => {
     if (hasGrowsProp || !uid) return;
     (async () => {
       const snap = await getDocs(collection(db, "users", uid, "grows"));
       const items = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
-      setFetched(items.filter(isActiveGrow)); // ensure active-only when falling back
+      setFetched(items.filter(isActiveGrow));
     })();
   }, [hasGrowsProp, uid]);
 
   const origin = typeof window !== "undefined" ? window.location.origin : "";
   const skipCount = Math.max(0, Math.min(PER_SHEET - 1, (startRow - 1) * COLS + (startCol - 1)));
 
-  // Build print HTML. IMPORTANT: we pass **innerHTML** (not the hidden wrapper)
-  const buildPrintHTML = (sheetsInnerHTML) => `<!doctype html>
+  /* Build printable HTML (inject watermark snippet or text) */
+  const buildPrintHTML = (sheetsInnerHTML) => {
+    const wmCSS = `
+      .wm {
+        position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);
+        width:calc(${QR_SIZE}*${LOGO_SCALE});height:calc(${QR_SIZE}*${LOGO_SCALE});
+        opacity:${LOGO_OPACITY};pointer-events:none;filter:grayscale(100%) contrast(.9) brightness(1.15);
+        object-fit:contain;z-index:1;mix-blend-mode:multiply;
+      }
+      .wmtxt {
+        position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);
+        width:calc(${QR_SIZE}*${LOGO_SCALE});height:calc(${QR_SIZE}*${LOGO_SCALE});
+        display:flex;align-items:center;justify-content:center;
+        font-weight:800;font-size:.42in;letter-spacing:.02in;color:rgba(0,0,0,.85);
+        opacity:${LOGO_OPACITY};pointer-events:none;filter:grayscale(100%);z-index:1;mix-blend-mode:multiply;
+      }
+      .t1,.t2,.f{ text-shadow: 0 0 2px rgba(255,255,255,.95), 0 0 1px rgba(255,255,255,.95); }
+    `;
+    return `<!doctype html>
 <html>
 <head>
 <meta charset="utf-8"/>
@@ -300,30 +362,18 @@ export default function LabelPrint(props) {
     display: grid; grid-template-columns: ${LABEL_W} ${LABEL_W} ${LABEL_W}; column-gap: ${GAP_X}; row-gap: 0;
     align-content: start; justify-content: start;
     print-color-adjust: exact; -webkit-print-color-adjust: exact;
-    font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial;
-    color: #000;
+    font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial; color: #000;
   }
   .sheet + .sheet { page-break-before: always; }
-  .label {
-    position: relative; width: ${LABEL_W}; height: ${LABEL_H};
-    padding: ${PAD_Y} ${PAD_X}; box-sizing: border-box; overflow: hidden; break-inside: avoid;
-  }
-  .row {
-    position: relative; z-index: 2;
-    display: grid; grid-template-columns: calc(100% - ${QR_SIZE} - 0.12in) ${QR_SIZE};
-    gap: 0.10in; align-items: stretch;
-  }
+  .label { position: relative; width: ${LABEL_W}; height: ${LABEL_H}; padding: ${PAD_Y} ${PAD_X}; box-sizing: border-box; overflow: hidden; break-inside: avoid; }
+  .row { position: relative; z-index: 2; display: grid; grid-template-columns: calc(100% - ${QR_SIZE} - 0.12in) ${QR_SIZE}; gap: 0.10in; align-items: stretch; }
   .content { position: relative; min-width: 0; height: 100%; min-height: ${QR_SIZE}; }
   .qr { width: ${QR_SIZE}; height: ${QR_SIZE}; }
-  .wm {
-    position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%);
-    width: calc(${QR_SIZE} * ${LOGO_SCALE}); height: calc(${QR_SIZE} * ${LOGO_SCALE});
-    opacity: ${LOGO_OPACITY}; pointer-events: none; filter: grayscale(100%); object-fit: contain; z-index: 1;
-  }
   .t1 { position: relative; z-index: 2; font-weight: 700; font-size: ${T1_PT}pt; line-height: 1.05; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .t2 { position: relative; z-index: 2; font-weight: 600; font-size: ${T2_PT}pt; line-height: 1.05; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .fields { margin-top: 0.02in; position: relative; z-index: 2; }
   .f { position: relative; z-index: 2; font-size: ${F_PT}pt; line-height: 1.05; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  ${wmCSS}
 </style>
 </head>
 <body>
@@ -331,6 +381,7 @@ export default function LabelPrint(props) {
   <script>setTimeout(() => { window.focus(); window.print(); }, 30);</script>
 </body>
 </html>`;
+  };
 
   const printNow = async () => {
     if (!selectedGrows.length) {
@@ -447,7 +498,7 @@ export default function LabelPrint(props) {
         </div>
       </div>
 
-      {/* On-screen preview: TRUE SIZE single sheet with blank placeholders for offset */}
+      {/* On-screen preview */}
       <div className="w-full overflow-auto rounded-md border border-zinc-200 dark:border-zinc-800 bg-white">
         <div id="screenSheet" style={sheetStyle}>
           {Array.from({ length: Math.max(0, Math.min(PER_SHEET - 1, (startRow - 1) * COLS + (startCol - 1))) }).map((_, i) => (
@@ -474,12 +525,19 @@ export default function LabelPrint(props) {
                 <div style={selectBadgeStyle(selected)} />
                 <div style={rowStyle}>
                   <div className="content" style={contentContainerStyle} data-testid="label-text">
-                    {watermarkEnabled ? <img src={LOGO_URL} alt="" style={wmTextStyle} data-testid="watermark-image" /> : null}
-                    <div style={t1Style} title={strain} data-testid="label-strain">{strain}</div>
+                    {/* watermark image or fallback */}
+                    {watermarkEnabled ? (
+                      wmUrl ? (
+                        <img src={wmUrl} alt="" style={wmImgStyle} />
+                      ) : wmTextFallback ? (
+                        <div style={wmTextStyle}>CN</div>
+                      ) : null
+                    ) : null}
+                    <div style={t1Style} title={sub ? sub : strain} data-testid={sub ? "label-abbr" : "label-title"}>{sub ? sub : strain}</div>
                     {sub ? (
-                      <div style={t2Style} title={sub} data-testid="label-abbr">{sub}</div>
+                      <div style={t2Style} title={strain} data-testid="label-strain">{strain}</div>
                     ) : (
-                      <div style={{ ...t2Style, opacity: 0 }} data-testid="label-abbr">&nbsp;</div>
+                      <div style={{ ...t2Style, opacity: 0 }} aria-hidden="true">&nbsp;</div>
                     )}
                     <div style={fieldsWrapStyle} className="fields">
                       <div style={fStyle} title={type || ""} data-testid="label-type">Type: {type || "—"}</div>
@@ -496,49 +554,73 @@ export default function LabelPrint(props) {
         </div>
       </div>
 
-      {/* Hidden printable sheets (render ONLY SELECTED grows with offset; may span multiple pages) */}
+      {/* Hidden printable sheets */}
       <div
         ref={printSheetsRef}
         style={{ position: "absolute", left: "-10000px", top: 0, visibility: "hidden" }}
         aria-hidden
         id="sheets"
       >
-        {pagesWithOffset(selectedGrows, Math.max(0, Math.min(PER_SHEET - 1, (startRow - 1) * COLS + (startCol - 1)))).map((page, pIdx) => (
-          <div key={`sheet-${pIdx}`} className="sheet">
-            {Array.from({ length: page.prefill }).map((_, i) => (
-              <div key={`p${pIdx}-blank-${i}`} className="label" />
-            ))}
-            {page.grows.map((g, i) => {
-              const strain = getStrain(g);
-              const sub = getAbbrev(g);
-              const type = getType(g);
-              const inoc = getInoc(g);
-              const url = `${origin}/quick/${g.id}`;
-              return (
-                <div key={`${g.id || i}`} className="label">
-                  <div className="row">
-                    <div className="content">
-                      {watermarkEnabled ? <img src={LOGO_URL} alt="" className="wm" /> : null}
-                      <div className="t1" title={strain}>{strain}</div>
-                      {sub ? (
-                        <div className="t2" title={sub}>{sub}</div>
-                      ) : (
-                        <div className="t2" style={{ opacity: 0 }}>&nbsp;</div>
-                      )}
-                      <div className="fields">
-                        <div className="f" title={type || ""}>Type: {type || "—"}</div>
-                        <div className="f" title={inoc || ""}>Inoc: {inoc || "—"}</div>
-                      </div>
-                    </div>
-                    <div className="qr" style={{ width: QR_SIZE, height: QR_SIZE }}>
-                      <QRCodeSVG value={url} width="100%" height="100%" />
+        {(() => {
+          const pages = [];
+          const items = selectedGrows.slice();
+          const prefill = Math.max(0, Math.min(PER_SHEET - 1, (startRow - 1) * COLS + (startCol - 1)));
+          const makeLabel = (g, key) => {
+            const strain = getStrain(g);
+            const sub = getAbbrev(g);
+            const type = getType(g);
+            const inoc = getInoc(g);
+            const url = `${origin}/quick/${g.id}`;
+            return (
+              <div key={key} className="label">
+                <div className="row">
+                  <div className="content">
+                    {watermarkEnabled ? (
+                      wmUrl ? (
+                        <img src={wmUrl} alt="" className="wm" />
+                      ) : wmTextFallback ? (
+                        <div className="wmtxt">CN</div>
+                      ) : null
+                    ) : null}
+                    <div className="t1" title={sub ? sub : strain} data-testid={sub ? "label-abbr" : "label-title"}>{sub ? sub : strain}</div>
+                    {sub ? (
+                      <div className="t2" title={strain} data-testid="label-strain">{strain}</div>
+                    ) : (
+                      <div className="t2" style={{ opacity: 0 }} aria-hidden="true">&nbsp;</div>
+                    )}
+                    <div className="fields">
+                      <div className="f" title={type || ""}>Type: {type || "—"}</div>
+                      <div className="f" title={inoc || ""}>Inoc: {inoc || "—"}</div>
                     </div>
                   </div>
+                  <div className="qr" style={{ width: QR_SIZE, height: QR_SIZE }}>
+                    <QRCodeSVG value={url} width="100%" height="100%" />
+                  </div>
                 </div>
-              );
-            })}
-          </div>
-        ))}
+              </div>
+            );
+          };
+
+          // first page with prefill
+          const first = items.splice(0, Math.max(0, PER_SHEET - prefill));
+          pages.push(
+            <div key="sheet-0" className="sheet">
+              {Array.from({ length: prefill }).map((_, j) => <div key={`blank-0-${j}`} className="label" />)}
+              {first.map((g, idx) => makeLabel(g, `0-${idx}`))}
+            </div>
+          );
+
+          // remaining full pages
+          while (items.length) {
+            const slice = items.splice(0, PER_SHEET);
+            pages.push(
+              <div key={`sheet-${pages.length}`} className="sheet">
+                {slice.map((g, idx) => makeLabel(g, `${pages.length}-${idx}`))}
+              </div>
+            );
+          }
+          return pages;
+        })()}
       </div>
     </div>
   );

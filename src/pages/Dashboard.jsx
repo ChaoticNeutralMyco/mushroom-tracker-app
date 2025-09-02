@@ -2,12 +2,12 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { collection, getDocs } from "firebase/firestore";
 import { db, auth } from "../firebase-config";
-import { isActiveGrow } from "../lib/growFilters";
+import { isActiveGrow, isArchivedish } from "../lib/growFilters";
+import GrowList from "../components/Grow/GrowList";
 
-// small stat card
 function Stat({ label, value }) {
   return (
-    <div className="bg-gray-100 dark:bg-gray-700 p-4 rounded shadow">
+    <div className="bg-white dark:bg-gray-800 p-4 rounded shadow border border-gray-200 dark:border-gray-700">
       <p className="text-sm text-gray-600 dark:text-gray-300">{label}</p>
       <p className="text-lg font-bold">{value}</p>
     </div>
@@ -15,34 +15,45 @@ function Stat({ label, value }) {
 }
 
 export default function Dashboard({ grows: growsProp }) {
-  const [growsLocal, setGrowsLocal] = useState(Array.isArray(growsProp) ? growsProp : []);
+  const [growsLocal, setGrowsLocal] = useState(
+    Array.isArray(growsProp) ? growsProp : []
+  );
   const [strainFilter, setStrainFilter] = useState("");
   const [stageFilter, setStageFilter] = useState("All Stages");
   const [dateRange, setDateRange] = useState({ start: "", end: "" });
 
-  // keep in sync with props
+  // Keep in sync if a parent passes grows
   useEffect(() => {
     if (Array.isArray(growsProp)) setGrowsLocal(growsProp);
   }, [growsProp]);
 
-  // fallback fetch (only if parent didn't pass grows)
+  // Load from Firestore when no grows were provided by a parent.
   useEffect(() => {
     if (Array.isArray(growsProp)) return;
+
     (async () => {
       const user = auth.currentUser;
       if (!user) return;
+
+      // Primary collection that holds BOTH active and archived flags.
       const snap = await getDocs(collection(db, "users", user.uid, "grows"));
-      setGrowsLocal(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
+      const all = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+      setGrowsLocal(all);
     })();
   }, [growsProp]);
 
-  // ---- ACTIVE set (single source of truth) ----
+  // Partition using the SAME rules as Archive page
   const activeGrows = useMemo(
     () => (Array.isArray(growsLocal) ? growsLocal.filter(isActiveGrow) : []),
     [growsLocal]
   );
+  const archivedGrows = useMemo(
+    () =>
+      (Array.isArray(growsLocal) ? growsLocal.filter(isArchivedish) : []),
+    [growsLocal]
+  );
 
-  // filters operate on ACTIVE set
+  // The stat cards remain ACTIVE‐only, as before
   const filteredGrows = useMemo(() => {
     let data = [...activeGrows];
     if (strainFilter) {
@@ -65,7 +76,6 @@ export default function Dashboard({ grows: growsProp }) {
     return data;
   }, [activeGrows, strainFilter, stageFilter, dateRange]);
 
-  // cards (ACTIVE ONLY)
   const totalActive = filteredGrows.length;
   const uniqueStrains = useMemo(
     () => new Set(filteredGrows.map((g) => g.strain).filter(Boolean)).size,
@@ -90,11 +100,10 @@ export default function Dashboard({ grows: growsProp }) {
   }, [filteredGrows]);
 
   return (
-    <div className="p-4">
-      <div className="bg-white dark:bg-gray-800 p-4 rounded shadow mb-4">
-        <h2 className="text-xl font-bold mb-2 flex items-center gap-2">
-          📊 Dashboard Stats
-        </h2>
+    <div className="p-4 space-y-4">
+      {/* Stats */}
+      <div className="bg-white dark:bg-gray-800 p-4 rounded shadow border border-gray-200 dark:border-gray-700">
+        <h2 className="text-xl font-bold mb-2 flex items-center gap-2">📊 Dashboard Stats</h2>
 
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
           <Stat label="Total Active Grows" value={totalActive} />
@@ -103,12 +112,10 @@ export default function Dashboard({ grows: growsProp }) {
           <Stat label="Total Cost" value={`$${totalCost.toFixed(2)}`} />
         </div>
 
-        {/* By Stage (of ACTIVE only) */}
-        <div className="bg-gray-100 dark:bg-gray-700 p-4 rounded shadow mt-4">
-          <p className="text-sm text-gray-600 dark:text-gray-300 font-semibold mb-1">
-            By Stage
-          </p>
-          <ul className="text-sm text-gray-700 dark:text-gray-300 pl-4 list-disc space-y-0.5">
+        {/* By Stage (ACTIVE only) */}
+        <div className="bg-gray-50 dark:bg-gray-700/40 p-4 rounded border border-gray-200 dark:border-gray-700 mt-4">
+          <p className="text-sm text-gray-700 dark:text-gray-200 font-semibold mb-1">By Stage</p>
+          <ul className="text-sm text-gray-800 dark:text-gray-100 pl-4 list-disc space-y-0.5">
             {stages.map((s) => (
               <li key={s}>
                 {s}: {stageCounts[s] || 0}
@@ -118,9 +125,9 @@ export default function Dashboard({ grows: growsProp }) {
         </div>
       </div>
 
-      {/* Filters (operate on ACTIVE set) */}
-      <div className="bg-white dark:bg-gray-800 p-4 rounded shadow mb-4">
-        <h2 className="text-xl font-bold mb-2">Filter Grows</h2>
+      {/* Filters for stats (unchanged) */}
+      <div className="bg-white dark:bg-gray-800 p-4 rounded shadow border border-gray-200 dark:border-gray-700">
+        <h2 className="text-xl font-bold mb-2">Filter Grows (for stats above)</h2>
         <label className="block mb-2">
           <span className="text-sm">Search by strain</span>
           <input
@@ -154,9 +161,7 @@ export default function Dashboard({ grows: growsProp }) {
             <input
               type="date"
               value={dateRange.start}
-              onChange={(e) =>
-                setDateRange((prev) => ({ ...prev, start: e.target.value }))
-              }
+              onChange={(e) => setDateRange((prev) => ({ ...prev, start: e.target.value }))}
               className="w-full p-2 rounded border dark:bg-gray-700 dark:text-white"
               aria-label="Start date"
             />
@@ -166,9 +171,7 @@ export default function Dashboard({ grows: growsProp }) {
             <input
               type="date"
               value={dateRange.end}
-              onChange={(e) =>
-                setDateRange((prev) => ({ ...prev, end: e.target.value }))
-              }
+              onChange={(e) => setDateRange((prev) => ({ ...prev, end: e.target.value }))}
               className="w-full p-2 rounded border dark:bg-gray-700 dark:text-white"
               aria-label="End date"
             />
@@ -176,25 +179,14 @@ export default function Dashboard({ grows: growsProp }) {
         </div>
       </div>
 
-      {/* My Grows (active only) */}
-      <div className="bg-white dark:bg-gray-800 p-4 rounded shadow">
-        <h3 className="text-lg font-semibold mb-2">My Grows</h3>
-        {activeGrows.length === 0 ? (
-          <div className="text-sm opacity-70">No grows yet.</div>
-        ) : (
-          <ul className="space-y-2">
-            {activeGrows.slice(0, 6).map((g) => (
-              <li key={g.id} className="p-2 rounded bg-gray-100 dark:bg-gray-700">
-                <div className="font-medium">
-                  {g.abbreviation || g.strain || g.id}
-                </div>
-                <div className="text-xs opacity-80">
-                  {(g.growType || g.type || g.container || "—")} — {g.stage || "—"}
-                </div>
-              </li>
-            ))}
-          </ul>
-        )}
+      {/* Grows tile — now driven by unified archived logic */}
+      <div className="bg-white dark:bg-gray-800 p-4 rounded shadow border border-gray-200 dark:border-gray-700">
+        <h3 className="text-lg font-semibold mb-2">Grows</h3>
+        <GrowList
+          growsActive={activeGrows}
+          archivedGrows={archivedGrows}
+          showAddButton
+        />
       </div>
     </div>
   );
