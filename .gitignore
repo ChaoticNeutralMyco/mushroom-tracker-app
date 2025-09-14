@@ -17,10 +17,7 @@ Thumbs.db
 .vscode/
 
 # --- Rust / Tauri ---
-# global Rust targets
 /target/
-
-# Tauri v2 project layout
 /src-tauri/target/
 /src-tauri/gen/
 /src-tauri/.cargo/
