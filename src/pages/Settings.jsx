@@ -37,6 +37,9 @@ const defaultPrefs = {
   // Units
   temperatureUnit: "F",
   autoConvertEnvNotes: true,
+
+  // NEW: control the guide menu and onboarding
+  guideEnabled: true,
 };
 
 function applyThemeDOM(prefs) {
@@ -159,6 +162,9 @@ export default function Settings({
     }));
   };
 
+  // Guide toggle
+  const setGuideEnabled = (enabled) => savePrefs({ ...prefs, guideEnabled: !!enabled });
+
   const remindersOn = !!prefs.stageReminders;
   const digestTime = String(prefs.taskDigestTime || "09:00");
   const daysInoc   = Number(prefs.stageMaxDays?.Inoculated || 0);
@@ -205,7 +211,7 @@ export default function Settings({
           {/* Theme Style: controls background only */}
           <div>
             <h2 className="text-lg font-medium mb-3">Theme Style</h2>
-            <div className="flex flex-wrap gap-2">
+            <div className="flex flex-wrap gap-2" data-tour="theme-style">
               <button
                 className={`chip ${prefs.themeStyle !== "chaotic" ? "chip--active" : ""}`}
                 onClick={() => setThemeStyle("default")}
@@ -226,7 +232,7 @@ export default function Settings({
 
           <div>
             <h2 className="text-lg font-medium mb-3">Accent Color</h2>
-            <div className="flex flex-wrap gap-2">
+            <div className="flex flex-wrap gap-2" data-tour="accent-color">
               {ACCENTS.map((a) => (
                 <button
                   key={a.id}
@@ -240,6 +246,28 @@ export default function Settings({
             </div>
             <p className="text-sm text-slate-500 dark:text-slate-400 mt-2">
               Change the accent without affecting the Chaotic background.
+            </p>
+          </div>
+
+          {/* NEW: Guide menu & onboarding toggle */}
+          <div>
+            <h2 className="text-lg font-medium mb-3">Guided tour &amp; Help menu</h2>
+            <div className="flex flex-wrap items-center gap-2">
+              <button
+                className={`chip ${prefs.guideEnabled ? "chip--active" : ""}`}
+                onClick={() => setGuideEnabled(true)}
+              >
+                On
+              </button>
+              <button
+                className={`chip ${!prefs.guideEnabled ? "chip--active" : ""}`}
+                onClick={() => setGuideEnabled(false)}
+              >
+                Off
+              </button>
+            </div>
+            <p className="text-sm text-slate-500 dark:text-slate-400 mt-2">
+              When Off, the bottom-left help button is hidden and onboarding will not auto-open.
             </p>
           </div>
 

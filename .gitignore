@@ -40,3 +40,11 @@ test-results/
 
 # --- Misc ---
 *.patch
+
+deploy/
+
+dev-dist/
+
+.vs/
+
+playwright-report-ci/
