@@ -42,3 +42,9 @@ test-results/
 *.patch
 
 deploy/
+
+dev-dist/
+
+.vs/
+
+playwright-report-ci/
