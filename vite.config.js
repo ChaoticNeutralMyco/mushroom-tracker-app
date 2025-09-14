@@ -1,4 +1,4 @@
-import { defineConfig, splitVendorChunkPlugin } from "vite";
+import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 
 // Optional-load the Tauri plugin so the config works even if the package isn't installed.
@@ -8,40 +8,19 @@ export default defineConfig(async () => {
     const mod = await import("@tauri-apps/vite-plugin");
     tauriPlugin = mod.tauri();
   } catch {
-    // Plugin not installed; continue without it (safe for dev).
-    tauriPlugin = null;
+    tauriPlugin = null; // fine for web/Vercel
   }
 
   return {
-    plugins: [react(), ...(tauriPlugin ? [tauriPlugin] : []), splitVendorChunkPlugin()],
+    plugins: [react(), ...(tauriPlugin ? [tauriPlugin] : [])],
 
     build: {
-      target: "es2022",
+      target: "es2020",
       sourcemap: false,
-      chunkSizeWarningLimit: 1000,
-      rollupOptions: {
-        output: {
-          manualChunks(id) {
-            // --- Vendor groups ---
-            if (id.includes("node_modules")) {
-              if (id.includes("firebase")) return "vendor-firebase";
-              if (id.includes("react-router")) return "vendor-router";
-              if (id.includes("react-window")) return "opt-react-window";
-              if (id.includes("lucide-react")) return "vendor-icons";
-              if (/[\\/]node_modules[\\/](react|react-dom)[\\/]/.test(id)) return "vendor-react";
-              return "vendor";
-            }
-            // --- Route-level groups (best-effort) ---
-            if (/\bpages[\\/]Analytics\b|[\\/]Analytics\.(tsx|ts|jsx|js)$/.test(id)) {
-              return "route-analytics";
-            }
-            if (/\bcomponents[\\/]ui[\\/]ScanBarcodeModal\b|scanner|barcode/i.test(id)) {
-              return "route-scanner";
-            }
-            return undefined;
-          },
-        },
-      },
+      minify: "terser",                 // safer than esbuild for vendor/circular cases
+      chunkSizeWarningLimit: 1500,
+      // Let Rollup decide chunking; removing manualChunks/splitVendorChunk avoids bad init order
+      commonjsOptions: { transformMixedEsModules: true },
     },
 
     server: { strictPort: true },
