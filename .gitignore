@@ -40,3 +40,5 @@ test-results/
 
 # --- Misc ---
 *.patch
+
+deploy/
