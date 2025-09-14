@@ -42,7 +42,9 @@ import CameraProbe from "./CameraProbe";
 import FabQuickActions from "./components/ui/FabQuickActions";
 import LocalReminders from "./components/ui/LocalReminders";
 
-// Lazy routes/panels
+// first-run coach (utils)
+import OnboardingCoach from "./utils/OnboardingCoach";
+
 const Analytics = React.lazy(() => import("./pages/Analytics"));
 const CalendarView = React.lazy(() => import("./pages/CalendarView"));
 const Settings = React.lazy(() => import("./pages/Settings"));
@@ -55,8 +57,6 @@ const COGManager = React.lazy(() => import("./components/recipes/COGManager.jsx"
 const TaskManager = React.lazy(() => import("./components/Tasks/TaskManager"));
 const GrowTimeline = React.lazy(() => import("./components/Grow/GrowTimeline"));
 const ScanBarcodeModal = React.lazy(() => import("./components/ui/ScanBarcodeModal"));
-// NOTE: Dashboard photo uploader removed (we now rely on the FAB)
-// const PhotoUpload = React.lazy(() => import("./components/ui/PhotoUpload"));
 const RecipeStepsPanel = React.lazy(() => import("./components/recipes/RecipeStepsPanel"));
 
 const prefetchers = {
@@ -93,13 +93,10 @@ function applyThemeToDOM(prefsLike) {
   root.classList.add(`theme-${p.accent || "emerald"}`);
   root.classList.toggle("dark", !!p.darkMode);
 
-  // NEW: toggle the Chaotic background independently of accent
   try {
     const style = (prefsLike && prefsLike.themeStyle) || localStorage.getItem("cn_theme_style") || "default";
     root.classList.toggle("bg-chaotic", style === "chaotic");
-  } catch {
-    // no-op
-  }
+  } catch {}
 
   root.classList.toggle("compact", !!prefsLike.compactUI);
   root.classList.toggle("reduce-motion", !!prefsLike.reduceMotion);
@@ -113,7 +110,6 @@ function applyThemeToDOM(prefsLike) {
   } catch {}
 }
 
-// Apply theme ASAP on boot
 (function applyInitialTheme() {
   try {
     const lsNew = JSON.parse(localStorage.getItem("preferences") || "null");
@@ -127,7 +123,6 @@ function applyThemeToDOM(prefsLike) {
         applyThemeToDOM({ accent: "chaotic", mode: "system" });
       }
     }
-    // NEW: honor saved background style (default/chaotic)
     try {
       const sty = localStorage.getItem("cn_theme_style");
       document.documentElement.classList.toggle("bg-chaotic", sty === "chaotic");
@@ -141,7 +136,7 @@ const DEFAULT_PREFS = {
   mode: "system",
   accent: "chaotic",
   theme: "chaotic",
-  themeStyle: "chaotic", // NEW: background style toggle (default | chaotic)
+  themeStyle: "chaotic",
   darkMode: systemPrefersDark(),
   fontScale: "small",
   dyslexiaFont: false,
@@ -159,8 +154,6 @@ const DEFAULT_PREFS = {
   quickNoteStage: "current",
   photoQuality: "medium",
   autoCaptionPhotos: true,
-
-  // Reminders and misc
   taskDigestTime: "09:00",
   taskOverdueHighlight: true,
   stageReminders: false,
@@ -178,10 +171,11 @@ const DEFAULT_PREFS = {
   splashMinMs: 1200,
   hasSeenOnboarding: true,
   devMode: false,
+  temperatureUnit: "F",
+  autoConvertEnvNotes: true,
 
-  // NEW: Unit prefs (defaults)
-  temperatureUnit: "F",       // UI default entry/display
-  autoConvertEnvNotes: true,  // also store °C copy for analytics/other users
+  // NEW: toggle to hide the guide menu and disable onboarding
+  guideEnabled: true,
 };
 
 const Skel = ({ className = "" }) => (
@@ -281,6 +275,8 @@ export default function App() {
           accent: merged.accent,
           temperatureUnit: merged.temperatureUnit,
           autoConvertEnvNotes: merged.autoConvertEnvNotes,
+          // store guide preference client-side for fast boot
+          guideEnabled: merged.guideEnabled,
         })
       );
     } catch {}
@@ -513,7 +509,8 @@ export default function App() {
             largeTaps: merged.largeTaps,
             showSplashOnLoad: merged.showSplashOnLoad,
             splashMinMs: merged.splashMinMs,
-            // Unit prefs are saved on explicit change (see savePrefs)
+            // persist guide toggle in cloud
+            guideEnabled: merged.guideEnabled,
           },
           { merge: true }
         );
@@ -637,8 +634,6 @@ export default function App() {
     if (user) await deleteDoc(doc(db, "users", user.uid, "tasks", id));
   };
 
-  // === NOTES: canonical storage is Fahrenheit ===
-  // Accepts extras.temperatureF or extras.temperatureC (and humidityPct).
   const onAddNote = async (growId, stage, text, extras = {}) => {
     if (!user || !text) return;
 
@@ -655,9 +650,7 @@ export default function App() {
       if (autoConvert) temperatureC = Math.round(((temperatureF - 32) * 5) / 9 * 10) / 10;
     } else if (hasC) {
       temperatureC = Number(extras.temperatureC);
-      // Always store F canonically
       temperatureF = Math.round(((temperatureC * 9) / 5 + 32) * 10) / 10;
-      // Only include C copy if autoConvert is enabled
       if (!autoConvert) temperatureC = undefined;
     }
 
@@ -712,7 +705,6 @@ export default function App() {
     });
   };
 
-  // Back-compat helper used by some routes: accepts Celsius and passes through.
   const onAddNoteWithEnv = async (growId, stage, text, temperatureC, humidityPct) =>
     onAddNote(growId, stage, text, { temperatureC, humidityPct });
 
@@ -740,7 +732,6 @@ export default function App() {
     setPrefs(merged);
     applyAppearance(merged);
 
-    // NEW: persist and toggle background style
     try {
       const style = merged.themeStyle === "chaotic" ? "chaotic" : "default";
       localStorage.setItem("cn_theme_style", style);
@@ -755,6 +746,7 @@ export default function App() {
           accent: merged.accent,
           temperatureUnit: merged.temperatureUnit,
           autoConvertEnvNotes: merged.autoConvertEnvNotes,
+          guideEnabled: merged.guideEnabled, // persist locally
         })
       );
       localStorage.setItem("__prefs__", JSON.stringify({ theme: merged.accent, darkMode: merged.darkMode }));
@@ -776,9 +768,9 @@ export default function App() {
         largeTaps: merged.largeTaps,
         showSplashOnLoad: merged.showSplashOnLoad,
         splashMinMs: merged.splashMinMs,
-        // Persist unit prefs
         temperatureUnit: merged.temperatureUnit,
         autoConvertEnvNotes: merged.autoConvertEnvNotes,
+        guideEnabled: merged.guideEnabled, // persist in cloud
       },
       { merge: true }
     );
@@ -879,12 +871,13 @@ export default function App() {
         <Route
           path="/"
           element={
-            <div className="min-h-screen bg-zinc-100 dark:bg-zinc-950 text-zinc-900 dark:text-white">
+            <div id="app-shell" className="min-h-screen bg-zinc-100 dark:bg-zinc-950 text-zinc-900 dark:text-white">
               <header className="sticky top-0 z-30 bg-white/80 dark:bg-zinc-900/80 backdrop-blur border-b border-zinc-200 dark:border-zinc-800">
                 <div className="max-w-7xl mx-auto px-4 py-3 flex items-center gap-3">
                   <h1 className="text-xl font-bold">Chaotic Neutral Tracker</h1>
                   <div className="ml-auto flex items-center gap-2">
                     <button
+                      data-tour="scan"
                       onClick={() => setShowScanner(true)}
                       className="chip chip--active text-sm"
                     >
@@ -956,7 +949,7 @@ export default function App() {
                       </div>
 
                       {/* Stage chips */}
-                      <div className="mb-4 flex flex-wrap items-center gap-2">
+                      <div className="mb-4 flex flex-wrap items-center gap-2" data-tour="stage-filters">
                         <span className="text-xs uppercase tracking-wide text-slate-500 dark:text-slate-400">
                           Stages
                         </span>
@@ -984,6 +977,7 @@ export default function App() {
 
                         <div className="flex">
                           <button
+                            data-tour="new-grow"
                             className="chip chip--active text-sm"
                             onClick={() => setEditingGrow({})}
                           >
@@ -991,7 +985,6 @@ export default function App() {
                           </button>
                         </div>
 
-                        {/* Grow list only — dashboard photo uploader removed */}
                         <div className="bg-white dark:bg-zinc-900 rounded-2xl shadow p-4">
                           <GrowList
                             growsActive={activeGrowsBase}
@@ -1046,7 +1039,7 @@ export default function App() {
                   )}
 
                   {activeTab === "cog" && (
-                    <div className="bg-white dark:bg-zinc-900 rounded-2xl shadow p-4">
+                    <div className="bg-white dark:bg-zinc-900 rounded-2xl shadow p-4" data-tour="cog-root">
                       <COGManager />
                     </div>
                   )}
@@ -1130,6 +1123,9 @@ export default function App() {
         />
         <Route path="/camera-probe" element={<CameraProbe />} />
       </Routes>
+
+      {/* First-run coach (portal-based, overlays body) — now respects prefs.guideEnabled */}
+      <OnboardingCoach pageKey={activeTab} enabled={prefs.guideEnabled !== false} />
     </>
   );
 }
