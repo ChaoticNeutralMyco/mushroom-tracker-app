@@ -5,9 +5,16 @@ description = "Chaotic Neutral Mycology — Desktop"
 authors = ["You"]
 edition = "2021"
 
+# Desktop binary target (keeps your current desktop flow intact)
 [[bin]]
 name = "mushroom-tracker"
 path = "src/main.rs"
+
+# Mobile/Android requires a library target (cdylib)
+[lib]
+name = "mushroom_tracker"
+path = "src/lib.rs"
+crate-type = ["cdylib", "rlib"]
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }

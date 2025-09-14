@@ -38,8 +38,11 @@ import DashboardStats from "./components/ui/DashboardStats";
 import OnboardingModal from "./components/ui/OnboardingModal";
 import SplashScreen from "./components/ui/SplashScreen";
 import { isActiveGrow, isArchivedish } from "./lib/growFilters";
+import CameraProbe from "./CameraProbe";
+import FabQuickActions from "./components/ui/FabQuickActions";
+import LocalReminders from "./components/ui/LocalReminders";
 
-// Lazy pages/blocks
+// Lazy routes/panels
 const Analytics = React.lazy(() => import("./pages/Analytics"));
 const CalendarView = React.lazy(() => import("./pages/CalendarView"));
 const Settings = React.lazy(() => import("./pages/Settings"));
@@ -52,8 +55,8 @@ const COGManager = React.lazy(() => import("./components/recipes/COGManager.jsx"
 const TaskManager = React.lazy(() => import("./components/Tasks/TaskManager"));
 const GrowTimeline = React.lazy(() => import("./components/Grow/GrowTimeline"));
 const ScanBarcodeModal = React.lazy(() => import("./components/ui/ScanBarcodeModal"));
-const PhotoUpload = React.lazy(() => import("./components/ui/PhotoUpload"));
-// NEW: recipe instructions panel
+// NOTE: Dashboard photo uploader removed (we now rely on the FAB)
+// const PhotoUpload = React.lazy(() => import("./components/ui/PhotoUpload"));
 const RecipeStepsPanel = React.lazy(() => import("./components/recipes/RecipeStepsPanel"));
 
 const prefetchers = {
@@ -73,10 +76,10 @@ const systemPrefersDark =
   () => window.matchMedia?.("(prefers-color-scheme: dark)")?.matches || false;
 
 function normalizePrefs(input = {}) {
-  const accent = input.accent ?? input.theme ?? "emerald";
+  const accent = input.accent ?? input.theme ?? "chaotic";
   const mode =
     input.mode ??
-    (typeof input.darkMode === "boolean" ? (input.darkMode ? "dark" : "light") : "system");
+    (typeof input.darkMode === "boolean" ? (input.darkMode ? "dark" : "light") : systemPrefersDark());
   const darkMode = mode === "dark" ? true : mode === "light" ? false : systemPrefersDark();
   return { accent, mode, theme: accent, darkMode };
 }
@@ -84,11 +87,19 @@ function normalizePrefs(input = {}) {
 function applyThemeToDOM(prefsLike) {
   const p = normalizePrefs(prefsLike);
   const root = document.documentElement;
-  ["emerald", "violet", "amber", "rose", "slate"].forEach((t) =>
+  ["emerald", "violet", "amber", "rose", "slate", "chaotic", "teal", "indigo", "sky"].forEach((t) =>
     root.classList.remove(`theme-${t}`)
   );
   root.classList.add(`theme-${p.accent || "emerald"}`);
   root.classList.toggle("dark", !!p.darkMode);
+
+  // NEW: toggle the Chaotic background independently of accent
+  try {
+    const style = (prefsLike && prefsLike.themeStyle) || localStorage.getItem("cn_theme_style") || "default";
+    root.classList.toggle("bg-chaotic", style === "chaotic");
+  } catch {
+    // no-op
+  }
 
   root.classList.toggle("compact", !!prefsLike.compactUI);
   root.classList.toggle("reduce-motion", !!prefsLike.reduceMotion);
@@ -106,20 +117,31 @@ function applyThemeToDOM(prefsLike) {
 (function applyInitialTheme() {
   try {
     const lsNew = JSON.parse(localStorage.getItem("preferences") || "null");
-    if (lsNew && (lsNew.mode || lsNew.accent)) return applyThemeToDOM(lsNew);
-    const legacy = JSON.parse(localStorage.getItem("__prefs__") || "{}");
-    if (legacy && (legacy.theme || typeof legacy.darkMode === "boolean"))
-      return applyThemeToDOM(legacy);
-    applyThemeToDOM({ accent: "emerald", mode: "system" });
+    if (lsNew && (lsNew.mode || lsNew.accent)) {
+      applyThemeToDOM(lsNew);
+    } else {
+      const legacy = JSON.parse(localStorage.getItem("__prefs__") || "{}");
+      if (legacy && (legacy.theme || typeof legacy.darkMode === "boolean")) {
+        applyThemeToDOM(legacy);
+      } else {
+        applyThemeToDOM({ accent: "chaotic", mode: "system" });
+      }
+    }
+    // NEW: honor saved background style (default/chaotic)
+    try {
+      const sty = localStorage.getItem("cn_theme_style");
+      document.documentElement.classList.toggle("bg-chaotic", sty === "chaotic");
+    } catch {}
   } catch {
-    document.documentElement.classList.add("theme-emerald");
+    document.documentElement.classList.add("theme-chaotic");
   }
 })();
 
 const DEFAULT_PREFS = {
   mode: "system",
-  accent: "emerald",
-  theme: "emerald",
+  accent: "chaotic",
+  theme: "chaotic",
+  themeStyle: "chaotic", // NEW: background style toggle (default | chaotic)
   darkMode: systemPrefersDark(),
   fontScale: "small",
   dyslexiaFont: false,
@@ -137,6 +159,8 @@ const DEFAULT_PREFS = {
   quickNoteStage: "current",
   photoQuality: "medium",
   autoCaptionPhotos: true,
+
+  // Reminders and misc
   taskDigestTime: "09:00",
   taskOverdueHighlight: true,
   stageReminders: false,
@@ -154,6 +178,10 @@ const DEFAULT_PREFS = {
   splashMinMs: 1200,
   hasSeenOnboarding: true,
   devMode: false,
+
+  // NEW: Unit prefs (defaults)
+  temperatureUnit: "F",       // UI default entry/display
+  autoConvertEnvNotes: true,  // also store °C copy for analytics/other users
 };
 
 const Skel = ({ className = "" }) => (
@@ -246,7 +274,15 @@ export default function App() {
     const merged = { ...p, ...n };
     applyThemeToDOM(merged);
     try {
-      localStorage.setItem("preferences", JSON.stringify({ mode: merged.mode, accent: merged.accent }));
+      localStorage.setItem(
+        "preferences",
+        JSON.stringify({
+          mode: merged.mode,
+          accent: merged.accent,
+          temperatureUnit: merged.temperatureUnit,
+          autoConvertEnvNotes: merged.autoConvertEnvNotes,
+        })
+      );
     } catch {}
     document.documentElement.style.setProperty("--font-scale", merged.fontScale || "small");
   };
@@ -477,6 +513,7 @@ export default function App() {
             largeTaps: merged.largeTaps,
             showSplashOnLoad: merged.showSplashOnLoad,
             splashMinMs: merged.splashMinMs,
+            // Unit prefs are saved on explicit change (see savePrefs)
           },
           { merge: true }
         );
@@ -600,6 +637,50 @@ export default function App() {
     if (user) await deleteDoc(doc(db, "users", user.uid, "tasks", id));
   };
 
+  // === NOTES: canonical storage is Fahrenheit ===
+  // Accepts extras.temperatureF or extras.temperatureC (and humidityPct).
+  const onAddNote = async (growId, stage, text, extras = {}) => {
+    if (!user || !text) return;
+
+    const autoConvert = !!prefs.autoConvertEnvNotes;
+
+    let temperatureF;
+    let temperatureC;
+
+    const hasF = Number.isFinite(Number(extras.temperatureF));
+    const hasC = Number.isFinite(Number(extras.temperatureC));
+
+    if (hasF) {
+      temperatureF = Number(extras.temperatureF);
+      if (autoConvert) temperatureC = Math.round(((temperatureF - 32) * 5) / 9 * 10) / 10;
+    } else if (hasC) {
+      temperatureC = Number(extras.temperatureC);
+      // Always store F canonically
+      temperatureF = Math.round(((temperatureC * 9) / 5 + 32) * 10) / 10;
+      // Only include C copy if autoConvert is enabled
+      if (!autoConvert) temperatureC = undefined;
+    }
+
+    const payload = {
+      growId,
+      stage: stage || "General",
+      text,
+      timestamp: new Date().toISOString(),
+    };
+
+    if (Number.isFinite(Number(extras.humidityPct))) {
+      payload.humidityPct = Number(extras.humidityPct);
+    }
+    if (Number.isFinite(temperatureF)) {
+      payload.temperatureF = temperatureF;
+    }
+    if (Number.isFinite(temperatureC)) {
+      payload.temperatureC = temperatureC;
+    }
+
+    await addDoc(collection(db, "users", user.uid, "notes"), payload);
+  };
+
   const onUploadPhoto = async (growId, file, caption) => {
     if (!user || !file) return;
     const path = `users/${user.uid}/photos/${growId}/${Date.now()}_${file.name}`;
@@ -631,15 +712,9 @@ export default function App() {
     });
   };
 
-  const onAddNote = async (growId, stage, text) => {
-    if (!user || !text) return;
-    await addDoc(collection(db, "users", user.uid, "notes"), {
-      growId,
-      stage: stage || "General",
-      text,
-      timestamp: new Date().toISOString(),
-    });
-  };
+  // Back-compat helper used by some routes: accepts Celsius and passes through.
+  const onAddNoteWithEnv = async (growId, stage, text, temperatureC, humidityPct) =>
+    onAddNote(growId, stage, text, { temperatureC, humidityPct });
 
   const onCreateStrain = async (data) => {
     if (!user) return null;
@@ -665,8 +740,23 @@ export default function App() {
     setPrefs(merged);
     applyAppearance(merged);
 
+    // NEW: persist and toggle background style
     try {
-      localStorage.setItem("preferences", JSON.stringify({ mode: merged.mode, accent: merged.accent }));
+      const style = merged.themeStyle === "chaotic" ? "chaotic" : "default";
+      localStorage.setItem("cn_theme_style", style);
+      document.documentElement.classList.toggle("bg-chaotic", style === "chaotic");
+    } catch {}
+
+    try {
+      localStorage.setItem(
+        "preferences",
+        JSON.stringify({
+          mode: merged.mode,
+          accent: merged.accent,
+          temperatureUnit: merged.temperatureUnit,
+          autoConvertEnvNotes: merged.autoConvertEnvNotes,
+        })
+      );
       localStorage.setItem("__prefs__", JSON.stringify({ theme: merged.accent, darkMode: merged.darkMode }));
     } catch {}
 
@@ -686,6 +776,9 @@ export default function App() {
         largeTaps: merged.largeTaps,
         showSplashOnLoad: merged.showSplashOnLoad,
         splashMinMs: merged.splashMinMs,
+        // Persist unit prefs
+        temperatureUnit: merged.temperatureUnit,
+        autoConvertEnvNotes: merged.autoConvertEnvNotes,
       },
       { merge: true }
     );
@@ -761,7 +854,7 @@ export default function App() {
                 photosByGrowStage={photosByGrowStage}
                 onUpdateStage={onUpdateStage}
                 onUpdateStatus={onUpdateStatus}
-                onAddNote={onAddNote}
+                onAddNote={onAddNoteWithEnv}
                 onUploadStagePhoto={onUploadStagePhoto}
               />
             </Suspense>
@@ -770,7 +863,17 @@ export default function App() {
 
         <Route
           path="/grow/:growId"
-          element={<GrowDetail grows={grows} onUpdateGrow={onUpdateGrow} onAddNote={onAddNote} />}
+          element={
+            <GrowDetail
+              grows={grows}
+              prefs={prefs}
+              onUpdateGrow={onUpdateGrow}
+              onAddNote={onAddNote}
+              photosByGrow={photosByGrow}
+              onUploadPhoto={onUploadPhoto}
+              onUploadStagePhoto={onUploadStagePhoto}
+            />
+          }
         />
 
         <Route
@@ -781,7 +884,6 @@ export default function App() {
                 <div className="max-w-7xl mx-auto px-4 py-3 flex items-center gap-3">
                   <h1 className="text-xl font-bold">Chaotic Neutral Tracker</h1>
                   <div className="ml-auto flex items-center gap-2">
-                    {/* Scan button styled like pill/toggles */}
                     <button
                       onClick={() => setShowScanner(true)}
                       className="chip chip--active text-sm"
@@ -880,7 +982,6 @@ export default function App() {
                           }
                         />
 
-                        {/* + New Grow (left-aligned, pill style) */}
                         <div className="flex">
                           <button
                             className="chip chip--active text-sm"
@@ -890,38 +991,15 @@ export default function App() {
                           </button>
                         </div>
 
-                        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-                          <div className="bg-white dark:bg-zinc-900 rounded-2xl shadow p-4">
-                            <GrowList
-                              growsActive={activeGrowsBase}
-                              archivedGrows={archivedGrowsBase}
-                              setEditingGrow={setEditingGrow}
-                              showAddButton={false}
-                              onUpdateStatus={onUpdateStatus}
-                            />
-                          </div>
-
-                          <div className="bg-white dark:bg-zinc-900 rounded-2xl shadow p-4">
-                            <h2 className="text-lg font-semibold mb-3">Photos</h2>
-                            <Suspense
-                              fallback={
-                                <div className="space-y-3">
-                                  <Skel className="h-10 w-full" />
-                                  <div className="grid grid-cols-3 gap-2">
-                                    {Array.from({ length: 6 }).map((_, i) => (
-                                      <Skel key={i} className="h-20 w-full rounded-lg" />
-                                    ))}
-                                  </div>
-                                </div>
-                              }
-                            >
-                              <PhotoUpload
-                                grows={activeGrowsBase}
-                                photosByGrow={photosByGrow}
-                                onUpload={onUploadPhoto}
-                              />
-                            </Suspense>
-                          </div>
+                        {/* Grow list only — dashboard photo uploader removed */}
+                        <div className="bg-white dark:bg-zinc-900 rounded-2xl shadow p-4">
+                          <GrowList
+                            growsActive={activeGrowsBase}
+                            archivedGrows={archivedGrowsBase}
+                            setEditingGrow={setEditingGrow}
+                            showAddButton={false}
+                            onUpdateStatus={onUpdateStatus}
+                          />
                         </div>
                       </div>
                     </>
@@ -961,7 +1039,7 @@ export default function App() {
                         onUpdateStageDate={onUpdateStageDate}
                         notesByGrowStage={notesByGrowStage}
                         photosByGrowStage={photosByGrowStage}
-                        onAddNote={onAddNote}
+                        onAddNote={onAddNoteWithEnv}
                         onUploadStagePhoto={onUploadStagePhoto}
                       />
                     </div>
@@ -978,8 +1056,6 @@ export default function App() {
                       <div className="bg-white dark:bg-zinc-900 rounded-2xl shadow p-4">
                         <RecipeManager />
                       </div>
-
-                      {/* NEW: Steps/Instructions editor under the builder */}
                       <Suspense
                         fallback={
                           <CardShell>
@@ -1033,9 +1109,26 @@ export default function App() {
 
                 <OnboardingModal visible={showOnboarding} onClose={() => setShowOnboarding(false)} />
               </div>
+
+              {/* Floating Quick Actions */}
+              <FabQuickActions
+                grows={activeGrowsBase}
+                onNewGrow={() => setEditingGrow({})}
+                onLogStatus={(id) => {
+                  const g =
+                    activeGrowsBase.find((x) => x.id === id) ||
+                    grows.find((x) => x.id === id);
+                  if (g) setEditingGrow(g);
+                }}
+                onUploadPhoto={onUploadPhoto}
+              />
+
+              {/* Local reminders (client-only) */}
+              <LocalReminders grows={grows} prefs={prefs} />
             </div>
           }
         />
+        <Route path="/camera-probe" element={<CameraProbe />} />
       </Routes>
     </>
   );

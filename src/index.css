@@ -3,12 +3,9 @@
 @tailwind utilities;
 
 /* ------------------------------------------------------------
-   Base theme variables (accent-only, safe to override by class)
-   Your app sets a theme-* class on <html> or <body>.
-   These set --_accent-* tokens used by components below.
+   Base accent tokens (picked by .theme-*)
    ------------------------------------------------------------ */
 :root {
-  /* Fallbacks if no theme-* class is present */
   --_accent-50:  #eef2ff;
   --_accent-100: #e0e7ff;
   --_accent-200: #c7d2fe;
@@ -19,7 +16,7 @@
   --_accent-700: #4338ca;
   --_accent-800: #3730a3;
   --_accent-900: #312e81;
-  --_accent-on:  #ffffff; /* text color on accent */
+  --_accent-on:  #ffffff;
 }
 
 /* Emerald */
@@ -64,7 +61,7 @@
   --_accent-700: #b45309;
   --_accent-800: #92400e;
   --_accent-900: #78350f;
-  --_accent-on:  #111827; /* better contrast on amber */
+  --_accent-on:  #111827;
 }
 
 /* Rose */
@@ -82,7 +79,7 @@
   --_accent-on:  #ffffff;
 }
 
-/* Slate (as an accent option) */
+/* Slate */
 .theme-slate {
   --_accent-50:  #f8fafc;
   --_accent-100: #f1f5f9;
@@ -97,15 +94,30 @@
   --_accent-on:  #ffffff;
 }
 
+/* Extra accents (keep Chaotic BG independent) */
+.theme-teal {
+  --_accent-50:#f0fdfa; --_accent-100:#ccfbf1; --_accent-200:#99f6e4; --_accent-300:#5eead4;
+  --_accent-400:#2dd4bf; --_accent-500:#14b8a6; --_accent-600:#0d9488; --_accent-700:#0f766e;
+  --_accent-800:#115e59; --_accent-900:#134e4a; --_accent-on:#ffffff;
+}
+.theme-indigo {
+  --_accent-50:#eef2ff; --_accent-100:#e0e7ff; --_accent-200:#c7d2fe; --_accent-300:#a5b4fc;
+  --_accent-400:#818cf8; --_accent-500:#6366f1; --_accent-600:#4f46e5; --_accent-700:#4338ca;
+  --_accent-800:#3730a3; --_accent-900:#312e81; --_accent-on:#ffffff;
+}
+.theme-sky {
+  --_accent-50:#f0f9ff; --_accent-100:#e0f2fe; --_accent-200:#bae6fd; --_accent-300:#7dd3fc;
+  --_accent-400:#38bdf8; --_accent-500:#0ea5e9; --_accent-600:#0284c7; --_accent-700:#0369a1;
+  --_accent-800:#075985; --_accent-900:#0c4a6e; --_accent-on:#ffffff;
+}
+
 /* ------------------------------------------------------------
-   Accent-aware components
+   Accent-aware UI bits
    ------------------------------------------------------------ */
 @layer components {
-  /* ---------- Chips (pills) ---------- */
   .chip {
     @apply inline-flex items-center gap-2 rounded-full text-sm font-medium select-none;
     @apply px-3 py-1 border transition-colors;
-    /* Neutral base that works in light/dark */
     background-color: rgba(0,0,0,0.03);
     border-color: rgba(0,0,0,0.1);
     color: inherit;
@@ -113,16 +125,11 @@
   .dark .chip {
     background-color: rgba(255,255,255,0.06);
     border-color: rgba(255,255,255,0.16);
-    color: #e5e7eb; /* slate-200 */
+    color: #e5e7eb;
   }
-  .chip:hover {
-    background-color: rgba(0,0,0,0.06);
-  }
-  .dark .chip:hover {
-    background-color: rgba(255,255,255,0.1);
-  }
+  .chip:hover { background-color: rgba(0,0,0,0.06); }
+  .dark .chip:hover { background-color: rgba(255,255,255,0.1); }
 
-  /* Active/selected state */
   .chip--active,
   .chip[aria-selected="true"],
   .chip[data-active="true"] {
@@ -137,11 +144,9 @@
     border-color: var(--_accent-700, var(--_accent-600));
   }
 
-  /* ---------- Buttons ---------- */
   .btn {
     @apply inline-flex items-center justify-center gap-2 rounded-lg text-sm font-medium;
     @apply px-3.5 py-2.5 border transition-colors;
-    /* Neutral base */
     background-color: rgba(0,0,0,0.03);
     border-color: rgba(0,0,0,0.1);
     color: inherit;
@@ -151,14 +156,9 @@
     border-color: rgba(255,255,255,0.16);
     color: #e5e7eb;
   }
-  .btn:hover {
-    background-color: rgba(0,0,0,0.06);
-  }
-  .dark .btn:hover {
-    background-color: rgba(255,255,255,0.1);
-  }
+  .btn:hover { background-color: rgba(0,0,0,0.06); }
+  .dark .btn:hover { background-color: rgba(255,255,255,0.08); }
 
-  /* Primary (accent) */
   .btn-accent {
     background-color: var(--_accent-600);
     border-color: var(--_accent-600);
@@ -169,37 +169,110 @@
     border-color: var(--_accent-700, var(--_accent-600));
   }
 
-  /* Outline (accent border, subtle hover) */
   .btn-outline {
     background-color: transparent;
     border-color: var(--_accent-600);
     color: var(--_accent-700, var(--_accent-600));
   }
-  .btn-outline:hover {
-    /* Subtle, theme-safe hover: faint tint in light, soft veil in dark */
-    background-color: rgba(0,0,0,0.04);
-  }
-  .dark .btn-outline:hover {
-    background-color: rgba(255,255,255,0.08);
-  }
+  .btn-outline:hover { background-color: rgba(0,0,0,0.04); }
+  .dark .btn-outline:hover { background-color: rgba(255,255,255,0.08); }
 
-  /* Disabled state */
-  .btn:disabled,
-  .chip:disabled {
-    opacity: 0.55;
-    cursor: not-allowed;
-  }
+  .accent-bg { background-color: var(--_accent-600); color: var(--_accent-on); }
+  .accent-bg:hover { background-color: var(--_accent-700, var(--_accent-600)); }
+  .accent-text { color: var(--_accent-600); }
 
-  /* Focus-visible (keyboard) */
-  .btn:focus-visible,
-  .chip:focus-visible {
-    outline: 2px solid var(--_accent-600);
-    outline-offset: 2px;
+  .btn:disabled, .chip:disabled { opacity: 0.55; cursor: not-allowed; }
+
+  .btn:focus-visible, .chip:focus-visible, .accent-bg:focus-visible {
+    outline: 2px solid var(--_accent-600); outline-offset: 2px;
   }
 }
 
-/* Reduced motion */
 @media (prefers-reduced-motion: reduce) {
-  .btn,
-  .chip { transition: none !important; }
+  .btn, .chip { transition: none !important; }
 }
+
+/* ============================================================
+   CHAOTIC – FULL THEME BACKGROUND (decoupled from accent)
+   Trigger with .bg-chaotic on <html> (Settings → Theme Style)
+   (Still honor .theme-chaotic for back-compat.)
+   ============================================================ */
+html.bg-chaotic, html.theme-chaotic { min-height: 100%; }
+html.bg-chaotic body, html.theme-chaotic body {
+  background-color: #0b0d16;
+  /* Prefer your new filenames; fall back to mountains.* */
+  background-image: image-set(
+    url("/themes/chaotic/Chaotic%20Mountians.webp") type("image/webp") 1x,
+    url("/themes/chaotic/mountains.webp") type("image/webp") 1x,
+    url("/themes/chaotic/Chaotic%20Mountians.jpg") type("image/jpeg") 1x,
+    url("/themes/chaotic/mountains.jpg") type("image/jpeg") 1x
+  );
+  background-size: cover;
+  /* Slightly higher framing so logo/mountains are centered better */
+  background-position: center 42%;
+  background-repeat: no-repeat;
+  background-attachment: fixed;
+}
+@supports (-webkit-touch-callout: none) {
+  html.bg-chaotic body, html.theme-chaotic body { background-attachment: scroll; }
+}
+
+/* ---- Veil / glow -------------------------------------------------- */
+/* Light mode: MUCH lighter veil so the scene reads clearly */
+html.bg-chaotic:not(.dark) body::before,
+html.theme-chaotic:not(.dark) body::before {
+  content: ""; position: fixed; inset: 0; pointer-events: none; z-index: 0;
+  background:
+    /* darker at the very bottom only, then fade quickly */
+    linear-gradient(to top, rgba(11,13,22,0.40) 0%, rgba(11,13,22,0.24) 38%, rgba(11,13,22,0.12) 100%),
+    radial-gradient(60% 40% at 85% -10%, rgba(76,201,240,0.10), transparent 70%),
+    radial-gradient(60% 40% at 10% 110%, rgba(79,104,232,0.12), transparent 70%);
+}
+/* Dark mode: keep the stronger veil for contrast */
+html.bg-chaotic.dark body::before,
+html.theme-chaotic.dark body::before {
+  content: ""; position: fixed; inset: 0; pointer-events: none; z-index: 0;
+  background:
+    linear-gradient(to top, rgba(7,8,14,0.92) 0%, rgba(7,8,14,0.72) 45%, rgba(7,8,14,0.50) 100%),
+    radial-gradient(60% 40% at 85% -10%, rgba(76, 201, 240, 0.10), transparent 70%),
+    radial-gradient(60% 40% at 10% 110%, rgba(79, 104, 232, 0.12), transparent 70%);
+}
+
+/* ---- Surfaces in Chaotic / light ---------------------------------- */
+/* Make panels less “milky” so the background shows through */
+html.bg-chaotic:not(.dark) .bg-white,
+html.bg-chaotic:not(.dark) .bg-zinc-50,
+html.bg-chaotic:not(.dark) .bg-zinc-100 {
+  background-color: rgba(255,255,255,0.40) !important; /* was 0.55 */
+  backdrop-filter: blur(1px);
+  -webkit-backdrop-filter: blur(1px);
+  box-shadow: 0 1px 0 rgba(0,0,0,.03) inset, 0 10px 28px rgba(0,0,0,.10);
+}
+
+/* Header gets lighter too so it doesn’t gray out the scene */
+html.bg-chaotic:not(.dark) header {
+  background-color: rgba(255,255,255,0.36) !important;
+  backdrop-filter: blur(1px);
+  -webkit-backdrop-filter: blur(1px);
+}
+
+/* Keep dark mode surfaces transparent to let scene show through */
+html.bg-chaotic.dark .bg-zinc-900,
+html.bg-chaotic.dark .bg-zinc-950 { background-color: transparent !important; }
+
+/* Optional watermark (leave if you like it) */
+html.bg-chaotic body::after,
+html.theme-chaotic body::after {
+  content: ""; position: fixed; top: 2.5rem; left: 2.5rem;
+  width: 128px; height: 128px;
+  background: url("/themes/chaotic/logo.svg") no-repeat center / contain;
+  opacity: 0.05; filter: saturate(1.05); pointer-events: none; z-index: 0;
+}
+
+/* Content above overlays */
+html.bg-chaotic #root, html.theme-chaotic #root { position: relative; z-index: 1; }
+
+/* Let the background show through main wrappers */
+html.bg-chaotic .min-h-screen,
+html.bg-chaotic .page,
+html.bg-chaotic .app-shell { background: transparent !important; }

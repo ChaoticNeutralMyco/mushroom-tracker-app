@@ -1,71 +1,64 @@
-// src/components/Grow/GrowDetail.jsx
-import React, { useEffect, useMemo, useState } from "react";
-import { useParams } from "react-router-dom";
-
-// Fallback-only Firestore APIs (used if App doesn't pass props/handlers yet)
+import React, { useEffect, useMemo, useState, useCallback } from "react";
+import { useParams, useNavigate, Link } from "react-router-dom";
 import {
-  doc,
-  getDoc,
-  updateDoc,
-  collection,
-  addDoc,
-  getDocs,
-  query,
-  orderBy,
+  doc, getDoc, updateDoc, collection, addDoc, getDocs, query, orderBy,
 } from "firebase/firestore";
 import { db, auth } from "../../firebase-config";
 
 const STAGES = ["Inoculated", "Colonizing", "Colonized", "Fruiting", "Harvested"];
 
-/**
- * GrowDetail
- * - Preferred mode: prop-driven (no reads). Pass any/all:
- *    grows: Array<{ id, ... }>
- *    envLogsByGrow: Map|Object { [growId]: Array<logs> }
- *    onUpdateGrow: (growId, patch) => Promise
- *    onAddEnvLog: (growId, log) => Promise
- *    onAddNote: (growId, stage, text) => Promise   // stage may be "General"
- *
- * - Legacy fallback (temporary): if props/handlers are not provided, it will
- *   read/write the needed bits directly to Firestore so the page still works.
- */
 export default function GrowDetail({
   grows,
+  prefs,                           // <-- NEW: to read temperatureUnit
   envLogsByGrow,
   onUpdateGrow,
   onAddEnvLog,
   onAddNote,
+  photosByGrow,
+  onUploadPhoto,
+  onUploadStagePhoto,
 }) {
   const { growId } = useParams();
+  const navigate = useNavigate();
 
-  // If App is passing grows, resolve the grow from props
+  const goBack = useCallback(() => {
+    if (window.history && window.history.length > 1) navigate(-1);
+    else navigate("/");
+  }, [navigate]);
+
+  useEffect(() => {
+    const onKey = (e) => { if (e.key === "Escape") goBack(); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [goBack]);
+
   const growFromProps = useMemo(() => {
     if (!Array.isArray(grows)) return null;
     return grows.find((g) => g.id === growId) || null;
   }, [grows, growId]);
 
-  // Local state mirrors, used both for prop-mode (to keep quick UI response)
-  // and for fallback mode (source of truth when fetched).
   const [grow, setGrow] = useState(growFromProps);
+
+  // Notes form: optional Temp/Humidity with unit-aware temperature
+  const unit = (prefs?.temperatureUnit || "F").toUpperCase() === "C" ? "C" : "F";
   const [noteText, setNoteText] = useState("");
-  const [envInputs, setEnvInputs] = useState({});
+  const [noteTemp, setNoteTemp] = useState("");     // in selected unit
+  const [noteRH, setNoteRH] = useState("");
+
   const logsFromProps =
-    envLogsByGrow &&
-    (envLogsByGrow instanceof Map
-      ? envLogsByGrow.get(growId)
-      : envLogsByGrow[growId]);
+    envLogsByGrow && (envLogsByGrow instanceof Map ? envLogsByGrow.get(growId) : envLogsByGrow[growId]);
   const [logs, setLogs] = useState(Array.isArray(logsFromProps) ? logsFromProps : []);
 
-  // Keep local state synced with props if they change
-  useEffect(() => {
-    if (growFromProps) setGrow(growFromProps);
-  }, [growFromProps]);
+  const photosArrFromProps =
+    photosByGrow && (photosByGrow instanceof Map ? photosByGrow.get(growId) : photosByGrow[growId]);
+  const [photos, setPhotos] = useState(Array.isArray(photosArrFromProps) ? photosArrFromProps : []);
+  const [upload, setUpload] = useState({ stage: "", caption: "", file: null });
 
-  useEffect(() => {
-    if (Array.isArray(logsFromProps)) setLogs(logsFromProps);
-  }, [logsFromProps]);
+  useEffect(() => { if (growFromProps) setGrow(growFromProps); }, [growFromProps]);
+  useEffect(() => { if (Array.isArray(logsFromProps)) setLogs(logsFromProps); }, [logsFromProps]);
+  useEffect(() => { if (Array.isArray(photosArrFromProps)) setPhotos(photosArrFromProps); }, [photosArrFromProps]);
 
-  // Legacy fallback: fetch grow + logs if not provided via props
+  // Fallback fetch
   useEffect(() => {
     if (growFromProps) return;
     (async () => {
@@ -74,120 +67,127 @@ export default function GrowDetail({
       const snap = await getDoc(doc(db, "users", user.uid, "grows", growId));
       if (snap.exists()) {
         setGrow({ id: snap.id, ...snap.data() });
-        const q = query(
-          collection(db, `users/${user.uid}/grows/${growId}/environmentLogs`),
-          orderBy("timestamp", "desc")
-        );
+        const q = query(collection(db, `users/${user.uid}/grows/${growId}/environmentLogs`), orderBy("timestamp", "desc"));
         const ls = await getDocs(q);
         setLogs(ls.docs.map((d) => ({ id: d.id, ...d.data() })));
       }
     })();
   }, [growId, growFromProps]);
 
-  // ---------- helpers ----------
   const callUpdateGrow = async (patch) => {
-    // Preferred: delegate to App if provided
     if (typeof onUpdateGrow === "function") {
       await onUpdateGrow(growId, patch);
       setGrow((prev) => (prev ? { ...prev, ...patch } : prev));
       return;
     }
-    // Fallback: write directly
     const user = auth.currentUser;
     if (!user || !growId) return;
     await updateDoc(doc(db, "users", user.uid, "grows", growId), patch);
     setGrow((prev) => (prev ? { ...prev, ...patch } : prev));
   };
 
+  // Add note (passes F or C based on unit; App handles auto-convert if enabled)
   const addNote = async () => {
     const text = noteText.trim();
     if (!text) return;
 
-    // Preferred: route via App's notes handler (stage "General")
-    if (typeof onAddNote === "function") {
-      await onAddNote(growId, "General", text);
-      setNoteText("");
-      return;
+    const extras = {};
+    const t = Number(noteTemp);
+    const h = Number(noteRH);
+    if (Number.isFinite(h)) extras.humidityPct = h;
+    if (Number.isFinite(t)) {
+      if (unit === "F") extras.temperatureF = t;
+      else extras.temperatureC = t;
     }
 
-    // Fallback: append to notes array on the grow doc
-    const nextNotes = [...(grow?.notes || []), { text, date: new Date().toISOString() }];
-    await callUpdateGrow({ notes: nextNotes });
+    await onAddNote?.(growId, "General", text, extras);
     setNoteText("");
+    setNoteTemp("");
+    setNoteRH("");
   };
 
+  const [envInputs, setEnvInputs] = useState({});
   const saveEnvLog = async () => {
     const { stage, temperature, humidity, notes } = envInputs || {};
     if (!stage || temperature === undefined || humidity === undefined) return;
 
     const newLog = {
       stage,
-      temperature: parseFloat(temperature),
+      temperature: parseFloat(temperature), // this section stays in °F for now
       humidity: parseFloat(humidity),
       notes: notes || "",
-      // store a plain ISO string for compatibility (works whether using props or fallback)
       timestamp: new Date().toISOString(),
     };
 
-    // Preferred: App handles Firestore write
     if (typeof onAddEnvLog === "function") {
       await onAddEnvLog(growId, newLog);
       setEnvInputs({});
       return;
     }
-
-    // Fallback: write directly in subcollection
     const user = auth.currentUser;
     if (!user || !growId) return;
     await addDoc(collection(db, `users/${user.uid}/grows/${growId}/environmentLogs`), newLog);
     setEnvInputs({});
-    // Refresh logs locally
     setLogs((prev) => [{ id: `local-${Date.now()}`, ...newLog }, ...prev]);
   };
 
-  // Graceful display of timestamps (supports Firestore Timestamp, JS Date, or ISO string)
   const fmtWhen = (t) => {
     if (!t) return "";
     try {
       if (typeof t?.toDate === "function") return t.toDate().toLocaleString();
       if (t instanceof Date) return t.toLocaleString();
-      return new Date(t).toLocaleString(); // ISO/string
+      return new Date(t).toLocaleString();
     } catch {
       return String(t);
     }
   };
 
-  if (!grow) {
-    return <div className="p-6">Loading grow…</div>;
-  }
+  const doUploadPhoto = async () => {
+    if (!upload.file) return;
+    const stage = upload.stage || grow?.stage || "General";
+    try {
+      if (typeof onUploadStagePhoto === "function") {
+        await onUploadStagePhoto(growId, stage, upload.file, upload.caption || "");
+      } else if (typeof onUploadPhoto === "function") {
+        await onUploadPhoto(growId, upload.file, upload.caption || "");
+      }
+      setUpload({ stage: "", caption: "", file: null });
+    } catch (e) {
+      console.error("Upload failed", e);
+    }
+  };
+
+  if (!grow) return <div className="p-6">Loading grow…</div>;
 
   return (
-    <div className="p-6 max-w-4xl mx-auto space-y-6">
-      <h1 className="text-2xl font-bold">
-        🌱 {grow.strain || "Unnamed"}{" "}
-        {grow.subName ? <span className="opacity-75">– {grow.subName}</span> : null}{" "}
-        <span className="text-sm opacity-70">({grow.stage || "—"})</span>
-      </h1>
+    <div className="p-6 max-w-5xl mx-auto space-y-8">
+      <div className="flex items-center gap-3">
+        <button onClick={goBack} className="chip" title="Go back (Esc)">← Back</button>
+        <Link to="/" className="text-sm underline opacity-80 hover:opacity-100">Dashboard</Link>
+      </div>
 
-      {/* Stage Selector */}
+      <div className="flex items-center gap-3">
+        <h1 className="text-2xl font-bold">
+          🌱 {grow.strain || "Unnamed"} {grow.subName ? <span className="opacity-75">– {grow.subName}</span> : null}{" "}
+          <span className="text-sm opacity-70">({grow.stage || "—"})</span>
+        </h1>
+      </div>
+
       <div className="flex flex-wrap gap-2">
         {STAGES.map((s) => (
           <button
             key={s}
             onClick={() => callUpdateGrow({ stage: s })}
-            className={`px-3 py-1 rounded-full focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:ring-current ${
-              grow.stage === s ? "accent-chip" : "bg-zinc-200 dark:bg-zinc-700"
-            }`}
+            className={`px-3 py-1 rounded-full ${grow.stage === s ? "accent-chip" : "bg-zinc-200 dark:bg-zinc-700"}`}
             aria-pressed={grow.stage === s ? "true" : "false"}
-            aria-label={`Set stage to ${s}`}
           >
             {s}
           </button>
         ))}
       </div>
 
-      {/* Notes */}
-      <div>
+      {/* Notes with optional Temp/RH, using selected unit */}
+      <section>
         <h2 className="text-lg font-semibold">📝 Notes</h2>
         <textarea
           value={noteText}
@@ -196,14 +196,36 @@ export default function GrowDetail({
           placeholder="Add note…"
           aria-label="New note text"
         />
-        <button
-          onClick={addNote}
-          className="mt-2 accent-bg px-4 py-1 rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:ring-current disabled:opacity-60"
-          aria-label="Add note"
-          disabled={!noteText.trim()}
-        >
-          ➕ Add Note
-        </button>
+
+        <div className="mt-2 grid grid-cols-1 sm:grid-cols-3 gap-3">
+          <input
+            type="number"
+            inputMode="decimal"
+            placeholder={`Temp (°${unit}) — optional`}
+            value={noteTemp}
+            onChange={(e) => setNoteTemp(e.target.value)}
+            className="p-2 border rounded bg-white dark:bg-zinc-900"
+            aria-label={`Optional temperature in ${unit}`}
+          />
+          <input
+            type="number"
+            inputMode="decimal"
+            placeholder="Humidity (%) — optional"
+            value={noteRH}
+            onChange={(e) => setNoteRH(e.target.value)}
+            className="p-2 border rounded bg-white dark:bg-zinc-900"
+            aria-label="Optional humidity percent"
+          />
+          <div className="flex">
+            <button
+              onClick={addNote}
+              className="w-full accent-bg px-4 py-2 rounded disabled:opacity-60"
+              disabled={!noteText.trim()}
+            >
+              ➕ Add Note
+            </button>
+          </div>
+        </div>
 
         <ul className="mt-3 space-y-2 text-sm">
           {(grow.notes || []).map((n, i) => (
@@ -216,44 +238,81 @@ export default function GrowDetail({
         {(!grow.notes || grow.notes.length === 0) && (
           <div className="text-sm opacity-70 mt-2">No notes yet.</div>
         )}
-      </div>
+      </section>
 
-      {/* Environment Log */}
-      <div>
+      {/* Photos */}
+      <section>
+        <h2 className="text-lg font-semibold">📸 Photos</h2>
+        <div className="grid grid-cols-1 sm:grid-cols-4 gap-3 mb-3">
+          <select
+            value={upload.stage}
+            onChange={(e) => setUpload({ ...upload, stage: e.target.value })}
+            className="p-2 border rounded bg-white dark:bg-zinc-900"
+          >
+            <option value="">Stage (optional)</option>
+            {STAGES.map((s) => <option key={s} value={s}>{s}</option>)}
+          </select>
+          <input
+            type="file"
+            accept="image/*"
+            onChange={(e) => setUpload({ ...upload, file: e.target.files?.[0] || null })}
+            className="p-2 border rounded bg-white dark:bg-zinc-900"
+          />
+          <input
+            type="text"
+            placeholder="Caption (optional)"
+            value={upload.caption}
+            onChange={(e) => setUpload({ ...upload, caption: e.target.value })}
+            className="p-2 border rounded bg-white dark:bg-zinc-900"
+          />
+          <button className="px-3 py-2 rounded accent-bg disabled:opacity-60" onClick={doUploadPhoto} disabled={!upload.file}>
+            Upload Photo
+          </button>
+        </div>
+
+        {Array.isArray(photos) && photos.length > 0 ? (
+          <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-3">
+            {photos
+              .slice()
+              .sort((a, b) => String(b.timestamp || 0).localeCompare(String(a.timestamp || 0)))
+              .map((p) => (
+                <figure key={p.id || p.url} className="rounded-lg overflow-hidden border border-zinc-200 dark:border-zinc-800">
+                  <img src={p.url} alt={p.caption || "Grow photo"} className="w-full h-40 object-cover" />
+                  <figcaption className="p-2 text-xs">
+                    <div className="font-medium truncate">{p.caption || "—"}</div>
+                    <div className="opacity-70">{p.stage || "General"} · {fmtWhen(p.timestamp)}</div>
+                  </figcaption>
+                </figure>
+              ))}
+          </div>
+        ) : <div className="text-sm opacity-70">No photos yet.</div>}
+      </section>
+
+      {/* Environment Log (remains °F fields for now) */}
+      <section>
         <h2 className="text-lg font-semibold">🌡️ Environment Log</h2>
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
           <select
             value={envInputs.stage || ""}
             onChange={(e) => setEnvInputs({ ...envInputs, stage: e.target.value })}
             className="p-2 border rounded bg-white dark:bg-zinc-900"
-            aria-label="Log stage"
           >
             <option value="">Stage</option>
-            {STAGES.map((s) => (
-              <option key={s} value={s}>
-                {s}
-              </option>
-            ))}
+            {STAGES.map((s) => <option key={s} value={s}>{s}</option>)}
           </select>
           <input
             type="number"
             placeholder="Temp (°F)"
             value={envInputs.temperature || ""}
-            onChange={(e) =>
-              setEnvInputs({ ...envInputs, temperature: e.target.value })
-            }
+            onChange={(e) => setEnvInputs({ ...envInputs, temperature: e.target.value })}
             className="p-2 border rounded bg-white dark:bg-zinc-900"
-            aria-label="Temperature in Fahrenheit"
           />
           <input
             type="number"
             placeholder="Humidity (%)"
             value={envInputs.humidity || ""}
-            onChange={(e) =>
-              setEnvInputs({ ...envInputs, humidity: e.target.value })
-            }
+            onChange={(e) => setEnvInputs({ ...envInputs, humidity: e.target.value })}
             className="p-2 border rounded bg-white dark:bg-zinc-900"
-            aria-label="Relative humidity"
           />
           <input
             type="text"
@@ -261,16 +320,12 @@ export default function GrowDetail({
             value={envInputs.notes || ""}
             onChange={(e) => setEnvInputs({ ...envInputs, notes: e.target.value })}
             className="p-2 border rounded bg-white dark:bg-zinc-900"
-            aria-label="Environment notes"
           />
         </div>
         <button
           onClick={saveEnvLog}
-          className="mt-2 px-4 py-1 rounded accent-bg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:ring-current disabled:opacity-60"
-          disabled={
-            !envInputs.stage || envInputs.temperature === undefined || envInputs.humidity === undefined
-          }
-          aria-label="Save environment log"
+          className="mt-2 px-4 py-1 rounded accent-bg disabled:opacity-60"
+          disabled={!envInputs.stage || envInputs.temperature === undefined || envInputs.humidity === undefined}
         >
           ➕ Save Log
         </button>
@@ -278,25 +333,18 @@ export default function GrowDetail({
         {Array.isArray(logs) && logs.length > 0 ? (
           <div className="mt-4 space-y-2 text-sm">
             {logs.map((log, idx) => (
-              <div
-                key={log.id || `log-${idx}`}
-                className="p-2 bg-zinc-100 dark:bg-zinc-800 rounded"
-              >
+              <div key={log.id || `log-${idx}`} className="p-2 bg-zinc-100 dark:bg-zinc-800 rounded">
                 <div className="flex justify-between font-semibold">
                   <span>{log.stage}</span>
                   <span>{fmtWhen(log.timestamp)}</span>
                 </div>
-                <div>
-                  Temp: {log.temperature}°F | RH: {log.humidity}%
-                </div>
+                <div>Temp: {log.temperature}°F | RH: {log.humidity}%</div>
                 {log.notes && <div className="italic text-xs">{log.notes}</div>}
               </div>
             ))}
           </div>
-        ) : (
-          <div className="text-sm opacity-70 mt-3">No environment logs yet.</div>
-        )}
-      </div>
+        ) : <div className="text-sm opacity-70 mt-3">No environment logs yet.</div>}
+      </section>
     </div>
   );
 }

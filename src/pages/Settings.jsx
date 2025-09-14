@@ -1,21 +1,17 @@
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useState } from "react";
 import { auth, db } from "../firebase-config";
-import {
-  doc,
-  getDoc,
-  setDoc,
-} from "firebase/firestore";
+import { doc, getDoc, setDoc } from "firebase/firestore";
 
-/**
- * Accent options and preview swatches (600 tone).
- * Keep hex in sync with index.css theme-* --_accent-600 values.
- */
+/** Accent palette (removed 'chaotic'; added teal, indigo, sky) */
 const ACCENTS = [
   { id: "emerald", label: "Emerald", hex600: "#059669" },
   { id: "violet",  label: "Violet",  hex600: "#7c3aed" },
   { id: "amber",   label: "Amber",   hex600: "#d97706" },
   { id: "rose",    label: "Rose",    hex600: "#e11d48" },
   { id: "slate",   label: "Slate",   hex600: "#475569" },
+  { id: "teal",    label: "Teal",    hex600: "#0d9488" },
+  { id: "indigo",  label: "Indigo",  hex600: "#4f46e5" },
+  { id: "sky",     label: "Sky",     hex600: "#0284c7" },
 ];
 
 const MODES = [
@@ -25,218 +21,160 @@ const MODES = [
 ];
 
 const TABS = [
-  { id: "general", label: "General" },
-  { id: "data",    label: "Data" },
+  { id: "general", label: "General"  },
+  { id: "data",    label: "Data"     },
   { id: "adv",     label: "Advanced" },
 ];
 
 const defaultPrefs = {
-  mode: "system",      // "system" | "light" | "dark"
-  accent: "emerald",   // matches ACCENTS ids
+  mode: "system",
+  accent: "emerald",
+  themeStyle: "default", // "default" | "chaotic"  (stored locally too)
+  stageReminders: false,
+  taskDigestTime: "09:00",
+  stageMaxDays: { Inoculated: 0, Fruiting: 0 },
+
+  // Units
+  temperatureUnit: "F",
+  autoConvertEnvNotes: true,
 };
 
-/**
- * Apply theme classes directly (used if App-level callback not provided).
- * - Adds .dark for dark mode
- * - Adds one of .theme-emerald|violet|amber|rose|slate
- */
 function applyThemeDOM(prefs) {
   const root = document.documentElement;
-
-  // Mode
   const mq = window.matchMedia?.("(prefers-color-scheme: dark)");
   const isSystemDark = mq ? mq.matches : false;
-  const dark =
-    prefs.mode === "dark" || (prefs.mode === "system" && isSystemDark);
+  const dark = prefs.mode === "dark" || (prefs.mode === "system" && isSystemDark);
 
   root.classList.toggle("dark", !!dark);
-
-  // Accent theme class
-  const accentClasses = [
-    "theme-emerald",
-    "theme-violet",
-    "theme-amber",
-    "theme-rose",
-    "theme-slate",
-  ];
-  accentClasses.forEach((c) => root.classList.remove(c));
+  ["theme-emerald","theme-violet","theme-amber","theme-rose","theme-slate","theme-teal","theme-indigo","theme-sky","theme-chaotic"].forEach((c) => root.classList.remove(c));
   root.classList.add(`theme-${prefs.accent || "emerald"}`);
 }
 
+function syncThemeStyle(style) {
+  const enable = style === "chaotic";
+  const root = document.documentElement;
+  root.classList.toggle("bg-chaotic", enable);
+  try { localStorage.setItem("cn_theme_style", enable ? "chaotic" : "default"); } catch {}
+}
+
 export default function Settings({
-  /** Optional props from App (use if provided to avoid duplicate state) */
   preferences: externalPrefs,
-  onSavePreferences, // (nextPrefs) => void
-  // Optional callbacks for data actions (kept minimal; no-ops if absent)
+  onSavePreferences,
   onExportJSON,
   onImportJSON,
   onClearAllData,
 }) {
   const [activeTab, setActiveTab] = useState("general");
-
-  // Internal prefs state mirrors external if provided, or loads Firestore once
   const [prefs, setPrefs] = useState(defaultPrefs);
   const uid = auth.currentUser?.uid || null;
 
-  // Load preferences from Firestore if no external prefs provided
   useEffect(() => {
-    let unsub = null;
     let isMounted = true;
+    (async () => {
+      let next = defaultPrefs;
 
-    const bootstrap = async () => {
       if (externalPrefs) {
-        setPrefs((p) => ({ ...p, ...externalPrefs }));
-        return;
-      }
-      if (!uid) {
-        // Use localStorage fallback if signed-out view
+        next = { ...defaultPrefs, ...externalPrefs };
+      } else if (!uid) {
         try {
           const ls = localStorage.getItem("preferences");
-          if (ls) setPrefs({ ...defaultPrefs, ...JSON.parse(ls) });
+          if (ls) next = { ...defaultPrefs, ...JSON.parse(ls) };
         } catch {}
-        return;
+      } else {
+        const ref = doc(db, "users", uid, "settings", "preferences");
+        const snap = await getDoc(ref);
+        next = snap.exists() ? { ...defaultPrefs, ...snap.data() } : defaultPrefs;
+        if (!snap.exists()) await setDoc(ref, next, { merge: true });
       }
-      // One-time fetch; App owns live listeners elsewhere
-      const ref = doc(db, "users", uid, "settings", "preferences");
-      const snap = await getDoc(ref);
-      const next = snap.exists()
-        ? { ...defaultPrefs, ...snap.data() }
-        : defaultPrefs;
 
-      if (!snap.exists()) {
-        await setDoc(ref, next, { merge: true });
+      // Load local theme style toggle
+      try {
+        const localStyle = localStorage.getItem("cn_theme_style");
+        if (localStyle) next = { ...next, themeStyle: localStyle };
+      } catch {}
+
+      if (isMounted) {
+        setPrefs(next);
+        applyThemeDOM(next);
+        syncThemeStyle(next.themeStyle);
       }
-      if (isMounted) setPrefs(next);
-    };
-
-    bootstrap();
-
-    return () => {
-      isMounted = false;
-      if (typeof unsub === "function") unsub();
-    };
+    })();
+    return () => { isMounted = false; };
   }, [uid, externalPrefs]);
-
-  // Keep DOM/theme in sync if there is no parent handler controlling it.
-  useEffect(() => {
-    if (!onSavePreferences && prefs) {
-      applyThemeDOM(prefs);
-    }
-  }, [onSavePreferences, prefs]);
-
-  // If using system mode, react to OS change (only when not App-controlled)
-  useEffect(() => {
-    if (onSavePreferences) return;
-    const mq = window.matchMedia?.("(prefers-color-scheme: dark)");
-    if (!mq) return;
-    const handler = () => {
-      if (prefs.mode === "system") applyThemeDOM(prefs);
-    };
-    mq.addEventListener?.("change", handler);
-    return () => mq.removeEventListener?.("change", handler);
-  }, [onSavePreferences, prefs]);
 
   const savePrefs = useCallback(
     async (next) => {
       setPrefs(next);
-
-      // Mirror to localStorage (fast)
-      try {
-        localStorage.setItem("preferences", JSON.stringify(next));
-      } catch {}
-
+      try { localStorage.setItem("preferences", JSON.stringify(next)); } catch {}
       if (onSavePreferences) {
-        // Let App own persistence + DOM toggles to avoid double-work
         onSavePreferences(next);
-        return;
-      }
-
-      // Local DOM update if App isn't handling it
-      applyThemeDOM(next);
-
-      // Firestore persistence (lightweight, merge)
-      if (!uid) return;
-      try {
-        await setDoc(
-          doc(db, "users", uid, "settings", "preferences"),
-          next,
-          { merge: true }
-        );
-      } catch (e) {
-        // Non-fatal; preference still lives in localStorage and DOM
-        // console.warn("Failed to persist preferences:", e);
+      } else {
+        applyThemeDOM(next);
+        syncThemeStyle(next.themeStyle);
+        if (uid) await setDoc(doc(db, "users", uid, "settings", "preferences"), next, { merge: true });
       }
     },
     [onSavePreferences, uid]
   );
 
-  const setMode = useCallback(
-    (modeId) => savePrefs({ ...prefs, mode: modeId }),
-    [prefs, savePrefs]
-  );
+  const setMode   = (modeId)   => savePrefs({ ...prefs, mode: modeId });
+  const setAccent = (accentId) => {
+    const exists = ACCENTS.some((a) => a.id === accentId);
+    const id = exists ? accentId : "emerald";
+    try { localStorage.setItem("cn_last_accent", id); } catch {}
+    savePrefs({ ...prefs, accent: id });
+  };
 
-  const setAccent = useCallback(
-    (accentId) => {
-      // Guard unknown accents
-      const exists = ACCENTS.some((a) => a.id === accentId);
-      const next = { ...prefs, accent: exists ? accentId : "emerald" };
-      savePrefs(next);
-    },
-    [prefs, savePrefs]
-  );
+  const setThemeStyle = (styleId) => {
+    let style = styleId === "chaotic" ? "chaotic" : "default";
+    // If switching to default, restore last chosen accent (if you had used Chaotic before)
+    if (style === "default") {
+      try {
+        const last = localStorage.getItem("cn_last_accent");
+        if (last && last !== prefs.accent) {
+          // don’t call save twice; apply in one go
+          savePrefs({ ...prefs, themeStyle: style, accent: last });
+          return;
+        }
+      } catch {}
+    }
+    savePrefs({ ...prefs, themeStyle: style });
+  };
 
-  // Derived helpers
-  const isActiveTab = useCallback((id) => activeTab === id, [activeTab]);
-  const modeIs = useCallback((id) => prefs.mode === id, [prefs.mode]);
-  const accentIs = useCallback((id) => prefs.accent === id, [prefs.accent]);
+  // Units
+  const setTempUnit   = (u) => savePrefs({ ...prefs, temperatureUnit: u === "C" ? "C" : "F" });
+  const setAutoConvert= (en) => savePrefs({ ...prefs, autoConvertEnvNotes: !!en });
 
-  // Minimal Data/Advanced buttons call optional handlers
-  const onExport = useCallback(() => onExportJSON && onExportJSON(), [onExportJSON]);
-  const onImport = useCallback(() => onImportJSON && onImportJSON(), [onImportJSON]);
-  const onClear  = useCallback(() => onClearAllData && onClearAllData(), [onClearAllData]);
+  // Reminders
+  const setRemindersEnabled = (en) => savePrefs({ ...prefs, stageReminders: !!en });
+  const setDigestTime = (hhmm) => savePrefs({ ...prefs, taskDigestTime: hhmm || "09:00" });
+  const setStageDays = (stage, days) => {
+    const n = Math.max(0, Number(days) || 0);
+    savePrefs({ ...prefs, stageMaxDays: { ...(prefs.stageMaxDays || {}), [stage]: n } });
+  };
+  const clearFired = () => { try { localStorage.removeItem("remindersFired_v1"); } catch {} };
+  const sendTest = () => {
+    window.dispatchEvent(new CustomEvent("cn-test-reminder", {
+      detail: { title: "CNM — test reminder", body: "If you can see this, reminders can display on this device." },
+    }));
+  };
 
-  // Accent chip content (swatch + label)
-  const AccentChip = useCallback(({ a }) => (
-    <button
-      type="button"
-      className={`chip ${accentIs(a.id) ? "chip--active" : ""}`}
-      aria-pressed={accentIs(a.id)}
-      aria-label={`Set accent ${a.label}`}
-      onClick={() => setAccent(a.id)}
-    >
-      <span
-        className="h-2.5 w-2.5 rounded-full"
-        style={{ backgroundColor: a.hex600 }}
-        aria-hidden="true"
-      />
-      <span>{a.label}</span>
-    </button>
-  ), [accentIs, setAccent]);
-
-  // Mode chip content
-  const ModeChip = useCallback(({ m }) => (
-    <button
-      type="button"
-      className={`chip ${modeIs(m.id) ? "chip--active" : ""}`}
-      aria-pressed={modeIs(m.id)}
-      onClick={() => setMode(m.id)}
-    >
-      {m.label}
-    </button>
-  ), [modeIs, setMode]);
+  const remindersOn = !!prefs.stageReminders;
+  const digestTime = String(prefs.taskDigestTime || "09:00");
+  const daysInoc   = Number(prefs.stageMaxDays?.Inoculated || 0);
+  const daysFruit  = Number(prefs.stageMaxDays?.Fruiting || 0);
 
   return (
     <div className="mx-auto max-w-5xl px-4 py-6">
       <h1 className="text-2xl font-semibold mb-4">Settings</h1>
 
-      {/* Section Tabs */}
       <div role="tablist" aria-label="Settings Sections" className="flex flex-wrap gap-2 mb-6">
         {TABS.map((t) => (
           <button
             key={t.id}
             role="tab"
-            aria-selected={isActiveTab(t.id)}
-            className={`chip ${isActiveTab(t.id) ? "chip--active" : ""}`}
+            aria-selected={activeTab === t.id}
+            className={`chip ${activeTab === t.id ? "chip--active" : ""}`}
             onClick={() => setActiveTab(t.id)}
           >
             {t.label}
@@ -244,15 +182,19 @@ export default function Settings({
         ))}
       </div>
 
-      {/* Panels */}
       {activeTab === "general" && (
         <section role="tabpanel" aria-label="General settings" className="space-y-8">
-          {/* Theme Mode */}
           <div>
             <h2 className="text-lg font-medium mb-3">Theme Mode</h2>
             <div className="flex flex-wrap gap-2">
               {MODES.map((m) => (
-                <ModeChip key={m.id} m={m} />
+                <button
+                  key={m.id}
+                  className={`chip ${prefs.mode === m.id ? "chip--active" : ""}`}
+                  onClick={() => setMode(m.id)}
+                >
+                  {m.label}
+                </button>
               ))}
             </div>
             <p className="text-sm text-slate-500 dark:text-slate-400 mt-2">
@@ -260,17 +202,116 @@ export default function Settings({
             </p>
           </div>
 
-          {/* Accent Color */}
+          {/* Theme Style: controls background only */}
+          <div>
+            <h2 className="text-lg font-medium mb-3">Theme Style</h2>
+            <div className="flex flex-wrap gap-2">
+              <button
+                className={`chip ${prefs.themeStyle !== "chaotic" ? "chip--active" : ""}`}
+                onClick={() => setThemeStyle("default")}
+              >
+                Default
+              </button>
+              <button
+                className={`chip ${prefs.themeStyle === "chaotic" ? "chip--active" : ""}`}
+                onClick={() => setThemeStyle("chaotic")}
+              >
+                Chaotic
+              </button>
+            </div>
+            <p className="text-sm text-slate-500 dark:text-slate-400 mt-2">
+              Chaotic keeps the mountains background regardless of accent.
+            </p>
+          </div>
+
           <div>
             <h2 className="text-lg font-medium mb-3">Accent Color</h2>
             <div className="flex flex-wrap gap-2">
               {ACCENTS.map((a) => (
-                <AccentChip key={a.id} a={a} />
+                <button
+                  key={a.id}
+                  className={`chip ${prefs.accent === a.id ? "chip--active" : ""}`}
+                  onClick={() => setAccent(a.id)}
+                >
+                  <span className="h-2.5 w-2.5 rounded-full" style={{ backgroundColor: a.hex600 }} />
+                  <span>{a.label}</span>
+                </button>
               ))}
             </div>
             <p className="text-sm text-slate-500 dark:text-slate-400 mt-2">
-              Selected items and primary actions use the accent.
+              Change the accent without affecting the Chaotic background.
             </p>
+          </div>
+
+          {/* Units */}
+          <div>
+            <h2 className="text-lg font-medium mb-3">Units</h2>
+            <div className="flex flex-wrap items-center gap-2">
+              <button className={`chip ${String(prefs.temperatureUnit || "F").toUpperCase() === "F" ? "chip--active" : ""}`} onClick={() => setTempUnit("F")}>
+                Fahrenheit (°F)
+              </button>
+              <button className={`chip ${String(prefs.temperatureUnit || "F").toUpperCase() === "C" ? "chip--active" : ""}`} onClick={() => setTempUnit("C")}>
+                Celsius (°C)
+              </button>
+            </div>
+
+            <label className="mt-3 flex items-center gap-2 text-sm">
+              <input type="checkbox" checked={!!prefs.autoConvertEnvNotes} onChange={(e) => setAutoConvert(e.target.checked)} />
+              Also store a °C copy for analytics
+            </label>
+            <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">
+              Notes always save a canonical Fahrenheit value. Enabling this also saves a converted Celsius value.
+            </p>
+          </div>
+
+          {/* Reminders */}
+          <div>
+            <h2 className="text-lg font-medium mb-3">Task Reminders</h2>
+            <p className="text-sm text-slate-500 dark:text-slate-400 mb-3">
+              Local (device-only) reminders for stage windows.
+            </p>
+
+            <div className="flex flex-wrap items-center gap-2 mb-3">
+              <button className={`chip ${!remindersOn ? "chip--active" : ""}`} onClick={() => setRemindersEnabled(false)}>Off</button>
+              <button className={`chip ${remindersOn ? "chip--active" : ""}`} onClick={() => setRemindersEnabled(true)}>On</button>
+              <button className="btn-outline text-xs ml-2" onClick={sendTest}>Send test notification</button>
+            </div>
+
+            <div className="flex flex-wrap items-center gap-3 mb-3">
+              <label className="text-sm text-slate-600 dark:text-slate-300">Daily digest time</label>
+              <input
+                type="time"
+                value={digestTime}
+                onChange={(e) => setDigestTime(e.target.value)}
+                className="rounded-lg border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-900 px-3 py-2 text-sm"
+              />
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <div className="flex items-center gap-2">
+                <label className="w-36 text-sm text-slate-600 dark:text-slate-300">Inoculated (days)</label>
+                <input
+                  type="number" min="0" step="1"
+                  value={Number.isFinite(daysInoc) ? daysInoc : 0}
+                  onChange={(e) => setStageDays("Inoculated", e.target.value)}
+                  className="w-28 rounded-lg border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-900 px-3 py-2 text-sm"
+                />
+              </div>
+              <div className="flex items-center gap-2">
+                <label className="w-36 text-sm text-slate-600 dark:text-slate-300">Fruiting (days)</label>
+                <input
+                  type="number" min="0" step="1"
+                  value={Number.isFinite(daysFruit) ? daysFruit : 0}
+                  onChange={(e) => setStageDays("Fruiting", e.target.value)}
+                  className="w-28 rounded-lg border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-900 px-3 py-2 text-sm"
+                />
+              </div>
+            </div>
+
+            <div className="mt-3 flex flex-wrap items-center gap-2">
+              <button type="button" className="btn-outline text-xs" onClick={clearFired}>Clear fired reminders</button>
+              <span className="text-xs text-slate-500 dark:text-slate-400">(Only clears local “already notified” memory on this device)</span>
+            </div>
           </div>
         </section>
       )}
@@ -278,15 +319,9 @@ export default function Settings({
       {activeTab === "data" && (
         <section role="tabpanel" aria-label="Data settings" className="space-y-6">
           <div className="flex flex-wrap gap-2">
-            <button type="button" className="btn btn-outline" onClick={onExport}>
-              Export JSON
-            </button>
-            <button type="button" className="btn" onClick={onImport}>
-              Import JSON
-            </button>
-            <button type="button" className="btn-accent" onClick={onExport}>
-              Backup Now
-            </button>
+            <button type="button" className="btn btn-outline" onClick={onExportJSON}>Export JSON</button>
+            <button type="button" className="btn" onClick={onImportJSON}>Import JSON</button>
+            <button type="button" className="btn-accent" onClick={onExportJSON}>Backup Now</button>
           </div>
           <p className="text-sm text-slate-500 dark:text-slate-400">
             Exports and backups include grows, recipes, supplies, tasks, and preferences.
@@ -300,33 +335,18 @@ export default function Settings({
             <h2 className="text-lg font-medium">Danger Zone</h2>
             <div className="flex flex-wrap gap-2">
               <button
-                type="button"
-                className="btn-outline"
+                type="button" className="btn-outline"
                 onClick={() => {
-                  try {
-                    localStorage.removeItem("preferences");
-                  } catch {}
-                  // Reset to defaults
+                  try { localStorage.removeItem("preferences"); } catch {}
                   savePrefs(defaultPrefs);
                 }}
               >
                 Reset Theme Preferences
               </button>
-
-              <button
-                type="button"
-                className="btn"
-                onClick={() => {
-                  // Clear local storage cache (non-destructive to Firestore data)
-                  try {
-                    localStorage.clear();
-                  } catch {}
-                }}
-              >
+              <button type="button" className="btn" onClick={() => { try { localStorage.clear(); } catch {} }}>
                 Clear Local Cache
               </button>
-
-              <button type="button" className="btn-accent" onClick={onClear}>
+              <button type="button" className="btn-accent" onClick={onClearAllData}>
                 Delete All Data
               </button>
             </div>

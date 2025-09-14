@@ -7,35 +7,36 @@
   "build": {
     "beforeDevCommand": "npm run dev",
     "beforeBuildCommand": "npm run build",
-    "devUrl": "http://localhost:5173",
+    "devUrl": "http://localhost:5173/",
     "frontendDist": "../dist"
   },
 
   "app": {
+    "withGlobalTauri": true,
+    "security": { "csp": null },
     "windows": [
-      { "title": "Mushroom Tracker", "width": 1200, "height": 800, "visible": true }
-    ],
-    "security": { "csp": null }
+      {
+        "title": "Chaotic Neutral Tracker",
+        "width": 1280,
+        "height": 800,
+        "resizable": true,
+        "fullscreen": false
+      }
+    ]
   },
 
   "bundle": {
-    "active": true,
-    "targets": "msi",
-    "icon": ["icons/icon.png", "icons/icon.ico"],
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
     "windows": {
-      "webviewInstallMode": { "type": "downloadBootstrapper" },
-      "allowDowngrades": false
+      "webviewInstallMode": { "type": "embedBootstrapper" }
     }
   },
 
-  "plugins": {
-    "updater": {
-      "active": true,
-      "endpoints": [
-        "https://github.com/ChaoticNeutralMyco/mushroom-tracker-app/releases/latest/download/latest.json"
-      ],
-      "dialog": true,
-      "pubkey": "untrusted comment: minisign public key: 8475A57AD8FB6230\nRWQwYvvYeqV1hFzY7NSm28Snpmd+efreHX70Xh7My0YWC2Io2Faj5jni"
-    }
-  }
+  "plugins": {}
 }
