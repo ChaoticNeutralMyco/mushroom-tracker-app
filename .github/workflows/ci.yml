@@ -2,39 +2,156 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [ "**" ]
   pull_request:
-    branches: [main]
+    branches: [ "**" ]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
 
 jobs:
-  build:
+  web:
+    name: Web build & tests
     runs-on: ubuntu-latest
-    timeout-minutes: 20
-    steps:
-      - uses: actions/checkout@v4
 
-      - name: Setup Node
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: 20
-          cache: 'npm'
+          cache: 'npm' # default cache; we detect pnpm/yarn below
 
-      - name: Install deps
-        run: npm ci
+      - name: Detect package manager
+        id: pm
+        run: |
+          if [ -f pnpm-lock.yaml ]; then
+            echo "pm=pnpm" >> $GITHUB_OUTPUT
+          elif [ -f yarn.lock ]; then
+            echo "pm=yarn" >> $GITHUB_OUTPUT
+          else
+            echo "pm=npm" >> $GITHUB_OUTPUT
+          fi
+          echo "Detected package manager: ${{ steps.pm.outputs.pm }}"
 
-      # Optional (keep if you have these scripts)
-      - name: Lint
-        run: npm run lint --if-present
-      - name: Typecheck
-        run: npm run typecheck --if-present
+      - name: Setup pnpm (if used)
+        if: steps.pm.outputs.pm == 'pnpm'
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9
+          run_install: false
 
-      - name: Build (PWA)
+      - name: Enable Corepack (yarn)
+        if: steps.pm.outputs.pm == 'yarn'
+        run: corepack enable
+
+      - name: Install dependencies
+        run: |
+          if [ "${{ steps.pm.outputs.pm }}" = "pnpm" ]; then
+            pnpm install --frozen-lockfile
+          elif [ "${{ steps.pm.outputs.pm }}" = "yarn" ]; then
+            # Try Berry first, fall back to classic
+            (yarn install --immutable) || (yarn install --frozen-lockfile) || yarn install
+          else
+            npm ci
+          fi
+
+      - name: Lint (if script exists)
+        run: |
+          has_script() { node -e "const s=require('./package.json').scripts||{}; process.exit(s['lint']?0:1)"; }
+          if has_script; then
+            if [ "${{ steps.pm.outputs.pm }}" = "pnpm" ]; then pnpm lint
+            elif [ "${{ steps.pm.outputs.pm }}" = "yarn" ]; then yarn lint
+            else npm run lint; fi
+          else
+            echo "No lint script; skipping."
+          fi
+
+      - name: Typecheck (if script exists)
+        run: |
+          has_script() { node -e "const s=require('./package.json').scripts||{}; process.exit(s['typecheck']?0:1)"; }
+          if has_script; then
+            if [ "${{ steps.pm.outputs.pm }}" = "pnpm" ]; then pnpm typecheck
+            elif [ "${{ steps.pm.outputs.pm }}" = "yarn" ]; then yarn typecheck
+            else npm run typecheck; fi
+          else
+            echo "No typecheck script; skipping."
+          fi
+
+      - name: Unit/Component tests (if script exists)
         env:
-          NODE_OPTIONS: --max-old-space-size=4096
-        run: npm run build
+          CI: "true"
+        run: |
+          has_script() { node -e "const s=require('./package.json').scripts||{}; process.exit(s['test']?0:1)"; }
+          if has_script; then
+            if [ "${{ steps.pm.outputs.pm }}" = "pnpm" ]; then pnpm test -- --run
+            elif [ "${{ steps.pm.outputs.pm }}" = "yarn" ]; then yarn test --run
+            else npm test -- --run; fi
+          else
+            echo "No test script; skipping."
+          fi
 
-      - name: Upload dist artifact
+      - name: Build (if script exists)
+        run: |
+          has_script() { node -e "const s=require('./package.json').scripts||{}; process.exit(s['build']?0:1)"; }
+          if has_script; then
+            if [ "${{ steps.pm.outputs.pm }}" = "pnpm" ]; then pnpm build
+            elif [ "${{ steps.pm.outputs.pm }}" = "yarn" ]; then yarn build
+            else npm run build; fi
+          else
+            echo "No build script; skipping."
+          fi
+
+      - name: Upload web dist (if exists)
         uses: actions/upload-artifact@v4
         with:
           name: web-dist
-          path: dist
+          path: |
+            dist/**
+          if-no-files-found: ignore
+
+  e2e:
+    name: Playwright smoke (if config present)
+    runs-on: ubuntu-latest
+    if: ${{ hashFiles('playwright.config.*') != '' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Detect package manager
+        id: pm
+        run: |
+          if [ -f pnpm-lock.yaml ]; then
+            echo "pm=pnpm" >> $GITHUB_OUTPUT
+          elif [ -f yarn.lock ]; then
+            echo "pm=yarn" >> $GITHUB_OUTPUT
+          else
+            echo "pm=npm" >> $GITHUB_OUTPUT
+          fi
+      - name: Setup pnpm (if used)
+        if: steps.pm.outputs.pm == 'pnpm'
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9
+          run_install: false
+      - name: Enable Corepack (yarn)
+        if: steps.pm.outputs.pm == 'yarn'
+        run: corepack enable
+      - name: Install
+        run: |
+          if [ "${{ steps.pm.outputs.pm }}" = "pnpm" ]; then pnpm install --frozen-lockfile
+          elif [ "${{ steps.pm.outputs.pm }}" = "yarn" ]; then (yarn install --immutable) || (yarn install --frozen-lockfile) || yarn install
+          else npm ci; fi
+      - name: Install Playwright Browsers
+        run: npx playwright install --with-deps
+      - name: Run Playwright tests
+        env:
+          CI: "true"
+        run: npx playwright test
