@@ -1,0 +1,35 @@
+// firestore.rules
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+    function isOwner(uid) {
+      return isSignedIn() && request.auth.uid == uid;
+    }
+
+    // Per-user data tree
+    match /users/{uid} {
+      allow read, write: if isOwner(uid);
+
+      match /grows/{growId} {
+        allow read, write: if isOwner(uid);
+        match /photos/{photoId} {
+          allow read, write: if isOwner(uid);
+        }
+      }
+
+      match /tasks/{taskId} {
+        allow read, write: if isOwner(uid);
+      }
+    }
+
+    // Optional public docs (read-only)
+    match /public/{docId} {
+      allow read: if true;
+      allow write: if false;
+    }
+  }
+}

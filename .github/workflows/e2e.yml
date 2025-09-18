@@ -1,4 +1,4 @@
-name: e2e
+name: E2E
 
 on:
   push:
@@ -15,9 +15,13 @@ jobs:
   web-e2e:
     runs-on: ubuntu-latest
     env:
-      CI: true
-      # Optional: set this in repo Settings > Secrets and variables > Actions (Actions variables)
-      # BASE_URL: https://mushroom-tracker-oqr503183-victor-trujillos-projects.vercel.app
+      CI: "1"
+      BASE_PATH: "/mushroom-tracker-app/"
+      # Single secret that contains either JSON:
+      #   {"email":"user@example.com","password":"StrongPass!"}
+      # or "email:password"
+      TEST_ACCOUNT: ${{ secrets.TEST_ACCOUNT }}
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -25,24 +29,25 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
-          node-version: '20.x'
-          cache: 'npm'
+          node-version: "20"
+          cache: "npm"
 
       - name: Install deps
         run: npm ci
 
-      - name: Install Playwright (browsers & OS deps)
+      - name: Install Playwright browsers
         run: npx playwright install --with-deps
 
-      # Your playwright.config.ts starts the dev server (npm run dev) via "webServer"
-      # If you set BASE_URL to a remote site, the local dev server will still spin up (harmless).
-      - name: Run e2e tests
+      # playwright.config.ts will parse TEST_ACCOUNT and start the webServer
+      - name: Run Playwright tests
         run: npx playwright test
 
-      - name: Upload HTML report
+      - name: Upload Playwright artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: playwright-report
-          path: playwright-report
+          name: playwright-artifacts
+          path: |
+            playwright-report
+            test-results
           if-no-files-found: ignore

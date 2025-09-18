@@ -1,3 +1,4 @@
+// src/components/recipes/COGManager.jsx
 import React, { useEffect, useState } from "react";
 import { db, auth } from "../../firebase-config";
 import {
@@ -23,6 +24,7 @@ import {
   X,
   AlertTriangle,
 } from "lucide-react";
+import { useConfirm } from "../ui/ConfirmDialog";
 
 const SUPPLY_TYPES = ["substrate", "container", "tool", "supplement", "labor"];
 const UNITS = ["count", "g", "oz", "ml", "liter", "lbs", "hour"];
@@ -33,6 +35,8 @@ const byName = (a, b) =>
   });
 
 export default function COGManager() {
+  const confirm = useConfirm();
+
   const [supplies, setSupplies] = useState([]);
   const [form, setForm] = useState({
     name: "",
@@ -145,7 +149,9 @@ export default function COGManager() {
   };
 
   const handleBatchDelete = async () => {
-    if (!window.confirm(`Delete ${selected.length} selected supplies?`)) return;
+    if (!selected.length) return;
+    const ok = await confirm(`Delete ${selected.length} selected supplies?`);
+    if (!ok) return;
     for (const id of selected) await handleDelete(id);
     setSelected([]);
   };

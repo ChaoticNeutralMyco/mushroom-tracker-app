@@ -1,3 +1,4 @@
+// src/App.jsx
 import React, { useEffect, useMemo, useRef, useState, Suspense } from "react";
 import { Routes, Route } from "react-router-dom";
 import { auth, db, storage } from "./firebase-config";
@@ -44,6 +45,8 @@ import LocalReminders from "./components/ui/LocalReminders";
 
 // first-run coach (utils)
 import OnboardingCoach from "./utils/OnboardingCoach";
+// ✅ Unified confirm provider
+import { ConfirmProvider } from "./components/ui/ConfirmDialog";
 
 const Analytics = React.lazy(() => import("./pages/Analytics"));
 const CalendarView = React.lazy(() => import("./pages/CalendarView"));
@@ -173,8 +176,6 @@ const DEFAULT_PREFS = {
   devMode: false,
   temperatureUnit: "F",
   autoConvertEnvNotes: true,
-
-  // NEW: toggle to hide the guide menu and disable onboarding
   guideEnabled: true,
 };
 
@@ -275,7 +276,6 @@ export default function App() {
           accent: merged.accent,
           temperatureUnit: merged.temperatureUnit,
           autoConvertEnvNotes: merged.autoConvertEnvNotes,
-          // store guide preference client-side for fast boot
           guideEnabled: merged.guideEnabled,
         })
       );
@@ -509,7 +509,6 @@ export default function App() {
             largeTaps: merged.largeTaps,
             showSplashOnLoad: merged.showSplashOnLoad,
             splashMinMs: merged.splashMinMs,
-            // persist guide toggle in cloud
             guideEnabled: merged.guideEnabled,
           },
           { merge: true }
@@ -746,7 +745,7 @@ export default function App() {
           accent: merged.accent,
           temperatureUnit: merged.temperatureUnit,
           autoConvertEnvNotes: merged.autoConvertEnvNotes,
-          guideEnabled: merged.guideEnabled, // persist locally
+          guideEnabled: merged.guideEnabled,
         })
       );
       localStorage.setItem("__prefs__", JSON.stringify({ theme: merged.accent, darkMode: merged.darkMode }));
@@ -770,7 +769,7 @@ export default function App() {
         splashMinMs: merged.splashMinMs,
         temperatureUnit: merged.temperatureUnit,
         autoConvertEnvNotes: merged.autoConvertEnvNotes,
-        guideEnabled: merged.guideEnabled, // persist in cloud
+        guideEnabled: merged.guideEnabled,
       },
       { merge: true }
     );
@@ -796,7 +795,7 @@ export default function App() {
   const isAddingNew = editingGrow && !editingGrow.id;
 
   return (
-    <>
+    <ConfirmProvider>
       {showScanner && (
         <Suspense fallback={<div className="fixed inset-0 bg-black/30" />}>
           <ScanBarcodeModal onClose={() => setShowScanner(false)} />
@@ -1121,11 +1120,12 @@ export default function App() {
             </div>
           }
         />
+
         <Route path="/camera-probe" element={<CameraProbe />} />
       </Routes>
 
       {/* First-run coach (portal-based, overlays body) — now respects prefs.guideEnabled */}
       <OnboardingCoach pageKey={activeTab} enabled={prefs.guideEnabled !== false} />
-    </>
+    </ConfirmProvider>
   );
 }

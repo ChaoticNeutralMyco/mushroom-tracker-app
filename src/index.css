@@ -7,117 +7,33 @@
    ------------------------------------------------------------ */
 :root {
   --_accent-50:  #eef2ff;
-  --_accent-100: #e0e7ff;
-  --_accent-200: #c7d2fe;
-  --_accent-300: #a5b4fc;
-  --_accent-400: #818cf8;
-  --_accent-500: #6366f1;
-  --_accent-600: #4f46e5;
-  --_accent-700: #4338ca;
-  --_accent-800: #3730a3;
-  --_accent-900: #312e81;
-  --_accent-on:  #ffffff;
+  --_accent-100:#e0e7ff;
+  --_accent-200:#c7d2fe;
+  --_accent-300:#a5b4fc;
+  --_accent-400:#818cf8;
+  --_accent-500:#6366f1;
+  --_accent-600:#4f46e5;
+  --_accent-700:#4338ca;
+  --_accent-800:#3730a3;
+  --_accent-900:#312e81;
+  --_accent-on:#ffffff;
 }
 
-/* Emerald */
-.theme-emerald {
-  --_accent-50:  #ecfdf5;
-  --_accent-100: #d1fae5;
-  --_accent-200: #a7f3d0;
-  --_accent-300: #6ee7b7;
-  --_accent-400: #34d399;
-  --_accent-500: #10b981;
-  --_accent-600: #059669;
-  --_accent-700: #047857;
-  --_accent-800: #065f46;
-  --_accent-900: #064e3b;
-  --_accent-on:  #ffffff;
-}
-
-/* Violet */
-.theme-violet {
-  --_accent-50:  #f5f3ff;
-  --_accent-100: #ede9fe;
-  --_accent-200: #ddd6fe;
-  --_accent-300: #c4b5fd;
-  --_accent-400: #a78bfa;
-  --_accent-500: #8b5cf6;
-  --_accent-600: #7c3aed;
-  --_accent-700: #6d28d9;
-  --_accent-800: #5b21b6;
-  --_accent-900: #4c1d95;
-  --_accent-on:  #ffffff;
-}
-
-/* Amber */
-.theme-amber {
-  --_accent-50:  #fffbeb;
-  --_accent-100: #fef3c7;
-  --_accent-200: #fde68a;
-  --_accent-300: #fcd34d;
-  --_accent-400: #fbbf24;
-  --_accent-500: #f59e0b;
-  --_accent-600: #d97706;
-  --_accent-700: #b45309;
-  --_accent-800: #92400e;
-  --_accent-900: #78350f;
-  --_accent-on:  #111827;
-}
-
-/* Rose */
-.theme-rose {
-  --_accent-50:  #fff1f2;
-  --_accent-100: #ffe4e6;
-  --_accent-200: #fecdd3;
-  --_accent-300: #fda4af;
-  --_accent-400: #fb7185;
-  --_accent-500: #f43f5e;
-  --_accent-600: #e11d48;
-  --_accent-700: #be123c;
-  --_accent-800: #9f1239;
-  --_accent-900: #881337;
-  --_accent-on:  #ffffff;
-}
-
-/* Slate */
-.theme-slate {
-  --_accent-50:  #f8fafc;
-  --_accent-100: #f1f5f9;
-  --_accent-200: #e2e8f0;
-  --_accent-300: #cbd5e1;
-  --_accent-400: #94a3b8;
-  --_accent-500: #64748b;
-  --_accent-600: #475569;
-  --_accent-700: #334155;
-  --_accent-800: #1e293b;
-  --_accent-900: #0f172a;
-  --_accent-on:  #ffffff;
-}
-
-/* Extra accents (keep Chaotic BG independent) */
-.theme-teal {
-  --_accent-50:#f0fdfa; --_accent-100:#ccfbf1; --_accent-200:#99f6e4; --_accent-300:#5eead4;
-  --_accent-400:#2dd4bf; --_accent-500:#14b8a6; --_accent-600:#0d9488; --_accent-700:#0f766e;
-  --_accent-800:#115e59; --_accent-900:#134e4a; --_accent-on:#ffffff;
-}
-.theme-indigo {
-  --_accent-50:#eef2ff; --_accent-100:#e0e7ff; --_accent-200:#c7d2fe; --_accent-300:#a5b4fc;
-  --_accent-400:#818cf8; --_accent-500:#6366f1; --_accent-600:#4f46e5; --_accent-700:#4338ca;
-  --_accent-800:#3730a3; --_accent-900:#312e81; --_accent-on:#ffffff;
-}
-.theme-sky {
-  --_accent-50:#f0f9ff; --_accent-100:#e0f2fe; --_accent-200:#bae6fd; --_accent-300:#7dd3fc;
-  --_accent-400:#38bdf8; --_accent-500:#0ea5e9; --_accent-600:#0284c7; --_accent-700:#0369a1;
-  --_accent-800:#075985; --_accent-900:#0c4a6e; --_accent-on:#ffffff;
-}
+/* Emerald */ .theme-emerald { --_accent-50:#ecfdf5; --_accent-100:#d1fae5; --_accent-200:#a7f3d0; --_accent-300:#6ee7b7; --_accent-400:#34d399; --_accent-500:#10b981; --_accent-600:#059669; --_accent-700:#047857; --_accent-800:#065f46; --_accent-900:#064e3b; --_accent-on:#ffffff; }
+/* Violet  */ .theme-violet  { --_accent-50:#f5f3ff; --_accent-100:#ede9fe; --_accent-200:#ddd6fe; --_accent-300:#c4b5fd; --_accent-400:#a78bfa; --_accent-500:#8b5cf6; --_accent-600:#7c3aed; --_accent-700:#6d28d9; --_accent-800:#5b21b6; --_accent-900:#4c1d95; --_accent-on:#ffffff; }
+/* Amber   */ .theme-amber   { --_accent-50:#fffbeb; --_accent-100:#fef3c7; --_accent-200:#fde68a; --_accent-300:#fcd34d; --_accent-400:#fbbf24; --_accent-500:#f59e0b; --_accent-600:#d97706; --_accent-700:#b45309; --_accent-800:#92400e; --_accent-900:#78350f; --_accent-on:#111827; }
+/* Rose    */ .theme-rose    { --_accent-50:#fff1f2; --_accent-100:#ffe4e6; --_accent-200:#fecdd3; --_accent-300:#fda4af; --_accent-400:#fb7185; --_accent-500:#f43f5e; --_accent-600:#e11d48; --_accent-700:#be123c; --_accent-800:#9f1239; --_accent-900:#881337; --_accent-on:#ffffff; }
+/* Slate   */ .theme-slate   { --_accent-50:#f8fafc; --_accent-100:#f1f5f9; --_accent-200:#e2e8f0; --_accent-300:#cbd5e1; --_accent-400:#94a3b8; --_accent-500:#64748b; --_accent-600:#475569; --_accent-700:#334155; --_accent-800:#1e293b; --_accent-900:#0f172a; --_accent-on:#ffffff; }
+/* Teal    */ .theme-teal    { --_accent-50:#f0fdfa; --_accent-100:#ccfbf1; --_accent-200:#99f6e4; --_accent-300:#5eead4; --_accent-400:#2dd4bf; --_accent-500:#14b8a6; --_accent-600:#0d9488; --_accent-700:#0f766e; --_accent-800:#115e59; --_accent-900:#134e4a; --_accent-on:#ffffff; }
+/* Indigo  */ .theme-indigo  { --_accent-50:#eef2ff; --_accent-100:#e0e7ff; --_accent-200:#c7d2fe; --_accent-300:#a5b4fc; --_accent-400:#818cf8; --_accent-500:#6366f1; --_accent-600:#4f46e5; --_accent-700:#4338ca; --_accent-800:#3730a3; --_accent-900:#312e81; --_accent-on:#ffffff; }
+/* Sky     */ .theme-sky     { --_accent-50:#f0f9ff; --_accent-100:#e0f2fe; --_accent-200:#bae6fd; --_accent-300:#7dd3fc; --_accent-400:#38bdf8; --_accent-500:#0ea5e9; --_accent-600:#0284c7; --_accent-700:#0369a1; --_accent-800:#075985; --_accent-900:#0c4a6e; --_accent-on:#ffffff; }
 
 /* ------------------------------------------------------------
    Accent-aware UI bits
    ------------------------------------------------------------ */
 @layer components {
   .chip {
-    @apply inline-flex items-center gap-2 rounded-full text-sm font-medium select-none;
-    @apply px-3 py-1 border transition-colors;
+    @apply inline-flex items-center gap-2 rounded-full text-sm font-medium select-none px-3 py-1 border transition-colors;
     background-color: rgba(0,0,0,0.03);
     border-color: rgba(0,0,0,0.1);
     color: inherit;
@@ -128,34 +44,52 @@
     color: #e5e7eb;
   }
   .chip:hover { background-color: rgba(0,0,0,0.06); }
-  .dark .chip:hover { background-color: rgba(255,255,255,0.1); }
+  .dark .chip:hover { background-color: rgba(255,255,255,0.10); }
 
+  /* PRIMARY selected-state hooks (now forced to win cascade) */
   .chip--active,
   .chip[aria-selected="true"],
-  .chip[data-active="true"] {
-    background-color: var(--_accent-600);
-    border-color: var(--_accent-600);
-    color: var(--_accent-on);
+  .chip[data-active="true"],
+  .chip[aria-pressed="true"],
+  [role="tab"].chip[aria-selected="true"] {
+    background-color: var(--_accent-600) !important;
+    border-color: var(--_accent-600) !important;
+    color: var(--_accent-on) !important;
   }
+
+  /* GENERIC selected-state hooks (for components we don't control) */
+  button[aria-pressed="true"],
+  [role="tab"][aria-selected="true"],
+  .active, .is-active, .selected, .pill.active, .pill.is-active,
+  label:has(input[type="checkbox"]:checked),
+  label:has(input[type="radio"]:checked) {
+    background-color: var(--_accent-600) !important;
+    border-color: var(--_accent-600) !important;
+    color: var(--_accent-on) !important;
+  }
+
   .chip--active:hover,
   .chip[aria-selected="true"]:hover,
-  .chip[data-active="true"]:hover {
-    background-color: var(--_accent-700, var(--_accent-600));
-    border-color: var(--_accent-700, var(--_accent-600));
+  .chip[data-active="true"]:hover,
+  .chip[aria-pressed="true"]:hover,
+  [role="tab"].chip[aria-selected="true"]:hover,
+  button[aria-pressed="true"]:hover,
+  [role="tab"][aria-selected="true"]:hover,
+  .active:hover, .is-active:hover, .selected:hover, .pill.active:hover, .pill.is-active:hover,
+  label:has(input[type="checkbox"]:checked):hover,
+  label:has(input[type="radio"]:checked):hover {
+    background-color: var(--_accent-700, var(--_accent-600)) !important;
+    border-color: var(--_accent-700, var(--_accent-600)) !important;
+    color: var(--_accent-on) !important;
   }
 
   .btn {
-    @apply inline-flex items-center justify-center gap-2 rounded-lg text-sm font-medium;
-    @apply px-3.5 py-2.5 border transition-colors;
+    @apply inline-flex items-center justify-center gap-2 rounded-lg text-sm font-medium px-3.5 py-2.5 border transition-colors;
     background-color: rgba(0,0,0,0.03);
     border-color: rgba(0,0,0,0.1);
     color: inherit;
   }
-  .dark .btn {
-    background-color: rgba(255,255,255,0.06);
-    border-color: rgba(255,255,255,0.16);
-    color: #e5e7eb;
-  }
+  .dark .btn { background-color: rgba(255,255,255,0.06); border-color: rgba(255,255,255,0.16); color: #e5e7eb; }
   .btn:hover { background-color: rgba(0,0,0,0.06); }
   .dark .btn:hover { background-color: rgba(255,255,255,0.08); }
 
@@ -183,7 +117,11 @@
 
   .btn:disabled, .chip:disabled { opacity: 0.55; cursor: not-allowed; }
 
-  .btn:focus-visible, .chip:focus-visible, .accent-bg:focus-visible {
+  /* High-visibility keyboard focus */
+  .btn:focus-visible, .chip:focus-visible, .accent-bg:focus-visible,
+  [role="tab"].chip:focus-visible,
+  button[aria-pressed="true"]:focus-visible,
+  [role="tab"][aria-selected="true"]:focus-visible {
     outline: 2px solid var(--_accent-600); outline-offset: 2px;
   }
 }
@@ -194,13 +132,10 @@
 
 /* ============================================================
    CHAOTIC – FULL THEME BACKGROUND (decoupled from accent)
-   Trigger with .bg-chaotic on <html> (Settings → Theme Style)
-   (Still honor .theme-chaotic for back-compat.)
    ============================================================ */
 html.bg-chaotic, html.theme-chaotic { min-height: 100%; }
 html.bg-chaotic body, html.theme-chaotic body {
   background-color: #0b0d16;
-  /* Prefer your new filenames; fall back to mountains.* */
   background-image: image-set(
     url("/themes/chaotic/Chaotic%20Mountians.webp") type("image/webp") 1x,
     url("/themes/chaotic/mountains.webp") type("image/webp") 1x,
@@ -208,7 +143,6 @@ html.bg-chaotic body, html.theme-chaotic body {
     url("/themes/chaotic/mountains.jpg") type("image/jpeg") 1x
   );
   background-size: cover;
-  /* Slightly higher framing so logo/mountains are centered better */
   background-position: center 42%;
   background-repeat: no-repeat;
   background-attachment: fixed;
@@ -217,18 +151,15 @@ html.bg-chaotic body, html.theme-chaotic body {
   html.bg-chaotic body, html.theme-chaotic body { background-attachment: scroll; }
 }
 
-/* ---- Veil / glow -------------------------------------------------- */
-/* Light mode: MUCH lighter veil so the scene reads clearly */
+/* Veil / glow */
 html.bg-chaotic:not(.dark) body::before,
 html.theme-chaotic:not(.dark) body::before {
   content: ""; position: fixed; inset: 0; pointer-events: none; z-index: 0;
   background:
-    /* darker at the very bottom only, then fade quickly */
     linear-gradient(to top, rgba(11,13,22,0.40) 0%, rgba(11,13,22,0.24) 38%, rgba(11,13,22,0.12) 100%),
     radial-gradient(60% 40% at 85% -10%, rgba(76,201,240,0.10), transparent 70%),
-    radial-gradient(60% 40% at 10% 110%, rgba(79,104,232,0.12), transparent 70%);
+    radial-gradient(60% 40% at 10% 110%, rgba(79, 104, 232, 0.12), transparent 70%);
 }
-/* Dark mode: keep the stronger veil for contrast */
 html.bg-chaotic.dark body::before,
 html.theme-chaotic.dark body::before {
   content: ""; position: fixed; inset: 0; pointer-events: none; z-index: 0;
@@ -238,29 +169,28 @@ html.theme-chaotic.dark body::before {
     radial-gradient(60% 40% at 10% 110%, rgba(79, 104, 232, 0.12), transparent 70%);
 }
 
-/* ---- Surfaces in Chaotic / light ---------------------------------- */
-/* Make panels less “milky” so the background shows through */
+/* Light panel transparency on chaotic */
 html.bg-chaotic:not(.dark) .bg-white,
 html.bg-chaotic:not(.dark) .bg-zinc-50,
 html.bg-chaotic:not(.dark) .bg-zinc-100 {
-  background-color: rgba(255,255,255,0.40) !important; /* was 0.55 */
+  background-color: rgba(255,255,255,0.40) !important;
   backdrop-filter: blur(1px);
   -webkit-backdrop-filter: blur(1px);
   box-shadow: 0 1px 0 rgba(0,0,0,.03) inset, 0 10px 28px rgba(0,0,0,.10);
 }
 
-/* Header gets lighter too so it doesn’t gray out the scene */
+/* Header transparency */
 html.bg-chaotic:not(.dark) header {
   background-color: rgba(255,255,255,0.36) !important;
   backdrop-filter: blur(1px);
   -webkit-backdrop-filter: blur(1px);
 }
 
-/* Keep dark mode surfaces transparent to let scene show through */
+/* Dark surfaces transparent to show scene */
 html.bg-chaotic.dark .bg-zinc-900,
 html.bg-chaotic.dark .bg-zinc-950 { background-color: transparent !important; }
 
-/* Optional watermark (leave if you like it) */
+/* Watermark */
 html.bg-chaotic body::after,
 html.theme-chaotic body::after {
   content: ""; position: fixed; top: 2.5rem; left: 2.5rem;

@@ -1,4 +1,3 @@
-// src/pages/QuickEdit.jsx
 import React, { useMemo, useState } from "react";
 import { useParams, Link } from "react-router-dom";
 
@@ -6,8 +5,7 @@ const STAGES = ["Inoculated", "Colonizing", "Colonized", "Fruiting", "Harvested"
 const STATUSES = ["Active", "Archived", "Contaminated"];
 
 /**
- * QuickEdit
- * Prop-driven. No Firestore reads here.
+ * QuickEdit (prop-driven; no Firestore reads)
  *
  * Props:
  * - grows
@@ -37,8 +35,23 @@ export default function QuickEdit({
   const [status, setStatus] = useState(grow?.status || "Active");
   const [activeTab, setActiveTab] = useState(stage);
 
-  const notes = (notesByGrowStage[growId] || {})[activeTab] || [];
-  const photos = (photosByGrowStage[growId] || {})[activeTab] || [];
+  // --- Compatibility helpers: handle either nested-object or Map<string,"growId::Stage"> shapes
+  const pickStageItems = (byGrowStage, id, stg) => {
+    if (!byGrowStage || !id || !stg) return [];
+    // If it's a Map keyed by `${id}::${stg}`
+    if (typeof byGrowStage.get === "function") {
+      const key = `${id}::${stg}`;
+      const list = byGrowStage.get(key) ?? byGrowStage.get(`${id}::General`);
+      return Array.isArray(list) ? list : [];
+    }
+    // If it's a nested object shape: { [id]: { [stage]: [...] } }
+    const bucket = byGrowStage[id] || {};
+    const list = bucket[stg] ?? bucket.General;
+    return Array.isArray(list) ? list : [];
+  };
+
+  const notes = pickStageItems(notesByGrowStage, growId, activeTab);
+  const photos = pickStageItems(photosByGrowStage, growId, activeTab);
 
   const [noteText, setNoteText] = useState("");
   const [file, setFile] = useState(null);

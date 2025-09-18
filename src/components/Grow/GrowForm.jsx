@@ -9,6 +9,7 @@ import {
   getDoc,
 } from "firebase/firestore";
 import { db, auth } from "../../firebase-config";
+import { useConfirm } from "../ui/ConfirmDialog";
 
 /* lightweight toast (no deps) */
 function showToast(message, { duration = 2400 } = {}) {
@@ -63,6 +64,7 @@ export default function GrowForm({
   onUpdateGrow,
 }) {
   const isEditing = !!editingGrow?.id;
+  const confirm = useConfirm();
 
   // ----- Local state -----
   const [strain, setStrain] = useState("");
@@ -342,15 +344,16 @@ export default function GrowForm({
     return rows;
   };
 
-  const confirmShortages = (rows, recipeName, servings = 1, servingLabel = "") => {
+  const confirmShortages = async (rows, recipeName, servings = 1, servingLabel = "") => {
     const shortages = rows.filter((r) => r.shortage);
     if (shortages.length === 0) return true;
     const list = shortages
       .map((r) => `• ${r.name}: have ${r.onHand} ${r.unit}, need ${r.need} ${r.unit}`)
       .join("\n");
-    return window.confirm(
+    const ok = await confirm(
       `Not enough stock to make ${servings} ${servingLabel || "servings"} of "${recipeName}".\n\n${list}\n\nProceed anyway? (Will deduct what is available, never below zero.)`
     );
+    return !!ok;
   };
 
   const deductSupplies = async (rows, firstGrowId, recipeName, servings = 1, servingLabel = "") => {
@@ -401,7 +404,7 @@ export default function GrowForm({
         recipeForUse = await getRecipeById(recipeId);
         if (recipeForUse) {
           consumptionRows = computeConsumptionRows(recipeForUse, Number(batchCount || 1));
-          const ok = confirmShortages(
+          const ok = await confirmShortages(
             consumptionRows,
             recipeForUse.name || "Recipe",
             Number(batchCount || 1),

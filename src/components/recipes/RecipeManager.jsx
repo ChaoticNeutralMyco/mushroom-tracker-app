@@ -1,3 +1,4 @@
+// src/components/recipes/RecipeManager.jsx
 import React, { useState, useEffect } from "react";
 import {
   Copy,
@@ -31,6 +32,7 @@ import {
   COUNT_UNITS,
   areCompatible,
 } from "../../lib/units";
+import { useConfirm } from "../ui/ConfirmDialog";
 
 const byName = (a, b) =>
   String(a?.name || "").localeCompare(String(b?.name || ""), undefined, {
@@ -83,6 +85,8 @@ export default function RecipeManager() {
     servingLabel: "",
     targetServings: 1,
   });
+
+  const confirm = useConfirm();
 
   // ---- LIVE SNAPSHOTS (auth-aware) ----
   useEffect(() => {
@@ -327,8 +331,10 @@ export default function RecipeManager() {
     });
   };
 
-  const handleBatchDelete = () => {
-    if (!window.confirm(`Delete ${selected.length} selected recipes?`)) return;
+  const handleBatchDelete = async () => {
+    if (!selected.length) return;
+    const ok = await confirm(`Delete ${selected.length} selected recipes?`);
+    if (!ok) return;
     selected.forEach(deleteRecipe);
   };
 
