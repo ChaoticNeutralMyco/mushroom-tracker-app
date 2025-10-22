@@ -1,805 +1,1084 @@
 // src/components/Grow/GrowForm.jsx
-import React, { useEffect, useMemo, useState } from "react";
+/* Storage & Parent Source upgrade (pure form)
+   - Parent Source options trimmed to: Active Grow / Storage Item (no "None")
+   - Default selection: Active Grow
+   - Keep all previous behavior (Active Grow consumption, Storage deduction,
+     recipe warnings, cost math, stage options, etc.)
+   - Parent (Active Grow) UI:
+     * Dropdown shows ABBR — Strain · Type · Stage (date removed)
+     * Availability shown below input as helper text (less cramped)
+     * Auto-fill strain from selected parent so abbreviation preview populates
+   - Parent choices: Only Colonized parents are allowed (Bulk is excluded).
+   - Over-consumption guard: if input > available, show red warning and clamp to max.
+   - Auto-unit switching by grow type:
+     * Agar/LC → ml
+     * Grain Jar/Bulk → g (Bulk uses bulkUnit)
+*/
+
+import { useEffect, useMemo, useState, useRef } from "react";
 import {
+  doc,
+  getDoc,
+  updateDoc,
   collection,
   addDoc,
-  updateDoc,
-  doc,
   getDocs,
-  getDoc,
+  serverTimestamp,
 } from "firebase/firestore";
 import { db, auth } from "../../firebase-config";
-import { useConfirm } from "../ui/ConfirmDialog";
+import { allowedStagesForType, normalizeType } from "../../lib/growFilters";
+import {
+  consumeRecipeForBatch,
+  reconcileRecipeChangeForGrow,
+} from "../../lib/consume-supplies";
+import RecipeConsumptionPreview from "./RecipeConsumptionPreview";
 
-/* lightweight toast (no deps) */
-function showToast(message, { duration = 2400 } = {}) {
-  try {
-    const el = document.createElement("div");
-    el.textContent = message;
-    Object.assign(el.style, {
-      position: "fixed",
-      left: "50%",
-      bottom: "22px",
-      transform: "translateX(-50%) translateY(8px)",
-      background: "rgba(16,185,129,0.95)", // emerald-ish
-      color: "white",
-      padding: "10px 14px",
-      borderRadius: "12px",
-      boxShadow: "0 8px 24px rgba(0,0,0,0.35)",
-      fontSize: "14px",
-      zIndex: 999999,
-      opacity: 0,
-      transition: "opacity 160ms ease, transform 160ms ease",
-      pointerEvents: "none",
-      maxWidth: "80vw",
-      textAlign: "center",
-    });
-    document.body.appendChild(el);
-    requestAnimationFrame(() => {
-      el.style.opacity = 1;
-      el.style.transform = "translateX(-50%) translateY(0)";
-    });
-    setTimeout(() => {
-      el.style.opacity = 0;
-      el.style.transform = "translateX(-50%) translateY(6px)";
-      setTimeout(() => el.remove(), 200);
-    }, duration);
-  } catch {
-    // no-op
+/* ---------- Constants ---------- */
+const GROW_TYPES = ["Agar", "LC", "Grain Jar", "Bulk", "Other"];
+const DEFAULT_STATUS = "Active";
+const DEFAULT_STAGE = "Inoculated";
+const VOLUME_UNITS = ["ml", "g", "pcs"];
+
+const PARENT_SOURCES = [
+  { key: "grow", label: "Active Grow" },
+  { key: "library", label: "Storage Item" },
+];
+
+/* ---------- Small utils ---------- */
+function pad2(n) { return String(n).padStart(2, "0"); }
+function toLocalDateInputValue(d) {
+  const Y = d.getFullYear(); const M = pad2(d.getMonth() + 1); const D = pad2(d.getDate());
+  return `${Y}-${M}-${D}`;
+}
+function dateFromDateInput(value) { return value ? new Date(`${value}T00:00:00`) : new Date(); }
+function deriveAbbrFromName(name = "") {
+  const words = String(name).trim().split(/\s+/).filter(Boolean);
+  if (!words.length) return "";
+  if (words.length === 1) return words[0].slice(0, 2).toUpperCase();
+  return (words[0][0] + words[1][0]).toUpperCase();
+}
+function typeCodeFor(t = "") {
+  const n = normalizeType(t);
+  if (n === "Agar") return "AG";
+  if (n === "LC") return "LC";
+  if (n === "Grain Jar") return "GJ";
+  if (n === "Bulk") return "BK";
+  return "OT";
+}
+function yymmddFromLocalDateInput(localDate) {
+  if (!localDate) return "";
+  const [Y, M, D] = localDate.split("-").map((x) => parseInt(x, 10));
+  if (!Y || !M || !D) return "";
+  return `${String(Y).slice(-2)}${pad2(M)}${pad2(D)}`;
+}
+function abbrPrefix(strainName, growType, localDate) {
+  const s = deriveAbbrFromName(strainName);
+  const code = typeCodeFor(growType);
+  const date = yymmddFromLocalDateInput(localDate);
+  if (!s) return "";
+  return date ? `${s}-${code}-${date}` : `${s}-${code}`;
+}
+function escapeRegExp(str) { return str.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"); }
+function maxSuffixForPrefix(existingGrows = [], prefix) {
+  if (!prefix) return 0;
+  const reBare = new RegExp(`^${escapeRegExp(prefix)}$`);
+  const reNum = new RegExp(`^${escapeRegExp(prefix)}-(\\d+)$`);
+  let max = 0;
+  for (const g of existingGrows) {
+    const ab = String(g.abbr || g.abbreviation || "");
+    if (reBare.test(ab)) { max = Math.max(max, 1); continue; }
+    const m = ab.match(reNum);
+    if (m) max = Math.max(max, parseInt(m[1], 10));
   }
+  return max;
+}
+function toDateAny(raw) {
+  if (!raw) return null;
+  try {
+    if (raw?.toDate) return raw.toDate();
+    if (raw instanceof Date) return raw;
+    if (typeof raw === "number") return new Date(raw);
+    const d = new Date(String(raw));
+    return isNaN(d) ? null : d;
+  } catch { return null; }
 }
 
-/**
- * Prop-driven first; falls back to Firestore if lists/handlers aren’t passed.
- */
+/* ---------- Recipe helpers (unchanged) ---------- */
+function norm(s = "") { return String(s || "").trim().toLowerCase(); }
+function recipeType(r = {}) { return normalizeType(r.type || r.growType || r.category || ""); }
+
+const TYPE_KEYWORDS = {
+  agar: ["agar", "plate", "slant", "lme", "mea", "pda"],
+  lc: ["lc", "liquid culture", "liquid-culture", "liquid"],
+  "grain jar": ["grain", "spawn", "jar", "grain jar", "wbs", "rye"],
+  bulk: ["bulk", "substrate", "tub", "shoebox", "mono", "monotub"],
+  other: ["misc", "other"],
+};
+
+function recipeMatchScore(recipe = {}, currentType = "") {
+  const tNorm = norm(normalizeType(currentType));
+  if (!tNorm) return 0;
+  let score = 0;
+  const rType = norm(recipeType(recipe));
+  if (tNorm && rType && tNorm === rType) score += 3;
+  const name = norm(recipe.name || "");
+  const tags = (recipe.tags || recipe.keywords || recipe.labels || []).map(norm);
+  const keys = TYPE_KEYWORDS[tNorm] || [];
+  if (keys.some((k) => name.includes(k))) score += 2;
+  if (tags.length && keys.some((k) => tags.includes(k))) score += 1;
+  return score;
+}
+function computeRecipeTotalCost(recipe, suppliesMap) {
+  if (!recipe || !Array.isArray(recipe.items)) return 0;
+  let total = 0;
+  for (const it of recipe.items) {
+    const sup = suppliesMap.get(it.supplyId);
+    const price = Number(sup?.cost || 0);
+    const amt = Number(it.amount || 0);
+    total += price * amt;
+  }
+  return Math.round(total * 100) / 100;
+}
+function getRecipeYield(recipe = {}) {
+  const qty = Number(
+    recipe?.yieldQty ?? recipe?.yield ?? recipe?.yieldAmount ?? recipe?.yieldVolume ??
+    recipe?.totalVolume ?? recipe?.batchVolume ?? recipe?.outputQty ?? recipe?.batchQty ??
+    recipe?.portions ?? recipe?.servings ?? 0
+  ) || 0;
+  const unit = String(
+    recipe?.yieldUnit || recipe?.unit || recipe?.volumeUnit || recipe?.outputUnit || recipe?.batchUnit || ""
+  );
+  return { qty, unit };
+}
+
+/* ---------- Stage timestamps ---------- */
+const stageTimestampField = {
+  Inoculated: "inoculatedAt",
+  Colonizing: "colonizingAt",
+  Colonized: "colonizedAt",
+  Fruiting: "fruitingAt",
+  Harvested: "harvestedAt",
+  Consumed: "consumedAt",
+  Contaminated: "contaminatedAt",
+};
+
+/* ---------- Storage availability ---------- */
+const firstFinite = (...vals) => {
+  for (const v of vals) {
+    if (v === undefined || v === null) continue;
+    const n = Number(v);
+    if (Number.isFinite(n)) return n;
+  }
+  return NaN;
+};
+function storageAvailabilityOf(docData = {}) {
+  const typeName = String(
+    docData.type || docData.form || docData.itemType || docData.kind || ""
+  ).toLowerCase();
+  const unitHint = String(docData.unit || docData.qtyUnit || "").toLowerCase();
+
+  const isSyringe = /syringe|mss|lc|liquid/.test(typeName) || unitHint === "ml";
+  if (isSyringe) {
+    const avail = firstFinite(docData.volumeMl, docData.ml, unitHint === "ml" ? docData.qty : undefined);
+    const ok = Number.isFinite(avail);
+    return { ok, mode: "volume", available: ok ? Math.max(0, avail) : 0, unit: "ml", typeLabel: docData.type || "Syringe", fieldPref: ["volumeMl", "ml", "qty"] };
+  }
+
+  const isCount =
+    /swab|print|plate|slant|agar/.test(typeName) ||
+    !unitHint || unitHint === "count" || unitHint === "plate";
+  if (isCount) {
+    const raw = firstFinite(docData.count, docData.qty, docData.quantity, docData.plates, docData.items);
+    const ok = Number.isFinite(raw);
+    const whole = ok ? Math.max(0, Math.floor(raw)) : 0;
+    return { ok, mode: "count", available: whole, unit: unitHint || "count", typeLabel: docData.type || "Stored Item", fieldPref: ["count", "qty", "quantity"] };
+  }
+  return { ok: false, mode: "unknown", available: 0, unit: "", typeLabel: docData.type || "Item", fieldPref: [] };
+}
+
+/* ==================== COMPONENT ==================== */
 export default function GrowForm({
-  editingGrow,
-  onSaveComplete,
+  editingGrow = null,
+  onSaveComplete = () => {},
   onClose = () => {},
-  strains,
-  grows,
-  recipes,
-  supplies,
+  strains = [],
+  grows = [],
+  recipes = [],
+  supplies = [],
   onCreateGrow,
   onUpdateGrow,
 }) {
-  const isEditing = !!editingGrow?.id;
-  const confirm = useConfirm();
+  const mode = editingGrow && editingGrow.id ? "edit" : "create";
 
-  // ----- Local state -----
-  const [strain, setStrain] = useState("");
-  const [abbreviation, setAbbreviation] = useState("");
-  const [stage, setStage] = useState("Inoculated");
-  const [growType, setGrowType] = useState("Agar");
-  const [initialVolume, setInitialVolume] = useState(""); // per-child size
-  const [volumeUnit, setVolumeUnit] = useState("mL");
-  const [status, setStatus] = useState("Active");
+  /* ---- Parent Source ---- */
+  const cameFromLibrary = editingGrow?.parentSource === "Library" && editingGrow?.parentId;
+const [parentSource, setParentSource] = useState(cameFromLibrary ? "library" : "grow");
+const isSubmittingRef = useRef(false);
+const [isSubmitting, setIsSubmitting] = useState(false);
+const effectiveParentSource = parentSource;
 
-  // Parent (now required): either existing grow OR library item
-  const [parentMode, setParentMode] = useState("grow"); // "grow" | "library"
-  const [parentGrowId, setParentGrowId] = useState("");
-  const [parentLibraryId, setParentLibraryId] = useState("");
-  const [parentConsumption, setParentConsumption] = useState(""); // total to subtract from parent grow (if grow-mode)
+  /* ---- Basics ---- */
+  const [growType, setGrowType] = useState(editingGrow?.type || editingGrow?.growType || "Agar");
+  const [strainId, setStrainId] = useState(editingGrow?.strainId || "");
+  const [strain, setStrain] = useState(editingGrow?.strain || editingGrow?.strainName || "");
+
+  // keep `strain` (name) in sync when dropdown id changes (only when not locked by parent/storage)
+  const strainNameById = useMemo(() => {
+    const map = new Map();
+    (Array.isArray(strains) ? strains : []).forEach((s) =>
+      map.set(s.id, s.name || s.strain || "Unnamed Strain")
+    );
+    return map;
+  }, [strains]);
+
+  useEffect(() => {
+    const lockBecauseOfParent =
+      Boolean(editingGrow?.fromStorage) ||
+      Boolean(editingGrow?.lockStrain) ||
+      cameFromLibrary ||
+      effectiveParentSource === "grow" ||
+      (effectiveParentSource === "library" && !!editingGrow?.parentId);
+
+    if (lockBecauseOfParent) return;
+    setStrain(strainId ? (strainNameById.get(strainId) || "") : "");
+  }, [strainId, strainNameById, effectiveParentSource, cameFromLibrary, editingGrow]);
 
   const [batchCount, setBatchCount] = useState(1);
+  const [stage, setStage] = useState(editingGrow?.stage || DEFAULT_STAGE);
+  const [status, setStatus] = useState(editingGrow?.status || DEFAULT_STATUS);
 
-  const [createdAt, setCreatedAt] = useState("");
-  const [recipeId, setRecipeId] = useState("");
-
-  // Options
-  const [strainOptions, setStrainOptions] = useState([]);
-  const [parentOptions, setParentOptions] = useState([]); // grows
-  const [libraryItems, setLibraryItems] = useState([]); // library
-  const [recipeOptions, setRecipeOptions] = useState([]);
-  const [supplyOptions, setSupplyOptions] = useState([]);
-
-  const [saving, setSaving] = useState(false);
-  const [error, setError] = useState("");
-
-  // ----- Seed from editingGrow / prefill -----
-  useEffect(() => {
-    if (isEditing) {
-      setStrain(editingGrow.strain || "");
-      setAbbreviation(editingGrow.abbreviation || "");
-      setStage(editingGrow.stage || "Inoculated");
-      setGrowType(editingGrow.growType || "Agar");
-      setInitialVolume(editingGrow.initialVolume ?? "");
-      setVolumeUnit(editingGrow.volumeUnit || "mL");
-      setStatus(editingGrow.status || "Active");
-      setCreatedAt((editingGrow.createdAt || "").substring?.(0, 10) || "");
-      setRecipeId(editingGrow.recipeId || "");
-
-      // Parent reflect existing data
-      if (editingGrow.parentGrowId) {
-        setParentMode("grow");
-        setParentGrowId(editingGrow.parentGrowId);
-      } else if (editingGrow.parentLibraryId || editingGrow.parentSource === "Library") {
-        setParentMode("library");
-        if (editingGrow.parentLibraryId) setParentLibraryId(editingGrow.parentLibraryId);
-      }
-      setParentConsumption(""); // only used when creating
-      setBatchCount(1);
-    } else {
-      setStrain(editingGrow?.strain || "");
-      setAbbreviation("");
-      setStage("Inoculated");
-      setGrowType(editingGrow?.growType || "Agar");
-      setInitialVolume("");
-      setVolumeUnit("mL");
-      setStatus("Active");
-      setCreatedAt(new Date().toISOString().substring(0, 10));
-      setRecipeId("");
-
-      // Prefill parent from Strains→Library "New Grow"
-      if (editingGrow?.parentSource === "Library" && editingGrow?.parentId) {
-        setParentMode("library");
-        setParentLibraryId(editingGrow.parentId);
-        if (editingGrow?.strainName) setStrain(editingGrow.strainName);
-      } else if (editingGrow?.parentGrowId) {
-        setParentMode("grow");
-        setParentGrowId(editingGrow.parentGrowId);
-      } else {
-        setParentMode("grow");
-        setParentGrowId("");
-        setParentLibraryId("");
-      }
-      setParentConsumption("");
-      setBatchCount(1);
-    }
-  }, [editingGrow, isEditing]);
-
-  // ----- Load options from props, else fallback fetch -----
-  useEffect(() => {
-    (async () => {
+  const [created, setCreated] = useState(() => {
+    if (editingGrow?.createdAt) {
       try {
-        const user = auth.currentUser;
+        const d = editingGrow.createdAt.toDate?.() || new Date(editingGrow.createdAt);
+        return toLocalDateInputValue(d);
+      } catch { return toLocalDateInputValue(new Date()); }
+    }
+    return toLocalDateInputValue(new Date());
+  });
 
-        if (Array.isArray(strains)) {
-          setStrainOptions(
-            strains.map((s) => (typeof s === "string" ? s : s?.name)).filter(Boolean)
-          );
-        } else if (user) {
-          const snap = await getDocs(collection(db, "users", user.uid, "strains"));
-          setStrainOptions(snap.docs.map((d) => d.data().name).filter(Boolean));
-        }
-
-        // Parents allowed sources
-        const allowAsParent = (g) =>
-          g.status !== "Archived" &&
-          g.status !== "Contaminated" &&
-          (g.growType === "Agar" || g.growType === "LC" || g.growType === "Grain Jar");
-
-        if (Array.isArray(grows)) {
-          setParentOptions(grows.filter(allowAsParent));
-        } else if (user) {
-          const snap = await getDocs(collection(db, "users", user.uid, "grows"));
-          setParentOptions(snap.docs.map((d) => ({ id: d.id, ...d.data() })).filter(allowAsParent));
-        }
-
-        // Library items (swab/syringe/print/LC etc.)
-        if (user) {
-          const libSnap = await getDocs(collection(db, "users", user.uid, "library"));
-          setLibraryItems(libSnap.docs.map((d) => ({ id: d.id, ...d.data() })));
-        }
-
-        if (Array.isArray(recipes)) {
-          setRecipeOptions(recipes);
-        } else if (user) {
-          const snap = await getDocs(collection(db, "users", user.uid, "recipes"));
-          setRecipeOptions(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
-        }
-
-        if (Array.isArray(supplies)) {
-          setSupplyOptions(supplies);
-        } else if (user) {
-          const snap = await getDocs(collection(db, "users", user.uid, "supplies"));
-          setSupplyOptions(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
-        }
-      } catch (e) {
-        console.error(e);
+  /* ---- Recipes & Supplies ---- */
+  const [localRecipes, setLocalRecipes] = useState(Array.isArray(recipes) ? recipes : []);
+  const [localSupplies, setLocalSupplies] = useState(Array.isArray(supplies) ? supplies : []);
+  useEffect(() => { if (recipes?.length) setLocalRecipes(recipes); }, [recipes]);
+  useEffect(() => { if (supplies?.length) setLocalSupplies(supplies); }, [supplies]);
+  useEffect(() => {
+    if (localRecipes.length && localSupplies.length) return;
+    const user = auth.currentUser; if (!user) return;
+    (async () => {
+      if (!localRecipes.length) {
+        const snap = await getDocs(collection(db, "users", user.uid, "recipes"));
+        setLocalRecipes(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
+      }
+      if (!localSupplies.length) {
+        const snap = await getDocs(collection(db, "users", user.uid, "supplies"));
+        setLocalSupplies(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
       }
     })();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [strains, grows, recipes, supplies]);
+  }, []); // mount
+  const suppliesMap = useMemo(() => {
+    const m = new Map();
+    for (const s of localSupplies) m.set(s.id, s);
+    return m;
+  }, [localSupplies]);
 
-  // ----- Parent helpers -----
-  const selectedParentGrow = useMemo(() => {
-    if (!parentGrowId) return null;
-    const src = Array.isArray(grows) ? grows : parentOptions;
-    return src.find((g) => g.id === parentGrowId) || null;
-  }, [parentGrowId, grows, parentOptions]);
+  const [recipeId, setRecipeId] = useState(editingGrow?.recipeId || "");
+  const [recipeName, setRecipeName] = useState(editingGrow?.recipe || editingGrow?.recipeName || "");
+  const [cost, setCost] = useState(Number.isFinite(Number(editingGrow?.cost)) ? Number(editingGrow.cost) : 0);
 
-  const selectedLibraryItem = useMemo(
-    () => (parentLibraryId ? libraryItems.find((l) => l.id === parentLibraryId) || null : null),
-    [parentLibraryId, libraryItems]
+  /* ---- Volumes ---- */
+  const [ivalue, setIValue] = useState(editingGrow?.amountTotal ?? editingGrow?.initialVolume ?? "");
+  const [ivUnit, setIvUnit] = useState(
+    editingGrow?.amountUnit || editingGrow?.volumeUnit || (normalizeType(growType) === "Bulk" ? "g" : "ml")
+  );
+  const [amountAvailableEdit, setAmountAvailableEdit] = useState(editingGrow?.amountAvailable ?? "");
+  const [bulkGrainParts, setBulkGrainParts] = useState(editingGrow?.bulkGrainParts ?? 1);
+  const [bulkSubstrateParts, setBulkSubstrateParts] = useState(editingGrow?.bulkSubstrateParts ?? 5);
+  const [bulkVolume, setBulkVolume] = useState(editingGrow?.bulkVolume ?? "");
+  const [bulkUnit, setBulkUnit] = useState(editingGrow?.bulkVolumeUnit || "g");
+
+  /* ---- Parent grow (Active Grow) ---- */
+  const [parentGrowId, setParentGrowId] = useState("");
+  const [consumeFromParent, setConsumeFromParent] = useState("");
+  const [consumeUnit, setConsumeUnit] = useState("ml");
+  const [parentList, setParentList] = useState([]);
+
+  // computed figures for the chosen parent
+  const [parentRemaining, setParentRemaining] = useState(0);
+  const [parentTotal, setParentTotal] = useState(null);
+  const [consumeWarn, setConsumeWarn] = useState(""); // red warning text
+
+  /* ---- Library/Storage picker ---- */
+  const [libraryItems, setLibraryItems] = useState([]);
+  const [libId, setLibId] = useState(cameFromLibrary ? String(editingGrow.parentId) : "");
+  const [storageDoc, setStorageDoc] = useState(null);
+  const [storageMode, setStorageMode] = useState({ ok: false, mode: "unknown", available: 0, unit: "", typeLabel: "", fieldPref: [] });
+  const [useFromStorageAmount, setUseFromStorageAmount] = useState("");
+
+  useEffect(() => {
+    if (effectiveParentSource !== "library") return;
+    const user = auth.currentUser; if (!user) return;
+    (async () => {
+      const snap = await getDocs(collection(db, "users", user.uid, "library"));
+      const rows = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+      const active = rows.filter((it) => {
+        const qty = Number(it?.qty || 0);
+        const archivedish = !!it?.archived || String(it?.status || "").toLowerCase() === "archived";
+        return qty > 0 && !archivedish;
+      });
+      setLibraryItems(active);
+      if (cameFromLibrary && editingGrow?.parentId) setLibId(String(editingGrow.parentId));
+    })();
+  }, [effectiveParentSource]); // eslint-disable-line
+
+  useEffect(() => {
+    if (effectiveParentSource !== "library" || !libId) {
+      setStorageDoc(null);
+      setStorageMode({ ok: false, mode: "unknown", available: 0, unit: "" });
+      return;
+    }
+    const it = (libraryItems || []).find((i) => String(i.id) === String(libId));
+    if (!it) { setStorageDoc(null); setStorageMode({ ok: false, mode: "unknown", available: 0, unit: "" }); return; }
+    setStorageDoc(it);
+    const mode = storageAvailabilityOf({ ...it, qty: it.qty, unit: it.unit, type: it.type });
+    setStorageMode(mode);
+    setUseFromStorageAmount(mode.mode === "count" ? "1" : "1");
+    if (it.strainName) setStrain(it.strainName);
+  }, [libId, libraryItems, effectiveParentSource]);
+
+  const lockStrainPref =
+    Boolean(editingGrow?.fromStorage) ||
+    Boolean(editingGrow?.lockStrain) ||
+    cameFromLibrary;
+
+  const lockStrain =
+    lockStrainPref ||
+    Boolean(parentGrowId) ||
+    (effectiveParentSource === "library" && Boolean(libId));
+
+  const stageOptions = allowedStagesForType(growType);
+
+  useEffect(() => {
+    const isBulk = normalizeType(growType) === "Bulk";
+    if (isBulk) setIValue("");
+    if (!stageOptions.includes(stage)) setStage(DEFAULT_STAGE);
+  }, [growType]); // eslint-disable-line
+
+  // Auto-switch units by grow type
+  useEffect(() => {
+    const t = normalizeType(growType);
+    if (t === "Bulk") {
+      setBulkUnit("g");
+    } else if (t === "Grain Jar") {
+      setIvUnit("g");
+    } else if (t === "Agar" || t === "LC") {
+      setIvUnit("ml");
+    }
+  }, [growType]);
+
+  const recipesRanked = useMemo(() => {
+    const src = Array.isArray(localRecipes) ? [...localRecipes] : [];
+    src.sort((a, b) => {
+      const sa = recipeMatchScore(a, growType);
+      const sb = recipeMatchScore(b, growType);
+      if (sb !== sa) return sb - sa;
+      return String(a.name || "").localeCompare(String(b.name || ""));
+    });
+    return src;
+  }, [localRecipes, growType]);
+
+  const selectedRecipe = useMemo(
+    () => (recipeId ? recipesRanked.find((r) => r.id === recipeId) : null),
+    [recipesRanked, recipeId]
+  );
+  const selectedRecipeScore = useMemo(
+    () => (selectedRecipe ? recipeMatchScore(selectedRecipe, growType) : 0),
+    [selectedRecipe, growType]
   );
 
-  // When a parent is chosen, lock strain to parent and copy unit (grow-mode)
   useEffect(() => {
-    if (!selectedParentGrow || isEditing) return;
-    setStrain(selectedParentGrow.strain || "");
-    if (selectedParentGrow.volumeUnit) setVolumeUnit(selectedParentGrow.volumeUnit);
-  }, [selectedParentGrow, isEditing]);
-
-  // When a library parent is chosen, prefill strain if missing
-  useEffect(() => {
-    if (!selectedLibraryItem || isEditing) return;
-    if (!strain) setStrain(selectedLibraryItem.strainName || "");
-  }, [selectedLibraryItem, isEditing, strain]);
-
-  // ----- Abbreviation generator -----
-  useEffect(() => {
-    const makeAbbr = async () => {
-      if (!strain || !createdAt || isEditing) return;
-      const initials = String(strain)
-        .split(" ")
-        .map((w) => w[0])
-        .join("")
-        .toUpperCase();
-      const typeAbbr = { Agar: "AG", LC: "LC", "Grain Jar": "GJ", Bulk: "BK" }[growType] || "XX";
-      const datePart = createdAt.replaceAll("-", "").slice(2); // YYMMDD
-      const base = `${initials}-${typeAbbr}-${datePart}`;
-
-      let existing = [];
-      if (Array.isArray(grows)) {
-        existing = grows.map((g) => g.abbreviation).filter((a) => a?.startsWith(base));
+    if (!selectedRecipe) { setRecipeName(""); setCost(0); return; }
+    setRecipeName(selectedRecipe.name || "");
+    const totalBatchCost = computeRecipeTotalCost(selectedRecipe, suppliesMap);
+    const { qty: yieldQty, unit: yieldUnitRaw } = getRecipeYield(selectedRecipe);
+    const yieldUnit = (yieldUnitRaw || "").toLowerCase();
+    let perGrowCost = totalBatchCost;
+    if (yieldQty > 0) {
+      if (normalizeType(growType) !== "Bulk") {
+        const vol = Number(ivalue || 0);
+        const unit = (ivUnit || "").toLowerCase();
+        perGrowCost = vol > 0 && unit && yieldUnit && unit === yieldUnit
+          ? totalBatchCost * (vol / yieldQty)
+          : totalBatchCost / yieldQty;
       } else {
-        const user = auth.currentUser;
-        if (user) {
-          const snap = await getDocs(collection(db, "users", user.uid, "grows"));
-          existing = snap.docs
-            .map((d) => d.data().abbreviation)
-            .filter((a) => a?.startsWith(base));
-        }
+        const vol = Number(bulkVolume || 0);
+        const unit = (bulkUnit || "").toLowerCase();
+        perGrowCost = vol > 0 && unit && yieldUnit && unit === yieldUnit
+          ? totalBatchCost * (vol / yieldQty)
+          : totalBatchCost / yieldQty;
       }
+    }
+    setCost(Math.max(0, Math.round(perGrowCost * 100) / 100));
+  }, [selectedRecipe, suppliesMap, ivalue, ivUnit, bulkVolume, bulkUnit, growType]);
 
-      let final = base;
-      if (existing.includes(base)) {
-        let n = 1;
-        while (existing.includes(`${base}-${n}`)) n++;
-        final = `${base}-${n}`;
-      }
-      setAbbreviation(final);
-    };
-    makeAbbr();
-  }, [strain, growType, createdAt, grows, isEditing]);
+  const abbrPreview = useMemo(() => {
+    const prefix = abbrPrefix(strain, growType, created);
+    if (!prefix) return "";
+    const maxExisting = maxSuffixForPrefix(grows, prefix);
+    return maxExisting === 0 ? prefix : `${prefix}-${maxExisting + 1}`;
+  }, [strain, growType, created, grows]);
 
-  // ----- Derived / validation -----
-  const stageOptions = useMemo(
-    () =>
-      growType === "Bulk"
-        ? ["Inoculated", "Colonizing", "Colonized", "Fruiting", "Harvested"]
-        : ["Inoculated", "Colonizing", "Colonized"],
-    [growType]
-  );
-
-  const calculateRecipeCost = (rid, servings = 1) => {
-    const r =
-      (Array.isArray(recipeOptions) && recipeOptions.find((x) => x.id === rid)) ||
-      (Array.isArray(recipes) && recipes.find((x) => x.id === rid));
-    if (!r || !Array.isArray(r.items)) return 0;
-    return r.items.reduce((total, item) => {
-      const sup =
-        (Array.isArray(supplyOptions) && supplyOptions.find((s) => s.id === item.supplyId)) ||
-        (Array.isArray(supplies) && supplies.find((s) => s.id === item.supplyId));
-      // item.amount is already in stock units
-      const need = Number(item.amount || 0) * (Number(servings) || 1);
-      const cost = Number(sup?.cost || 0) * need;
-      return total + (Number.isFinite(cost) ? cost : 0);
-    }, 0);
+  /* ---- Persist helpers ---- */
+  const createGrow = async (payload) => {
+    if (typeof onCreateGrow === "function") return await onCreateGrow(payload);
+    const user = auth.currentUser; if (!user) throw new Error("Missing user");
+    const ref = await addDoc(collection(db, "users", user.uid, "grows"), payload);
+    return ref.id;
+  };
+  const patchGrow = async (id, patch) => {
+    if (!id) return;
+    if (typeof onUpdateGrow === "function") return await onUpdateGrow(id, patch);
+    const user = auth.currentUser; if (!user) throw new Error("Missing user");
+    await updateDoc(doc(db, "users", user.uid, "grows", id), patch);
   };
 
-  const parentAvailable = Number(selectedParentGrow?.amountAvailable || 0);
-  const consumeValue = parentMode === "grow" && parentGrowId ? Number(parentConsumption || 0) : 0; // total for batch
-  const overConsume = parentMode === "grow" && parentGrowId && consumeValue > parentAvailable;
-  const invalidVolume = growType !== "Bulk" ? Number(initialVolume || 0) <= 0 : false;
-  const parentChosen =
-    (parentMode === "grow" && !!parentGrowId) || (parentMode === "library" && !!parentLibraryId);
+  /* ---- Compute parent stats + set strain from parent ---- */
+  useEffect(() => {
+    const p = (parentList || []).find((g) => g.id === parentGrowId);
+    if (!p) {
+      setParentRemaining(0);
+      setParentTotal(null);
+      setConsumeUnit("ml");
+      return;
+    }
+    if (p.strain) setStrain(p.strain);
 
-  // ----- Recipe helpers for stock deduction on create -----
-  const getRecipeById = async (rid) => {
-    if (!rid) return null;
-    const fromState =
-      (Array.isArray(recipeOptions) && recipeOptions.find((r) => r.id === rid)) ||
-      (Array.isArray(recipes) && recipes.find((r) => r.id === rid));
-    if (fromState) return fromState;
+    const total = Number(p.amountTotal);
+    const used = Number(p.amountUsed);
+    let remaining;
+    const unit = p.amountUnit || p.volumeUnit || "ml";
 
-    const user = auth.currentUser;
-    if (!user) return null;
-    const ref = doc(db, "users", user.uid, "recipes", rid);
-    const snap = await getDoc(ref);
-    return snap.exists() ? { id: rid, ...snap.data() } : null;
-  };
+    if (Number.isFinite(total) && total > 0) {
+      remaining = Math.max(0, total - (Number.isFinite(used) ? used : 0));
+      setParentTotal(total);
+    } else {
+      const avail = Number(p.amountAvailable);
+      remaining = Number.isFinite(avail) ? Math.max(0, avail) : 0;
+      setParentTotal(null);
+    }
+    setParentRemaining(remaining);
+    setConsumeUnit(unit);
+  }, [parentGrowId, parentList]);
 
-  const supplyById = (sid) =>
-    (Array.isArray(supplyOptions) && supplyOptions.find((s) => s.id === sid)) ||
-    (Array.isArray(supplies) && supplies.find((s) => s.id === sid)) ||
-    null;
-
-  // Compute consumption rows from normalized recipe items for N servings
-  const computeConsumptionRows = (recipe, servings = 1) => {
-    const baseYield = Number(recipe?.yield) > 0 ? Number(recipe.yield) : 1;
-    const factor = (Number(servings) > 0 ? Number(servings) : 1) / baseYield;
-
-    const rows = (recipe?.items || [])
-      .map((it) => {
-        const s = supplyById(it.supplyId);
-        if (!s) return null;
-        const unit = String(s.unit || "").toLowerCase();
-        let need = Number(it.amount || 0) * factor; // already in stock unit
-        if (unit === "count") need = Math.ceil(need);
-        const onHand = Number(s.quantity || 0);
-        return {
-          supplyId: s.id,
-          name: s.name,
-          unit: s.unit || "",
-          need,
-          onHand,
-          newQty: Math.max(0, onHand - need),
-          shortage: onHand - need < 0,
-        };
-      })
-      .filter(Boolean);
-
-    return rows;
-  };
-
-  const confirmShortages = async (rows, recipeName, servings = 1, servingLabel = "") => {
-    const shortages = rows.filter((r) => r.shortage);
-    if (shortages.length === 0) return true;
-    const list = shortages
-      .map((r) => `• ${r.name}: have ${r.onHand} ${r.unit}, need ${r.need} ${r.unit}`)
-      .join("\n");
-    const ok = await confirm(
-      `Not enough stock to make ${servings} ${servingLabel || "servings"} of "${recipeName}".\n\n${list}\n\nProceed anyway? (Will deduct what is available, never below zero.)`
-    );
-    return !!ok;
-  };
-
-  const deductSupplies = async (rows, firstGrowId, recipeName, servings = 1, servingLabel = "") => {
-    const user = auth.currentUser;
-    if (!user) return;
-    await Promise.all(
-      rows.map(async (r) => {
-        const ref = doc(db, "users", user.uid, "supplies", r.supplyId);
-        await updateDoc(ref, { quantity: r.newQty });
-        await addDoc(collection(db, "users", user.uid, "supply_audits"), {
-          supplyId: r.supplyId,
-          action: "consume",
-          amount: Number(r.need),
-          note: `Batch for "${recipeName}" (${servings} ${servingLabel || "servings"}) — first grow ${firstGrowId}`,
-          timestamp: new Date().toISOString(),
-        });
-      })
-    );
-  };
-
-  // ----- Submit -----
+  /* ---- Submit (unchanged) ---- */
   const handleSubmit = async (e) => {
     e.preventDefault();
-    setError("");
-    const user = auth.currentUser;
-    if (!user) return;
-
-    if (!parentChosen) {
-      setError("Select a parent (Existing Grow or Library Item).");
-      return;
-    }
-    if (overConsume) {
-      setError("Cannot consume more than parent has available.");
-      return;
-    }
-    if (Number(batchCount || 0) < 1) {
-      setError("Batch count must be at least 1.");
-      return;
-    }
-
+    if (isSubmittingRef.current) return;
+    isSubmittingRef.current = true;
+    setIsSubmitting(true);
     try {
-      setSaving(true);
+      if (!growType) throw new Error("Please choose a grow type.");
+      if (!strain) throw new Error("Please choose a strain.");
+      if (!stage) throw new Error("Please choose a stage.");
 
-      // Preload recipe + compute totals for the WHOLE batch
-      let recipeForUse = null;
-      let consumptionRows = [];
-      if (!isEditing && recipeId) {
-        recipeForUse = await getRecipeById(recipeId);
-        if (recipeForUse) {
-          consumptionRows = computeConsumptionRows(recipeForUse, Number(batchCount || 1));
-          const ok = await confirmShortages(
-            consumptionRows,
-            recipeForUse.name || "Recipe",
-            Number(batchCount || 1),
-            recipeForUse.servingLabel || ""
-          );
-          if (!ok) {
-            setSaving(false);
-            return;
+      if (!recipeId || selectedRecipeScore === 0) {
+        const t = normalizeType(growType);
+        const msg = !recipeId
+          ? `No recipe is selected for ${t}. Continue anyway?`
+          : `The selected recipe doesn’t look like a ${t} recipe. Continue anyway?`;
+        if (!window.confirm(msg)) return;
+      }
+
+      let storageUsageTotal = 0;
+      if (mode === "create" && effectiveParentSource === "library") {
+        if (!libId) throw new Error("Select a storage item.");
+        if (!storageMode?.ok) throw new Error("Selected storage item is invalid.");
+        const available = Number(storageMode.available || 0);
+        if (storageMode.mode === "count") {
+          const maxCount = Math.floor(available);
+          let v = parseInt(String(useFromStorageAmount), 10);
+          if (!Number.isFinite(v)) v = 0;
+          if (v < 1) throw new Error("Items to consume must be a whole number ≥ 1.");
+          if (v > maxCount) throw new Error(`You only have ${maxCount} in storage.`);
+          storageUsageTotal = v;
+        } else {
+          const v = Number(useFromStorageAmount);
+          if (!Number.isFinite(v) || v <= 0)
+            throw new Error(`Enter how much to use from storage (${storageMode.unit}).`);
+          if (available > 0 && v > available + 1e-9)
+            throw new Error(`Requested ${v} ${storageMode.unit} exceeds available ${available} ${storageMode.unit}.`);
+          storageUsageTotal = v;
+        }
+      }
+
+      const createdAt = created ? dateFromDateInput(created) : new Date();
+      const costNum = Number.isFinite(Number(cost)) ? Number(cost) : 0;
+      const isBulkNow = normalizeType(growType) === "Bulk";
+
+      if (mode === "create") {
+        const baseCommon = {
+          type: growType,
+          strain,
+          strainId: strainId || "",
+          stage,
+          status,
+          recipe: recipeName || "",
+          recipeId: recipeId || "",
+          cost: costNum,
+          createdAt,
+          parentSource: effectiveParentSource === "library" ? "Library" : "Grow",
+          parentId: effectiveParentSource === "library" ? libId : (parentGrowId || null),
+          parentType: effectiveParentSource === "library" ? storageDoc?.type || null : null,
+        };
+
+        if (!isBulkNow) {
+          const initial = Number(ivalue || 0);
+          baseCommon.initialVolume = initial;
+          baseCommon.volumeUnit = ivUnit;
+          baseCommon.amountTotal = initial;
+          baseCommon.amountUnit = ivUnit;
+          baseCommon.amountUsed = 0;
+        } else {
+          const totalBulk = Number(bulkVolume || 0);
+          baseCommon.bulkGrainParts = Number(bulkGrainParts || 0);
+          baseCommon.bulkSubstrateParts = Number(bulkSubstrateParts || 0);
+          baseCommon.bulkVolume = totalBulk;
+          baseCommon.bulkVolumeUnit = bulkUnit;
+          baseCommon.amountTotal = totalBulk;
+          baseCommon.amountUnit = bulkUnit;
+          baseCommon.amountUsed = 0;
+        }
+
+        const tsField = stageTimestampField[stage];
+        if (tsField) baseCommon[tsField] = createdAt;
+
+        const count = Math.max(1, Number(batchCount || 1));
+        const prefix = abbrPrefix(strain, growType, created);
+        const existingMax = maxSuffixForPrefix(grows, prefix);
+
+        const createPayloads = [];
+        for (let i = 0; i < count; i++) {
+          const payload = { ...baseCommon };
+          payload.abbr =
+            existingMax === 0
+              ? i === 0 ? prefix : `${prefix}-${i + 1}`
+              : `${prefix}-${existingMax + i + 1}`;
+          createPayloads.push(payload);
+        }
+        await Promise.all(createPayloads.map((p) => createGrow(p)));
+
+        if (effectiveParentSource === "grow" && parentGrowId) {
+          const consume = Number(consumeFromParent || 0);
+          if (consume > 0) {
+            const parent = (parentList || []).find((p) => p.id === parentGrowId) || {};
+            const pTotal = Number(parent.amountTotal);
+            const pUsed = Number(parent.amountUsed);
+            const hasNewModel = Number.isFinite(pTotal) && pTotal > 0;
+            const totalParentUse = consume * count;
+            if (hasNewModel) {
+              const nextUsed = Math.min(pTotal, (Number.isFinite(pUsed) ? pUsed : 0) + totalParentUse);
+              await patchGrow(parentGrowId, { amountUsed: nextUsed });
+            } else {
+              const avail = Number(parent.amountAvailable);
+              const nextAvail = Math.max(0, avail - totalParentUse);
+              await patchGrow(parentGrowId, { amountAvailable: nextAvail });
+            }
           }
         }
-      }
 
-      // Total cost includes recipe for total servings (batch) + parent cost (if any)
-      const baseCostTotal = calculateRecipeCost(recipeId, Number(batchCount || 1));
-      let parentCost = 0;
-
-      if (parentMode === "grow" && parentGrowId) {
-        const fromProps =
-          (Array.isArray(grows) && grows.find((g) => g.id === parentGrowId)) || null;
-
-        if (fromProps) {
-          parentCost = Number(fromProps.cost || 0);
-        } else {
-          const parentRef = doc(db, "users", user.uid, "grows", parentGrowId);
-          const parentSnap = await getDoc(parentRef);
-          if (parentSnap.exists()) parentCost = Number(parentSnap.data().cost || 0);
-        }
-      }
-
-      // Base grow payload (per child)
-      const common = {
-        strain,
-        stage,
-        growType,
-        status,
-        createdAt,
-        recipeId: recipeId || null,
-        volumeUnit,
-      };
-
-      // Parent fields
-      if (parentMode === "grow") {
-        common.parentGrowId = parentGrowId;
-      } else if (parentMode === "library") {
-        common.parentGrowId = null;
-        common.parentSource = "Library";
-        common.parentLibraryId = parentLibraryId;
-        if (selectedLibraryItem) {
-          common.parentLibraryType = selectedLibraryItem.type || "";
-          common.parentLabel =
-            selectedLibraryItem.strainName || selectedLibraryItem.type || "Library";
-        }
-      }
-
-      // Per-child fields
-      if (growType !== "Bulk") {
-        common.initialVolume = Number(initialVolume || 0);
-        common.amountAvailable = Number(initialVolume || 0);
-      }
-
-      const firstIdOut = { id: null };
-      const totalCostPerChild = (Number(baseCostTotal) + Number(parentCost)) / Number(batchCount || 1);
-
-      // Create N children
-      for (let i = 1; i <= Number(batchCount || 1); i++) {
-        const abbr = i === 1 ? abbreviation : `${abbreviation}-${i}`;
-        const payload = { ...common, abbreviation: abbr, cost: totalCostPerChild };
-
-        let newId = editingGrow?.id || null;
-        if (isEditing) {
-          if (typeof onUpdateGrow === "function") {
-            await onUpdateGrow(editingGrow.id, payload);
-            newId = editingGrow.id;
-          } else {
-            await updateDoc(doc(db, "users", user.uid, "grows", editingGrow.id), payload);
-            newId = editingGrow.id;
-          }
-        } else {
-          if (typeof onCreateGrow === "function") {
-            newId = await onCreateGrow(payload);
-          } else {
-            const ref = await addDoc(collection(db, "users", user.uid, "grows"), payload);
-            newId = ref.id;
-          }
-        }
-
-        if (!firstIdOut.id) firstIdOut.id = newId;
-      }
-
-      // Parent grow consumption happens ONCE for the batch (total entered)
-      if (!isEditing && parentMode === "grow" && parentGrowId && consumeValue > 0) {
-        const fromProps =
-          (Array.isArray(grows) && grows.find((g) => g.id === parentGrowId)) || null;
-
-        const remaining =
-          Number((fromProps?.amountAvailable ?? parentAvailable) - consumeValue);
-
-        const nextStatus = remaining <= 0 ? "Archived" : (fromProps?.status || "Active");
-
-        if (typeof onUpdateGrow === "function" && fromProps) {
-          await onUpdateGrow(parentGrowId, {
-            amountAvailable: remaining > 0 ? remaining : 0,
-            status: nextStatus,
-          });
-        } else {
-          const parentRef = doc(db, "users", user.uid, "grows", parentGrowId);
-          const parentSnap = fromProps
-            ? { exists: () => true, data: () => fromProps }
-            : await getDoc(parentRef);
-          if (parentSnap.exists()) {
-            const pdata = parentSnap.data();
-            const rem = Number((pdata.amountAvailable || 0) - consumeValue);
-            await updateDoc(parentRef, {
-              amountAvailable: rem > 0 ? rem : 0,
-              status: rem <= 0 ? "Archived" : (pdata.status || "Active"),
+        try {
+          const user = auth.currentUser;
+          if (user && recipeId) {
+            const perChildQty = !isBulkNow ? Number(ivalue || 0) : Number(bulkVolume || 0);
+            const perChildUnit = !isBulkNow ? String(ivUnit || "") : String(bulkUnit || "");
+            await consumeRecipeForBatch(user.uid, recipeId, {
+              batchCount: count,
+              perChildQty,
+              perChildUnit,
+              note: prefix,
             });
           }
+        } catch (e2) {
+          console.error("Recipe consumption (non-fatal):", e2);
+        }
+
+        if (effectiveParentSource === "library" && libId && storageMode?.ok) {
+          
+          // Deduct from Library item directly (no external helper)
+          {
+            const user = auth.currentUser; if (!user) throw new Error("Missing user");
+            const libRef = doc(db, "users", user.uid, "library", libId);
+            const snap = await getDoc(libRef);
+            if (snap.exists()) {
+              const data = snap.data() || {};
+              const prevQty = Number(data.qty || 0);
+              let deduct = Number(storageUsageTotal || 0);
+              // If this is a Spore Print and a 1–100 value is entered while in count mode,
+              // treat it as a percentage of one print (e.g., 25 => 0.25)
+              const typeName = String(data.type || "").toLowerCase();
+              if (/print/.test(typeName) && deduct > 1 && deduct <= 100 && storageMode?.mode === "count") {
+                deduct = deduct / 100;
+              }
+              const nextQty = Math.max(0, prevQty - (Number.isFinite(deduct) ? deduct : 0));
+              await updateDoc(libRef, { qty: nextQty, updatedAt: serverTimestamp() });
+            }
+          }
+        }
+
+        onSaveComplete?.(); onClose?.(); return;
+      }
+
+      // EDIT path (unchanged behavior)
+      const user = auth.currentUser; if (!user) throw new Error("Missing user");
+      const currentRef = doc(db, "users", user.uid, "grows", editingGrow.id);
+      const currentSnap = await getDoc(currentRef);
+      const currentGrow = currentSnap.exists() ? { id: currentSnap.id, ...currentSnap.data() } : editingGrow;
+
+      const prevType = normalizeType(currentGrow?.type || currentGrow?.growType || "");
+      const nextType = normalizeType(growType);
+
+      const prevRecipeId = currentGrow?.recipeId || "";
+      const nextRecipeId = recipeId || "";
+
+      const prevQty = Number.isFinite(Number(currentGrow?.amountTotal))
+        ? Number(currentGrow.amountTotal)
+        : Number(currentGrow?.initialVolume || 0);
+      const prevUnit = currentGrow?.amountUnit || currentGrow?.volumeUnit || (prevType === "Bulk" ? "g" : "ml");
+
+      const nextQty = normalizeType(growType) !== "Bulk" ? Number(ivalue || 0) : Number(bulkVolume || 0);
+      const nextUnit = normalizeType(growType) !== "Bulk" ? String(ivUnit || "") : String(bulkUnit || "");
+
+      const shouldReconcile =
+        prevRecipeId !== nextRecipeId ||
+        prevType !== nextType ||
+        (Number.isFinite(prevQty) && Number.isFinite(nextQty) && (prevQty !== nextQty || (prevUnit || "") !== (nextUnit || "")));
+
+      if (shouldReconcile) {
+        try {
+          await reconcileRecipeChangeForGrow(user.uid, {
+            oldRecipeId: prevRecipeId || null,
+            newRecipeId: nextRecipeId || null,
+            oldPerChildQty: Number.isFinite(prevQty) ? prevQty : null,
+            oldPerChildUnit: prevUnit || null,
+            newPerChildQty: Number.isFinite(nextQty) ? nextQty : null,
+            newPerChildUnit: nextUnit || null,
+            note: `retype ${currentGrow?.abbr || ""}`,
+            growId: currentGrow?.id || null,
+          });
+        } catch (reconErr) {
+          console.error("Reconcile failed:", reconErr);
+          alert("Inventory reconcile failed; saved grow fields only.");
         }
       }
 
-      // Deduct supplies for the WHOLE batch (after first grow exists for logging)
-      if (!isEditing && recipeForUse && consumptionRows.length) {
-        await deductSupplies(
-          consumptionRows,
-          firstIdOut.id,
-          recipeForUse.name || "Recipe",
-          Number(batchCount || 1),
-          recipeForUse.servingLabel || ""
-        );
-        showToast("Supplies deducted for this batch.");
+      const patch = {
+        type: growType,
+        strain,
+        strainId: strainId || "",
+        stage,
+        status,
+        recipe: recipeName || "",
+        recipeId: nextRecipeId || "",
+        cost: Number.isFinite(costNum) ? costNum : 0,
+        createdAt,
+        updatedAt: serverTimestamp(),
+      };
+
+      if (normalizeType(growType) !== "Bulk") {
+        const initial = Number(ivalue || 0);
+        patch.initialVolume = initial;
+        patch.volumeUnit = ivUnit;
+        patch.amountTotal = initial;
+        patch.amountUnit = ivUnit;
+      } else {
+        const totalBulk = Number(bulkVolume || 0);
+        patch.bulkGrainParts = Number(bulkGrainParts || 0);
+        patch.bulkSubstrateParts = Number(bulkSubstrateParts || 0);
+        patch.bulkVolume = totalBulk;
+        patch.bulkVolumeUnit = bulkUnit;
+        patch.amountTotal = totalBulk;
+        patch.amountUnit = bulkUnit;
       }
 
-      onSaveComplete && onSaveComplete(firstIdOut.id);
-      onClose && onClose();
+      if (amountAvailableEdit !== "" && amountAvailableEdit !== null) {
+        patch.amountAvailable = Number(amountAvailableEdit);
+      }
+
+      const tsField = stageTimestampField[stage];
+      if (tsField) patch[tsField] = createdAt;
+
+      await patchGrow(currentGrow.id, patch);
+      onSaveComplete?.(); onClose?.();
     } catch (err) {
-      console.error("Error saving grow:", err);
-      setError(err?.message || "Failed to save grow.");
-    } finally {
-      setSaving(false);
+      console.error(err);
+      alert(err?.message || "Failed to save grow.");
     }
+  finally { isSubmittingRef.current = false; setIsSubmitting(false); }
+
   };
 
+  /* ---- Lists + helpers ---- */
+  useEffect(() => {
+    const src = Array.isArray(grows) ? grows : [];
+    // Active with remaining > 0
+    const activeWithRemaining = src.filter((g) => {
+      const s = (g.status || "Active").toLowerCase();
+      if (s !== "active") return false;
+      const total = Number(g.amountTotal);
+      const used = Number(g.amountUsed);
+      const remNew = Number.isFinite(total) && total > 0 ? Math.max(0, total - (Number.isFinite(used) ? used : 0)) : null;
+      const remLegacy = Number(g.amountAvailable);
+      const remaining = Number.isFinite(remNew) ? remNew : Number.isFinite(remLegacy) ? remLegacy : 0;
+      return remaining > 0;
+    });
+
+    // ✅ Only Colonized parents; exclude Bulk entirely
+    const limited = activeWithRemaining.filter((g) => {
+      const t = normalizeType(g.type || g.growType || "");
+      if (t === "Bulk") return false;        // <-- Bulk cannot be a parent
+      return String(g.stage) === "Colonized"; // <-- Only Colonized show
+    });
+
+    setParentList(limited);
+  }, [grows]);
+
+  const availableCount = Math.floor(Number(storageMode.available || 0));
+  const handleStorageChange = (e) => {
+    const raw = e.target.value;
+    if (storageMode.mode === "count") {
+      let v = parseInt(raw, 10);
+      if (!Number.isFinite(v)) v = 0;
+      if (v < 1) v = 1;
+      if (v > availableCount) v = availableCount;
+      setUseFromStorageAmount(String(v));
+    } else {
+      let v = Number(raw);
+      if (!Number.isFinite(v) || v < 0) v = 0;
+      const max = Number(storageMode.available || 0);
+      if (v > max) v = max;
+      setUseFromStorageAmount(String(v));
+    }
+  };
+  const totalStorageDeduct = useMemo(() => {
+    const total = Number(useFromStorageAmount);
+    return Number.isFinite(total) && total > 0
+      ? storageMode.mode === "count" ? Math.floor(total) : total
+      : 0;
+  }, [useFromStorageAmount, storageMode.mode]);
+
+  // Clamp over-consumption and show red warning
+  const handleConsumeChange = (e) => {
+    let v = Number(e.target.value);
+    if (!Number.isFinite(v) || v < 0) v = 0;
+    if (parentGrowId) {
+      const max = Number(parentRemaining || 0);
+      if (v > max) {
+        setConsumeWarn(`Requested ${v} ${consumeUnit} exceeds available ${max} ${consumeUnit}. Using maximum.`);
+        v = max;
+        window.clearTimeout((handleConsumeChange)._t);
+        (handleConsumeChange)._t = window.setTimeout(() => setConsumeWarn(""), 1800);
+      } else {
+        setConsumeWarn("");
+      }
+    }
+    setConsumeFromParent(String(v));
+  };
+
+  /* ==================== RENDER ==================== */
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 overflow-auto px-2 py-4">
-      <form
-        onSubmit={handleSubmit}
-        className="relative z-10 bg-white dark:bg-zinc-800 p-4 rounded-2xl shadow w-full max-w-sm space-y-2 text-sm"
-      >
-        <div className="flex justify-between items-center border-b border-zinc-200 dark:border-zinc-700 pb-2 mb-2">
-          <h2 className="text-base font-semibold">{isEditing ? "Edit Grow" : "Add Grow"}</h2>
-          <button
-            type="button"
-            onClick={onClose}
-            className="text-zinc-500 hover:text-red-500 text-lg rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:ring-current"
-            aria-label="Close add/edit grow form"
-          >
-            ×
-          </button>
-        </div>
+    <>
+      <style>{`
+        .grow-form .label { color: #e5e7eb !important; }
+        .grow-form input.input, .grow-form select.input, .grow-form textarea.input {
+          background-color: #0b1220 !important; color: #f8fafc !important; border: 1px solid #475569 !important; outline: none !important;
+        }
+        .grow-form input::placeholder, .grow-form textarea::placeholder { color: #94a3b8 !important; opacity: 1; }
+        .dark .grow-form select { color-scheme: dark; }
+        .dark .grow-form option { background-color: #0b1220; color: #f8fafc; }
+        .grow-form option { background-color: #ffffff; color: #111827; }
+        .chipset { display: inline-flex; gap: .5rem; background: rgba(148,163,184,.1); padding: .25rem; border-radius: 9999px; }
+        .chipset button { padding: .35rem .75rem; border-radius: 9999px; font-size: .875rem; }
+        .chipset .active { background: #10b981; color: white; }
+      `}</style>
 
-        {error && (
-          <div className="p-2 rounded bg-red-100 text-red-800 dark:bg-red-900/30 dark:text-red-300">
-            {error}
-          </div>
-        )}
-
-        {/* Parent required */}
-        <div className="flex items-center gap-2">
-          <span className="text-xs font-medium">Parent</span>
-          <div className="ml-auto inline-flex rounded-full overflow-hidden border border-zinc-300 dark:border-zinc-600">
-            <button
-              type="button"
-              className={`px-3 py-1 text-xs ${parentMode === "grow" ? "accent-bg text-white" : "bg-zinc-100 dark:bg-zinc-700"}`}
-              onClick={() => setParentMode("grow")}
-            >
-              Existing Grow
-            </button>
-            <button
-              type="button"
-              className={`px-3 py-1 text-xs ${parentMode === "library" ? "accent-bg text-white" : "bg-zinc-100 dark:bg-zinc-700"}`}
-              onClick={() => setParentMode("library")}
-            >
-              Library Item
-            </button>
-          </div>
-        </div>
-
-        {parentMode === "grow" ? (
-          <>
-            <select
-              value={parentGrowId}
-              onChange={(e) => setParentGrowId(e.target.value)}
-              className="w-full p-1.5 rounded border dark:bg-zinc-700 dark:text-white"
-              aria-label="Select parent grow"
-              required
-            >
-              <option value="">Select a parent grow…</option>
-              {parentOptions.map((g) => (
-                <option key={g.id} value={g.id}>
-                  {g.strain} ({g.growType}) — {g.amountAvailable ?? 0} {g.volumeUnit || ""} left
-                </option>
+      <form className="grow-form" onSubmit={handleSubmit}>
+        {/* Parent Source Selector */}
+        {mode === "create" && (
+          <section className="mb-2">
+            <label className="label mb-1 block">Parent Source</label>
+            <div className="chipset">
+              {PARENT_SOURCES.map((opt) => (
+                <button
+                  type="button"
+                  key={opt.key}
+                  className={effectiveParentSource === opt.key ? "active" : ""}
+                  onClick={() => setParentSource(opt.key)}
+                >
+                  {opt.label}
+                </button>
               ))}
-            </select>
-
-            <label className="block text-xs font-medium">
-              Consume from Parent ({selectedParentGrow?.amountAvailable ?? 0}{" "}
-              {selectedParentGrow?.volumeUnit || volumeUnit} available)
-            </label>
-            <div className="flex gap-2 items-center">
-              <input
-                type="number"
-                value={parentConsumption}
-                onChange={(e) => setParentConsumption(e.target.value)}
-                min={0}
-                max={parentAvailable}
-                className={`w-full p-1.5 rounded border dark:bg-zinc-700 dark:text-white ${
-                  overConsume ? "border-red-500" : ""
-                }`}
-                aria-label="Total amount to consume from parent for this batch"
-              />
-              <span className="text-xs text-zinc-500">
-                {selectedParentGrow?.volumeUnit || volumeUnit}
-              </span>
             </div>
-            {overConsume && (
-              <div className="text-xs text-red-500">Cannot exceed parent’s available amount.</div>
-            )}
-          </>
-        ) : (
-          <>
-            <select
-              value={parentLibraryId}
-              onChange={(e) => setParentLibraryId(e.target.value)}
-              className="w-full p-1.5 rounded border dark:bg-zinc-700 dark:text-white"
-              aria-label="Select library item as parent"
-              required
-            >
-              <option value="">Select a library item…</option>
-              {libraryItems.map((it) => (
-                <option key={it.id} value={it.id}>
-                  {it.type || "Item"} — {it.strainName || "Unknown"} · Qty {it.qty ?? 0} {it.unit || "count"} ({it.location || "—"})
-                </option>
-              ))}
-            </select>
-          </>
+          </section>
         )}
 
-        <label className="block text-xs font-medium">Grow Type</label>
-        <select
-          value={growType}
-          onChange={(e) => setGrowType(e.target.value)}
-          className="w-full p-1.5 rounded border dark:bg-zinc-700 dark:text-white"
-          aria-label="Select grow type"
-        >
-          <option>Agar</option>
-          <option>LC</option>
-          <option>Grain Jar</option>
-          <option>Bulk</option>
-        </select>
-
-        <label className="block text-xs font-medium">
-          Strain{parentMode === "grow" && parentGrowId ? " (locked to parent)" : ""}
-        </label>
-        <select
-          value={strain}
-          onChange={(e) => setStrain(e.target.value)}
-          required
-          disabled={parentMode === "grow" && !!parentGrowId}
-          className="w-full p-1.5 rounded border dark:bg-zinc-700 dark:text-white disabled:opacity-70"
-          aria-label="Select strain"
-        >
-          <option value="">Select Strain</option>
-          {strainOptions.map((s, i) => (
-            <option key={i}>{s}</option>
-          ))}
-        </select>
-
-        <label className="block text-xs font-medium">Abbreviation</label>
-        <input
-          value={abbreviation}
-          readOnly
-          className="w-full p-1.5 rounded border dark:bg-zinc-700 dark:text-white opacity-80"
-          aria-readonly="true"
-        />
-
-        {growType !== "Bulk" && (
-          <>
-            <label className="block text-xs font-medium">Initial Volume (each child)</label>
-            <div className="flex gap-2">
-              <input
-                type="number"
-                value={initialVolume}
-                onChange={(e) => setInitialVolume(e.target.value)}
-                min={1}
-                required
-                className="w-full p-1.5 rounded border dark:bg-zinc-700 dark:text-white"
-                aria-label="Initial volume per child"
-              />
+        {/* Active Grow path */}
+        {mode === "create" && effectiveParentSource === "grow" && (
+          <section className="grid sm:grid-cols-2 gap-4">
+            <div>
+              <label className="label">Parent grow</label>
               <select
-                value={volumeUnit}
-                onChange={(e) => setVolumeUnit(e.target.value)}
-                className="p-1.5 rounded border dark:bg-zinc-700 dark:text-white"
-                aria-label="Volume unit"
+                value={parentGrowId}
+                onChange={(e) => setParentGrowId(e.target.value)}
+                className="input"
               >
-                <option value="mL">mL</option>
-                <option value="g">g</option>
+                <option value="">— Select Parent —</option>
+                {parentList.map((p) => {
+                  const leftPart = p.abbr ? `${p.abbr} — ` : "";
+                  const label = `${leftPart}${p.strain || "(no strain)"} · ${p.type || p.growType} · ${p.stage}`;
+                  return (
+                    <option key={p.id} value={p.id}>{label}</option>
+                  );
+                })}
               </select>
             </div>
-          </>
+
+            <div>
+              <label className="label">Consume from Parent</label>
+              <div className="flex gap-2">
+                <input
+                  type="number"
+                  min="0"
+                  step="0.1"
+                  className="input flex-1"
+                  placeholder="0"
+                  value={consumeFromParent}
+                  onChange={handleConsumeChange}
+                  disabled={!parentGrowId}
+                />
+                <div className="w-28">
+                  <label className="label">Unit</label>
+                  <select className="input" value={consumeUnit} onChange={(e) => setConsumeUnit(e.target.value)} disabled>
+                    {VOLUME_UNITS.map((u) => <option key={u} value={u}>{u}</option>)}
+                  </select>
+                </div>
+              </div>
+              <div className="text-xs mt-1 opacity-80">
+                {parentGrowId
+                  ? `${parentRemaining} ${consumeUnit} left${Number.isFinite(parentTotal) ? ` of ${parentTotal} ${consumeUnit}` : ""}`
+                  : "Select a parent to see availability"}
+              </div>
+              {consumeWarn && (
+                <div className="text-xs mt-1" style={{ color: "#f87171" }}>{consumeWarn}</div>
+              )}
+            </div>
+          </section>
         )}
 
-        {/* Batch */}
-        <label className="block text-xs font-medium">Batch count</label>
-        <input
-          type="number"
-          min={1}
-          value={batchCount}
-          onChange={(e) => setBatchCount(e.target.value)}
-          className="w-full p-1.5 rounded border dark:bg-zinc-700 dark:text-white"
-          aria-label="Number of children to create"
-        />
+        {/* Storage / Library path */}
+        {mode === "create" && effectiveParentSource === "library" && (
+          <section className="grid sm:grid-cols-3 gap-2">
+            <div className="sm:col-span-3">
+              <label className="label">Storage Item</label>
+              <select className="input" value={libId} onChange={(e) => setLibId(e.target.value)}>
+                <option value="">— Select from Storage —</option>
+                {libraryItems
+                  .slice()
+                  .sort((a, b) => String(a.strainName || "").localeCompare(String(b.strainName || "")))
+                  .map((it) => (
+                    <option key={it.id} value={it.id}>
+                      {it.type || "Item"} — {it.strainName || "Unknown"} · {it.qty ?? 0} {it.unit || "count"} left
+                    </option>
+                  ))}
+              </select>
+            </div>
 
-        <label className="block text-xs font-medium">Stage</label>
-        <select
-          value={stage}
-          onChange={(e) => setStage(e.target.value)}
-          className="w-full p-1.5 rounded border dark:bg-zinc-700 dark:text-white"
-          aria-label="Select stage"
-        >
-          {stageOptions.map((s) => (
-            <option key={s}>{s}</option>
-          ))}
-        </select>
+            {libId && storageMode?.ok && (
+              <>
+                <div>
+                  <label className="label">
+                    {storageMode.mode === "count" ? "Items to consume (count)" : "Total to use (ml)"}
+                  </label>
+                  <input
+                    type="number"
+                    inputMode="numeric"
+                    min={storageMode.mode === "count" ? 1 : 0}
+                    step={storageMode.mode === "count" ? 1 : 0.1}
+                    max={storageMode.mode === "count"
+                        ? Math.floor(Number(storageMode.available || 0))
+                        : Number(storageMode.available || 0)}
+                    className="input"
+                    value={useFromStorageAmount}
+                    onChange={handleStorageChange}
+                  />
+                </div>
+                <div className="flex items-end text-sm opacity-80">
+                  Available: <span className="ml-1 font-semibold">{storageMode.available}</span> {storageMode.unit}
+                </div>
+                <div className="flex items-end text-sm opacity-80">
+                  Deducting: <span className="ml-1 font-semibold">{totalStorageDeduct}</span> {storageMode.unit}
+                </div>
+              </>
+            )}
+          </section>
+        )}
 
-        <label className="block text-xs font-medium">Status</label>
-        <select
-          value={status}
-          onChange={(e) => setStatus(e.target.value)}
-          className="w-full p-1.5 rounded border dark:bg-zinc-700 dark:text-white"
-          aria-label="Select status"
-        >
-          <option>Active</option>
-          <option>Contaminated</option>
-          <option>Archived</option>
-        </select>
+        {/* Type / Strain / Abbr */}
+        <section className="grid sm:grid-cols-3 gap-2 mt-3">
+          <div>
+            <label className="label">Grow Type</label>
+            <select className="input" value={growType} onChange={(e) => setGrowType(e.target.value)}>
+              {GROW_TYPES.map((t) => <option key={t} value={t}>{t}</option>)}
+            </select>
+          </div>
 
-        <label className="block text-xs font-medium">Created Date</label>
-        <input
-          type="date"
-          value={createdAt}
-          onChange={(e) => setCreatedAt(e.target.value)}
-          className="w-full p-1.5 rounded border dark:bg-zinc-700 dark:text-white"
-          aria-label="Created date"
-        />
+          <div>
+            <label className="label">Strain</label>
+            {lockStrain ? (
+              <input className="input" value={strain} disabled readOnly />
+            ) : (
+              <select
+                className="input"
+                value={strainId}
+                onChange={(e) => setStrainId(e.target.value)}
+              >
+                <option value="">— Select Strain —</option>
+                {(Array.isArray(strains) ? strains : [])
+                  .map((s) => ({ id: s.id, label: s.name || s.strain || "Unnamed Strain" }))
+                  .map((s) => <option key={s.id} value={s.id}>{s.label}</option>)}
+              </select>
+            )}
+          </div>
 
-        <label className="block text-xs font-medium">Recipe</label>
-        <select
-          value={recipeId}
-          onChange={(e) => setRecipeId(e.target.value)}
-          disabled={saving}
-          className="w-full p-1.5 rounded border dark:bg-zinc-700 dark:text-white disabled:opacity-60"
-          aria-label="Select recipe"
-        >
-          <option value="">None</option>
-          {(Array.isArray(recipeOptions) ? recipeOptions : recipes || []).map((r) => (
-            <option key={r.id} value={r.id}>
-              {r.name}
-            </option>
-          ))}
-        </select>
+          <div>
+            <label className="label">Abbreviation</label>
+            <input className="input" value={abbrPreview} readOnly disabled />
+          </div>
+        </section>
 
-        <div className="flex justify-end gap-2 pt-2">
-          <button
-            type="button"
-            onClick={onClose}
-            className="bg-zinc-200 dark:bg-zinc-600 text-black dark:text-white px-3 py-1 rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:ring-current"
-          >
-            Cancel
-          </button>
-          <button
-            type="submit"
-            className="accent-bg text-white px-3 py-1 rounded disabled:opacity-60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:ring-current"
-            disabled={
-              saving ||
-              !strain ||
-              !parentChosen ||
-              (growType !== "Bulk" && invalidVolume) ||
-              (parentMode === "grow" && parentGrowId && overConsume)
-            }
-            aria-busy={saving ? "true" : "false"}
-          >
-            {saving ? "Saving…" : isEditing ? "Update Grow" : "Add Grow"}
-          </button>
+        {/* Non-bulk init */}
+        {normalizeType(growType) !== "Bulk" && (
+          <section className="grid sm:grid-cols-3 gap-2 mt-3">
+            <div className="sm:col-span-2">
+              <label className="label">Initial Volume (each child)</label>
+              <input type="number" min="0" step="0.1" className="input" placeholder="0" value={ivalue} onChange={(e) => setIValue(e.target.value)} />
+            </div>
+            <div>
+              <label className="label">Unit</label>
+              <select className="input" value={ivUnit} onChange={(e) => setIvUnit(e.target.value)}>
+                {VOLUME_UNITS.map((u) => <option key={u} value={u}>{u}</option>)}
+              </select>
+            </div>
+          </section>
+        )}
+
+        {/* Bulk init */}
+        {normalizeType(growType) === "Bulk" && (
+          <section className="grid sm:grid-cols-3 gap-2 mt-3">
+            <div className="sm:col-span-2">
+              <label className="label">Grain : Substrate Ratio</label>
+              <div className="grid grid-cols-3 gap-2">
+                <input type="number" min="0" step="0.1" className="input" value={bulkGrainParts} onChange={(e) => setBulkGrainParts(e.target.value)} placeholder="Grain (e.g., 1)" />
+                <div className="flex items-center justify-center text-sm opacity-70">:</div>
+                <input type="number" min="0" step="0.1" className="input" value={bulkSubstrateParts} onChange={(e) => setBulkSubstrateParts(e.target.value)} placeholder="Substrate (e.g., 5)" />
+              </div>
+            </div>
+            <div>
+              <label className="label">Bulk Volume (each child)</label>
+              <input type="number" min="0" step="0.1" className="input" value={bulkVolume} onChange={(e) => setBulkVolume(e.target.value)} placeholder="e.g., 3000" />
+            </div>
+            <div>
+              <label className="label">Unit</label>
+              <select className="input" value={bulkUnit} onChange={(e) => setBulkUnit(e.target.value)}>
+                {VOLUME_UNITS.map((u) => <option key={u} value={u}>{u}</option>)}
+              </select>
+            </div>
+          </section>
+        )}
+
+        {/* Batch / Stage / Status */}
+        <section className="grid sm:grid-cols-3 gap-2 mt-3">
+          {mode === "create" && (
+            <div>
+              <label className="label">Batch Count</label>
+              <input type="number" min="1" step="1" className="input" value={batchCount} onChange={(e) => setBatchCount(e.target.value)} />
+            </div>
+          )}
+          <div>
+            <label className="label">Stage</label>
+            <select className="input" value={stage} onChange={(e) => setStage(e.target.value)}>
+              {allowedStagesForType(growType).map((s) => <option key={s} value={s}>{s}</option>)}
+            </select>
+          </div>
+          <div>
+            <label className="label">Status</label>
+            <select className="input" value={status} onChange={(e) => setStatus(e.target.value)}>
+              <option>Active</option>
+              <option>Archived</option>
+              <option>Stored</option>
+            </select>
+          </div>
+        </section>
+
+        {/* Dates / Recipe / Cost */}
+        <section className="grid sm:grid-cols-3 gap-2 mt-3">
+          <div>
+            <label className="label">Created Date</label>
+            <input type="date" className="input" value={created} onChange={(e) => setCreated(e.target.value)} />
+          </div>
+
+          <div>
+            <label className="label">Recipe</label>
+            <select className="input" value={recipeId} onChange={(e) => setRecipeId(e.target.value)}>
+              <option value="">Optional</option>
+              {recipesRanked.map((r) => <option key={r.id} value={r.id}>{r.name || "Untitled Recipe"}</option>)}
+            </select>
+
+            {recipeId ? (
+              selectedRecipeScore >= 2 ? (
+                <div className="text-xs mt-1 text-emerald-300">✓ Likely match for {normalizeType(growType)}</div>
+              ) : selectedRecipeScore === 0 ? (
+                <div className="text-xs mt-1 text-amber-300">⚠ Doesn’t look like a {normalizeType(growType)} recipe</div>
+              ) : null
+            ) : (
+              <div className="text-xs mt-1 text-amber-300">No recipe selected</div>
+            )}
+
+            {recipeId && (
+              <div className="mt-2">
+                <RecipeConsumptionPreview
+                  recipeId={recipeId}
+                  batchCount={Number(batchCount) || 1}
+                  perChildQty={normalizeType(growType) !== "Bulk" ? Number(ivalue || 0) : Number(bulkVolume || 0)}
+                  perChildUnit={normalizeType(growType) !== "Bulk" ? String(ivUnit || "") : String(bulkUnit || "")}
+                />
+              </div>
+            )}
+          </div>
+
+          <div>
+            <label className="label">Cost</label>
+            <input type="number" min="0" step="0.01" className="input" value={Number(cost).toFixed(2)} readOnly disabled />
+          </div>
+        </section>
+
+        {/* Legacy amountAvailable editor (edit only, non-bulk) */}
+        {mode === "edit" && normalizeType(growType) !== "Bulk" && (
+          <section className="grid sm:grid-cols-3 gap-2 mt-3">
+            <div>
+              <label className="label">Amount Available (legacy) — {ivUnit}</label>
+              <input type="number" min="0" step="0.1" className="input" value={amountAvailableEdit} onChange={(e) => setAmountAvailableEdit(e.target.value)} />
+            </div>
+            <div className="sm:col-span-2 flex items-end text-sm opacity-70">
+              For older grows that still use <code>amountAvailable</code>.
+            </div>
+          </section>
+        )}
+
+        <div className="mt-4 flex gap-2">
+          <button className="btn btn-primary" type="submit" disabled={isSubmitting}>{mode === "edit" ? "Save" : (isSubmitting ? "Creating…" : "Create")}</button>
+          <button type="button" className="btn" onClick={() => onClose?.()}>Cancel</button>
         </div>
       </form>
-    </div>
+    </>
   );
 }

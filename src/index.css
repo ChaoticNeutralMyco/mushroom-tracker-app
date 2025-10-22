@@ -1,3 +1,7 @@
+/* src/index.css */
+/* ------------------------------------------------------------
+   Tailwind base
+   ------------------------------------------------------------ */
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
@@ -136,12 +140,16 @@
 html.bg-chaotic, html.theme-chaotic { min-height: 100%; }
 html.bg-chaotic body, html.theme-chaotic body {
   background-color: #0b0d16;
-  background-image: image-set(
-    url("/themes/chaotic/Chaotic%20Mountians.webp") type("image/webp") 1x,
+
+  /* Fallback for browsers without image-set, or if you override --cn-chaotic-bg-url */
+  background-image: var(--cn-chaotic-bg-url, url("/themes/chaotic/mountains.jpg"));
+
+  /* Prefer WebP if supported; this overrides the line above when valid */
+  background-image: var(--cn-chaotic-bg, image-set(
     url("/themes/chaotic/mountains.webp") type("image/webp") 1x,
-    url("/themes/chaotic/Chaotic%20Mountians.jpg") type("image/jpeg") 1x,
-    url("/themes/chaotic/mountains.jpg") type("image/jpeg") 1x
-  );
+    url("/themes/chaotic/mountains.jpg")  type("image/jpeg") 1x
+  ));
+
   background-size: cover;
   background-position: center 42%;
   background-repeat: no-repeat;
@@ -158,7 +166,7 @@ html.theme-chaotic:not(.dark) body::before {
   background:
     linear-gradient(to top, rgba(11,13,22,0.40) 0%, rgba(11,13,22,0.24) 38%, rgba(11,13,22,0.12) 100%),
     radial-gradient(60% 40% at 85% -10%, rgba(76,201,240,0.10), transparent 70%),
-    radial-gradient(60% 40% at 10% 110%, rgba(79, 104, 232, 0.12), transparent 70%);
+    radial-gradient(60% 40% at 10% 110%, rgba(79,104,232,0.12), transparent 70%);
 }
 html.bg-chaotic.dark body::before,
 html.theme-chaotic.dark body::before {
@@ -206,3 +214,53 @@ html.bg-chaotic #root, html.theme-chaotic #root { position: relative; z-index: 1
 html.bg-chaotic .min-h-screen,
 html.bg-chaotic .page,
 html.bg-chaotic .app-shell { background: transparent !important; }
+
+/* ============================================================
+   Dark-mode select/option readability (minimal + scoped broadly)
+   Ensures high-contrast menus when the native <select> opens.
+   ============================================================ */
+.dark select {
+  color-scheme: dark;            /* Hint to UA for dark popups */
+  background-color: #0f172a;     /* slate-900 */
+  color: #e5e7eb;                /* zinc-200 */
+  border-color: #374151;         /* gray-700 */
+}
+.dark select:focus-visible { outline-color: var(--_accent-600); }
+.dark option, .dark optgroup {
+  background-color: #0f172a;     /* ensure the dropdown list is dark */
+  color: #e5e7eb;
+}
+
+/* ============================================================
+   CNM Modal Lock & Single-Scroll Overlay (class-based)
+   - Add 'modal-open' to html, body, and #root while any modal is open.
+   - Background (page) becomes non-scrollable.
+   - The overlay is the ONLY scroll container (single scrollbar).
+   ============================================================ */
+html.modal-open,
+body.modal-open,
+#root.modal-open {
+  overflow: hidden !important;
+}
+
+/* These utility classes can be applied to your modal overlay/content.
+   If your component already has different class names, keep using them;
+   these are provided so we can centralize the scroll behavior in CSS. */
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding: 2.5rem 1rem;
+  background: rgba(0,0,0,0.40);
+  z-index: 1000;
+  overflow: auto;                /* single scrollbar lives here */
+}
+
+/* Prevent nested scrollbars inside the modal content */
+.modal-overlay .modal-scroll {
+  width: min(100%, 980px);
+  max-height: none !important;   /* let content grow; overlay handles scroll */
+  overflow: visible !important;  /* avoid an inner scrollbar */
+}

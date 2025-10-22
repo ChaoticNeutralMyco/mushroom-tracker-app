@@ -1,12 +1,13 @@
 // src/components/ui/DashboardStats.jsx
 import React, { useMemo } from "react";
-import { isActiveGrow } from "../../lib/growFilters";
+import { isArchivedish, normalizeStage, normalizeStatus } from "../../lib/growFilters";
 
 /**
  * DashboardStats – pure/prop-driven
- * Props:
- *  - grows, recipes, supplies
- *  - loading? (optional)
+ * Counts should match the list's "Active" dataset:
+ *  - Exclude Archived (incl. fully-consumed legacy)
+ *  - Exclude Stored
+ *  - Exclude Harvested (even if not archived yet)
  */
 export default function DashboardStats({ grows, recipes, supplies, loading = false }) {
   const isHydrating =
@@ -14,7 +15,16 @@ export default function DashboardStats({ grows, recipes, supplies, loading = fal
 
   const { totalActiveGrows, activeStrainCount, typeCount, totalCost } = useMemo(() => {
     const safeGrows = Array.isArray(grows) ? grows : [];
-    const active = safeGrows.filter(isActiveGrow);
+
+    // Active for STATS = not archived-ish, not stored, not harvested
+    const active = safeGrows.filter((g) => {
+      if (isArchivedish(g)) return false;
+      const status = normalizeStatus(g?.status);
+      if (status === "stored") return false;
+      const stage = normalizeStage(g?.stage);
+      if (stage === "Harvested") return false;
+      return true;
+    });
 
     // distinct strains among ACTIVE
     const strainSet = new Set();
@@ -30,7 +40,7 @@ export default function DashboardStats({ grows, recipes, supplies, loading = fal
       if (t) typeSet.add(t);
     }
 
-    // cost across ACTIVE (keeps cards consistent)
+    // cost across ACTIVE (keeps cards consistent with the list/timeline)
     const costSum = active.reduce((sum, g) => {
       const n = Number(g?.cost);
       return Number.isFinite(n) ? sum + n : sum;

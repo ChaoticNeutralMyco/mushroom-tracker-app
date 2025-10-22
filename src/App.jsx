@@ -31,7 +31,7 @@ import {
 import "./index.css";
 
 import Auth from "./pages/Auth";
-import GrowForm from "./components/Grow/GrowForm";
+// REMOVED wrapper usage: NewGrowModal/GrowModal
 import GrowList from "./components/Grow/GrowList";
 import GrowDetail from "./components/Grow/GrowDetail";
 import EditStageStatusModal from "./components/Grow/EditStageStatusModal";
@@ -42,11 +42,12 @@ import { isActiveGrow, isArchivedish } from "./lib/growFilters";
 import CameraProbe from "./CameraProbe";
 import FabQuickActions from "./components/ui/FabQuickActions";
 import LocalReminders from "./components/ui/LocalReminders";
-
-// first-run coach (utils)
 import OnboardingCoach from "./utils/OnboardingCoach";
-// ✅ Unified confirm provider
 import { ConfirmProvider } from "./components/ui/ConfirmDialog";
+
+// NEW: direct Modal + GrowForm
+import Modal from "./components/ui/Modal";
+import GrowForm from "./components/Grow/GrowForm";
 
 const Analytics = React.lazy(() => import("./pages/Analytics"));
 const CalendarView = React.lazy(() => import("./pages/CalendarView"));
@@ -358,7 +359,13 @@ export default function App() {
 
   const typeCounts = useMemo(() => {
     const counts = { Agar: 0, LC: 0, "Grain Jar": 0, Bulk: 0, Other: 0 };
-    for (const g of activeGrowsBase) counts[normalizeType(g.type || g.growType)]++;
+    for (const g of activeGrowsBase) {
+      const status = String(g?.status || "").toLowerCase();
+      if (status === "stored") continue;           // exclude Stored from "Active" counts
+      const st = normalizeStage(g?.stage);
+      if (st === "Harvested") continue;            // exclude finished-but-not-archived
+      counts[normalizeType(g.type || g.growType)]++;
+    }
     return counts;
   }, [activeGrowsBase]);
 
@@ -567,39 +574,59 @@ export default function App() {
   const onUpdateStage = async (growId, nextStage) => {
     if (!user) return;
     const ref = doc(db, "users", user.uid, "grows", growId);
-    const today = new Date().toISOString().slice(0, 10);
+
+    // Look at current state to respect manual locks and existing dates
+    let currentGrow = undefined;
+    try {
+      const arr = Array.isArray(rawGrows) ? rawGrows : [];
+      currentGrow = arr.find((x) => x.id === growId);
+    } catch {}
+
+    const isLocked = !!(currentGrow && currentGrow.stageLocks && currentGrow.stageLocks[nextStage]);
+    const hasDate = !!(currentGrow && currentGrow.stageDates && currentGrow.stageDates[nextStage]);
+
+    const todayLocal = new Date();
+    const yyyy = todayLocal.getFullYear();
+    const mm = String(todayLocal.getMonth() + 1).padStart(2, "0");
+    const dd = String(todayLocal.getDate()).padStart(2, "0");
+    const today = `${yyyy}-${mm}-${dd}`;
+
     const patch = { stage: nextStage };
-    if (prefs.autoStampStageDates) patch[`stageDates.${nextStage}`] = today;
+    if (prefs.autoStampStageDates && !isLocked && !hasDate) {
+      patch[`stageDates.${nextStage}`] = today;
+    }
+
     await updateDoc(ref, patch);
+
     setRawGrows((prev) =>
-      (Array.isArray(prev) ? prev : []).map((g) =>
-        g.id === growId
-          ? {
-              ...g,
-              stage: nextStage,
-              stageDates: {
-                ...(g.stageDates || {}),
-                ...(prefs.autoStampStageDates ? { [nextStage]: today } : {}),
-              },
-            }
-          : g
-      )
+      (Array.isArray(prev) ? prev : []).map((g) => {
+        if (g.id !== growId) return g;
+        const nextDates = {
+          ...(g.stageDates || {}),
+          ...(prefs.autoStampStageDates && !isLocked && !hasDate ? { [nextStage]: today } : {}),
+        };
+        return { ...g, stage: nextStage, stageDates: nextDates };
+      })
     );
-  };
+  };;
 
   const onUpdateStageDate = async (growId, stage, dateISO) => {
     if (!user) return;
-    await updateDoc(doc(db, "users", user.uid, "grows", growId), {
+    const ref = doc(db, "users", user.uid, "grows", growId);
+    const patch = {
       [`stageDates.${stage}`]: dateISO || null,
-    });
+      [`stageLocks.${stage}`]: !!dateISO, // manual edit lock (true when user sets a date)
+    };
+    await updateDoc(ref, patch);
     setRawGrows((prev) =>
-      (Array.isArray(prev) ? prev : []).map((g) =>
-        g.id === growId
-          ? { ...g, stageDates: { ...(g.stageDates || {}), [stage]: dateISO || "" } }
-          : g
-      )
+      (Array.isArray(prev) ? prev : []).map((g) => {
+        if (g.id !== growId) return g;
+        const nextLocks = { ...(g.stageLocks || {}), [stage]: !!dateISO };
+        const nextDates = { ...(g.stageDates || {}), [stage]: dateISO || "" };
+        return { ...g, stageLocks: nextLocks, stageDates: nextDates };
+      })
     );
-  };
+  };;
 
   const onUpdateStatus = async (growId, status) => {
     if (!user) return;
@@ -788,6 +815,7 @@ export default function App() {
     }
   }, [activeTab]);
 
+  // EARLY RETURNS AFTER ALL HOOKS ABOVE (no hooks below).
   if (showSplash) return <SplashScreen />;
   if (!user) return <Auth setUser={setUser} />;
 
@@ -811,18 +839,20 @@ export default function App() {
         />
       )}
 
+      {/* New Grow modal: Modal handles page lock internally */}
       {isAddingNew && (
-        <GrowForm
-          editingGrow={editingGrow}
-          onSaveComplete={() => setEditingGrow(null)}
-          onClose={() => setEditingGrow(null)}
-          strains={Array.isArray(strains) ? strains : []}
-          grows={grows}
-          recipes={Array.isArray(recipes) ? recipes : []}
-          supplies={Array.isArray(supplies) ? supplies : []}
-          onCreateGrow={onCreateGrow}
-          onUpdateGrow={onUpdateGrow}
-        />
+        <Modal open={true} onClose={() => setEditingGrow(null)} title="New Grow">
+          <GrowForm
+            editingGrow={editingGrow || {}}
+            strains={Array.isArray(strains) ? strains : []}
+            grows={grows}
+            recipes={Array.isArray(recipes) ? recipes : []}
+            supplies={Array.isArray(supplies) ? supplies : []}
+            onCreateGrow={onCreateGrow}
+            onUpdateGrow={onUpdateGrow}
+            onClose={() => setEditingGrow(null)}
+          />
+        </Modal>
       )}
 
       <Routes>
@@ -845,7 +875,7 @@ export default function App() {
                 photosByGrowStage={photosByGrowStage}
                 onUpdateStage={onUpdateStage}
                 onUpdateStatus={onUpdateStatus}
-                onAddNote={onAddNoteWithEnv}
+                onAddNote={onAddNote}
                 onUploadStagePhoto={onUploadStagePhoto}
               />
             </Suspense>
@@ -1031,7 +1061,7 @@ export default function App() {
                         onUpdateStageDate={onUpdateStageDate}
                         notesByGrowStage={notesByGrowStage}
                         photosByGrowStage={photosByGrowStage}
-                        onAddNote={onAddNoteWithEnv}
+                        onAddNote={onAddNote}
                         onUploadStagePhoto={onUploadStagePhoto}
                       />
                     </div>
@@ -1124,7 +1154,7 @@ export default function App() {
         <Route path="/camera-probe" element={<CameraProbe />} />
       </Routes>
 
-      {/* First-run coach (portal-based, overlays body) — now respects prefs.guideEnabled */}
+      {/* First-run coach */}
       <OnboardingCoach pageKey={activeTab} enabled={prefs.guideEnabled !== false} />
     </ConfirmProvider>
   );

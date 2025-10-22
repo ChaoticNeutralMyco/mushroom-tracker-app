@@ -43,7 +43,8 @@ function isActiveGrow(g) {
   if (g?.active === false) return false;
   if (g?.active === true) return true;
 
-  return ["inoculated", "colonizing", "colonized", "fruiting"].includes(s);
+  // ✅ Include the new stage as active
+  return ["inoculated", "colonizing", "colonized", "fruiting", "harvesting"].includes(s);
 }
 const isContaminated = (g) => {
   const s = String(g?.stage || "").toLowerCase();

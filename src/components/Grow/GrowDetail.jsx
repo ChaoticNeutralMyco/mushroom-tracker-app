@@ -16,8 +16,18 @@ import {
 import { db, auth, storage } from "../../firebase-config";
 import { ref as storageRef, deleteObject } from "firebase/storage";
 import { useConfirm } from "../ui/ConfirmDialog";
+import { getCoverSrc } from "../../lib/grow-images";
+import { enqueueReusablesForGrow } from "../../lib/clean-queue";
 
-const STAGES = ["Inoculated", "Colonizing", "Colonized", "Fruiting", "Harvested"];
+/** ===== Stage flow rules by TYPE =====
+ * Bulk:        Inoculated → Colonizing → Colonized → Fruiting → Harvesting → Harvested
+ * Non-Bulk:    Inoculated → Colonizing → Colonized
+ * Terminal:    Contaminated (manual only)
+ * Legacy:      Consumed auto when consumables hit 0.
+ */
+const STAGES_BULK = ["Inoculated", "Colonizing", "Colonized", "Fruiting", "Harvesting", "Harvested"];
+const STAGES_NON_BULK = ["Inoculated", "Colonizing", "Colonized"];
+const TERMINAL_STAGES = ["Contaminated"]; // manual only
 
 // Derive Storage path from a Firebase download URL when storagePath is missing
 function pathFromDownloadURL(url) {
@@ -28,6 +38,11 @@ function pathFromDownloadURL(url) {
   return null;
 }
 
+// Pick a cover image URL from grow or photos list (with default icon fallback)
+function pickCoverUrl(grow, photos) {
+  return getCoverSrc(grow, photos);
+}
+
 const normalizeType = (t = "") => {
   const s = String(t || "").toLowerCase();
   if (s.includes("agar")) return "Agar";
@@ -36,6 +51,109 @@ const normalizeType = (t = "") => {
   if (s.includes("bulk")) return "Bulk";
   return "Other";
 };
+
+// Return allowed stages for a given type
+const allowedStagesForType = (t) => (normalizeType(t) === "Bulk" ? STAGES_BULK : STAGES_NON_BULK);
+
+/** Inline SVG icons for each grow type (no deps) */
+function TypeIcon({ type, size = 22, className = "" }) {
+  const t = normalizeType(type);
+  const stroke = "currentColor";
+  const sw = 2;
+
+  if (t === "Agar") {
+    // Petri dish (top view)
+    return (
+      <svg
+        width={size}
+        height={size}
+        viewBox="0 0 24 24"
+        className={`inline-block align-[-3px] ${className}`}
+        aria-label="Agar"
+      >
+        <circle cx="12" cy="12" r="8" fill="none" stroke={stroke} strokeWidth={sw} />
+        <path d="M5 12a7 7 0 0 0 14 0" fill="none" stroke={stroke} strokeWidth={sw} />
+        <path d="M7.5 9.5l2 2M14.5 8.5l2 2" stroke={stroke} strokeWidth={sw} />
+      </svg>
+    );
+  }
+
+  if (t === "LC") {
+    // Jar with liquid
+    return (
+      <svg
+        width={size}
+        height={size}
+        viewBox="0 0 24 24"
+        className={`inline-block align-[-3px] ${className}`}
+        aria-label="Liquid Culture"
+      >
+        <rect x="7" y="4" width="10" height="4" rx="1.5" fill="none" stroke={stroke} strokeWidth={sw} />
+        <rect x="6" y="8" width="12" height="12" rx="2" fill="none" stroke={stroke} strokeWidth={sw} />
+        <path d="M7 15c2-2 8-2 10 0" fill="none" stroke={stroke} strokeWidth={sw} />
+      </svg>
+    );
+  }
+
+  if (t === "Grain Jar") {
+    // Jar with grain dots
+    return (
+      <svg
+        width={size}
+        height={size}
+        viewBox="0 0 24 24"
+        className={`inline-block align-[-3px] ${className}`}
+        aria-label="Grain Jar"
+      >
+        <rect x="7" y="4" width="10" height="4" rx="1.5" fill="none" stroke={stroke} strokeWidth={sw} />
+        <rect x="6" y="8" width="12" height="12" rx="2" fill="none" stroke={stroke} strokeWidth={sw} />
+        <g fill="currentColor">
+          <circle cx="9" cy="14" r="1" />
+          <circle cx="12" cy="16" r="1" />
+          <circle cx="15" cy="13" r="1" />
+          <circle cx="11" cy="12" r="1" />
+          <circle cx="14" cy="17" r="1" />
+        </g>
+      </svg>
+    );
+  }
+
+  if (t === "Bulk") {
+    // Monotub (lid + tub with air holes)
+    return (
+      <svg
+        width={size + 2}
+        height={size}
+        viewBox="0 0 26 22"
+        className={`inline-block align-[-3px] ${className}`}
+        aria-label="Bulk (Monotub)"
+      >
+        {/* Lid */}
+        <rect x="3" y="2" width="20" height="3" rx="1" fill="none" stroke={stroke} strokeWidth={sw} />
+        {/* Tub */}
+        <rect x="2" y="6" width="22" height="12" rx="2" fill="none" stroke={stroke} strokeWidth={sw} />
+        {/* Air holes */}
+        <circle cx="6" cy="12" r="1.2" fill="currentColor" />
+        <circle cx="13" cy="12" r="1.2" fill="currentColor" />
+        <circle cx="20" cy="12" r="1.2" fill="currentColor" />
+      </svg>
+    );
+  }
+
+  // Generic box for "Other"
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 24 24"
+      className={`inline-block align-[-3px] ${className}`}
+      aria-label="Other"
+    >
+      <rect x="5" y="6" width="14" height="12" rx="2" fill="none" stroke={stroke} strokeWidth={sw} />
+      <path d="M5 10h14" stroke={stroke} strokeWidth={sw} />
+    </svg>
+  );
+}
 
 export default function GrowDetail({
   grows,
@@ -106,6 +224,9 @@ export default function GrowDetail({
   const [photos, setPhotos] = useState(Array.isArray(photosArrFromProps) ? photosArrFromProps : []);
   const [upload, setUpload] = useState({ stage: "", caption: "", file: null });
 
+  // Consumption UI state
+  const [useAmt, setUseAmt] = useState("");
+
   useEffect(() => { if (growFromProps) setGrow(growFromProps); }, [growFromProps]);
   useEffect(() => { if (Array.isArray(logsFromProps)) setLogs(logsFromProps); }, [logsFromProps]);
   useEffect(() => { if (Array.isArray(photosArrFromProps)) setPhotos(photosArrFromProps); }, [photosArrFromProps]);
@@ -129,18 +250,41 @@ export default function GrowDetail({
     })();
   }, [growId, growFromProps]);
 
+  // ---- Local date helpers (local-only, no UTC shift)
+  const toLocalYYYYMMDD = (d) => {
+    try {
+      const y = d.getFullYear();
+      const m = String(d.getMonth() + 1).padStart(2, "0");
+      const day = String(d.getDate()).padStart(2, "0");
+      return `${y}-${m}-${day}`;
+    } catch { return ""; }
+  };
+
   // generic updater with optimistic local merge
   const callUpdateGrow = async (patch) => {
     if (!growId) return;
+
+    // Optimistic update: respect user-specified stageDates.* without converting
     setGrow((prev) => {
       if (!prev) return prev;
-      const next = { ...prev, ...patch };
-      Object.keys(patch || {}).forEach((k) => {
+      const next = { ...prev };
+
+      Object.entries(patch || {}).forEach(([k, val]) => {
         if (k.startsWith("stageDates.")) {
           const stageKey = k.split(".")[1];
-          next.stageDates = { ...(prev.stageDates || {}), [stageKey]: new Date().toISOString() };
+          // For optimistic UI: keep 'YYYY-MM-DD' strings as-is; otherwise show today's local date.
+          const v =
+            (typeof val === "string" && /^\d{4}-\d{2}-\d{2}$/.test(val))
+              ? val
+              : toLocalYYYYMMDD(new Date());
+          next.stageDates = { ...(prev.stageDates || {}), [stageKey]: v };
+        } else if (!k.includes(".")) {
+          // Only shallow-merge non-nested keys; Firestore dotted paths are handled above.
+          next[k] = val;
         }
+        // Any other dotted paths (e.g., stageLocks.*) are persisted by Firestore but not needed in this local detail view.
       });
+
       return next;
     });
 
@@ -154,22 +298,79 @@ export default function GrowDetail({
   };
 
   // ----- ACTIONS with confirms -----
-  const canStoreToggle = useMemo(() => {
-    const t = normalizeType(grow?.type || grow?.growType || "");
-    return t === "Agar" || t === "LC";
-  }, [grow]);
+  const tNorm = normalizeType(grow?.type || grow?.growType || "");
+  const isConsumable = tNorm === "Agar" || tNorm === "LC" || tNorm === "Grain Jar";
+  const statusLower = String(grow?.status || "").toLowerCase();
+  const isArchived = statusLower === "archived" || grow?.archived === true || !!grow?.archivedAt;
+
+  // Allowed flow based on type
+  const ALLOWED = allowedStagesForType(grow?.type || grow?.growType);
+  const stageIdx = ALLOWED.indexOf(grow?.stage || "");
+  const hasNextStage = !isArchived && stageIdx >= 0 && stageIdx < ALLOWED.length - 1;
+
+  // ===== 🔧 IMPORTANT FIX (Harvested date = latest flush date) =====
+  // When moving to "Harvested", persist a plain local YYYY-MM-DD string in stageDates.Harvested
+  // (for analytics) derived from the latest flush.createdAt; also save harvestedAt as server timestamp.
+  const archiveAndEnqueue = async (nextStage) => {
+    const user = auth.currentUser;
+    if (!user) return;
+
+    const isHarvested = nextStage === "Harvested";
+    const localToday = toLocalYYYYMMDD(new Date());
+
+    // Compute latest flush date if harvesting
+    let harvestedLocal = null;
+    if (isHarvested) {
+      try {
+        const arr = Array.isArray(grow?.flushes)
+          ? grow.flushes
+          : Array.isArray(grow?.harvest?.flushes)
+          ? grow.harvest.flushes
+          : Array.isArray(photos) && photos // no; photos aren't flushes. keep only flush arrays
+          ? []
+          : [];
+        const arrState = Array.isArray(arr) && arr.length >= (Array.isArray(grow?.flushes) ? 0 : 0) ? arr : [];
+        const source = Array.isArray(arrState) && arrState.length > 0 ? arrState : (Array.isArray(/** state */ flushes) ? flushes : []);
+        let latest = null;
+        for (const f of source) {
+          const raw = (f && (f.createdAt ?? f.date ?? f.when)) ?? null;
+          if (!raw) continue;
+          let d;
+          if (typeof raw === "number") d = new Date(raw < 100000000000 ? raw * 1000 : raw);
+          else if (raw && typeof raw.toDate === "function") d = raw.toDate();
+          else d = new Date(String(raw));
+          if (!isNaN(d)) { if (!latest || d > latest) latest = d; }
+        }
+        if (latest) harvestedLocal = toLocalYYYYMMDD(latest);
+      } catch {}
+    }
+
+    await callUpdateGrow({
+      stage: nextStage,
+      ...(isHarvested
+        ? { [`stageDates.${nextStage}`]: harvestedLocal || localToday, harvestedAt: serverTimestamp(), status: "Archived", archived: true, archivedAt: serverTimestamp(), updatedAt: serverTimestamp() }
+        : { [`stageDates.${nextStage}`]: serverTimestamp(), status: "Archived", archived: true, archivedAt: serverTimestamp(), updatedAt: serverTimestamp() }),
+    });
+
+    try { await enqueueReusablesForGrow(user.uid, growId); } catch { /* non-fatal */ }
+  };
+  // ===== /FIX =====
 
   const handleAdvanceStage = async () => {
     if (!grow) return;
-    const cur = grow.stage || "";
-    const idx = STAGES.indexOf(cur);
-    const next = idx >= 0 && idx < STAGES.length - 1 ? STAGES[idx + 1] : null;
+    const idx = ALLOWED.indexOf(grow.stage || "");
+    const next = idx >= 0 && idx < ALLOWED.length - 1 ? ALLOWED[idx + 1] : null;
     if (!next) return;
     if (!(await confirm(`Advance stage to "${next}"?`))) return;
-    await callUpdateGrow({
-      stage: next,
-      [`stageDates.${next}`]: serverTimestamp(),
-    });
+
+    if (next === "Harvested") {
+      await archiveAndEnqueue(next);
+    } else {
+      await callUpdateGrow({
+        stage: next,
+        [`stageDates.${next}`]: serverTimestamp(),
+      });
+    }
   };
 
   const handleArchiveToggle = async () => {
@@ -177,11 +378,11 @@ export default function GrowDetail({
     const status = String(grow.status || "").toLowerCase();
     const next = status === "archived" ? "Active" : "Archived";
     if (!(await confirm(`${status === "archived" ? "Unarchive" : "Archive"} this grow?`))) return;
-    await callUpdateGrow({ status: next });
+    await callUpdateGrow({ status: next, archivedAt: next === "Archived" ? serverTimestamp() : null, archived: next === "Archived" });
   };
 
   const handleStoreToggle = async () => {
-    if (!grow || !canStoreToggle) return;
+    if (!grow || !(tNorm === "Agar" || tNorm === "LC")) return;
     const isStored = String(grow.status || "").toLowerCase() === "stored";
     const next = isStored ? "Active" : "Stored";
     if (!(await confirm(`${isStored ? "Unstore" : "Store"} this grow?`))) return;
@@ -190,17 +391,125 @@ export default function GrowDetail({
 
   const handleDeleteGrow = async () => {
     if (!growId) return;
-    if (!(await confirm("Delete this grow? This cannot be undone."))) return;
+    if (!(await confirm("Delete this grow? This will archive the grow and mark it as deleted."))) return;
     const user = auth.currentUser;
     if (!user) return;
     try {
-      await deleteDoc(doc(db, "users", user.uid, "grows", growId));
+      // Soft-delete: archive + flag as deleted for analytics integrity
+      await updateDoc(doc(db, "users", user.uid, "grows", growId), {
+        status: "Archived",
+        archived: true,
+        archivedAt: serverTimestamp(),
+        deleted: true,
+        deletedAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+      });
       navigate("/");
     } catch (e) {
       alert(e?.message || String(e));
     }
   };
 
+  // ===== Consumption helpers (Consumables only) =====
+  const total = Number(grow?.amountTotal) || 0;
+  const used = Number(grow?.amountUsed) || 0;
+  const remaining = Math.max(total - used, 0);
+  const pctRemaining = total > 0 ? Math.max(0, Math.min(100, (remaining / total) * 100)) : 0;
+  const amountUnit = grow?.amountUnit || "ml";
+
+  const saveAmountSettings = async (newTotal, newUnit) => {
+    const t = Math.max(0, Number(newTotal) || 0);
+    await callUpdateGrow({
+      amountTotal: t,
+      amountUnit: (newUnit || amountUnit || "ml").trim(),
+    });
+  };
+
+  const logUsage = async () => {
+    const amt = Number(useAmt);
+    if (!Number.isFinite(amt) || amt <= 0 || total <= 0) return;
+
+    const newUsed = Math.min(total, used + amt);
+    const willBeConsumed = total > 0 && newUsed >= total;
+
+    const patch = {
+      amountUsed: newUsed,
+      lastUsedAt: serverTimestamp(),
+    };
+
+    if (willBeConsumed) {
+      patch.stage = "Consumed"; // legacy stage for consumables
+      patch["stageDates.Consumed"] = serverTimestamp();
+      patch.consumedAt = serverTimestamp();
+      patch.status = "Archived";
+      patch.archived = true;
+      patch.archivedAt = serverTimestamp();
+    }
+
+    await callUpdateGrow(patch);
+    setUseAmt("");
+  };
+
+  // Auto-archive if user marks Contaminated / Consumed (legacy)
+  useEffect(() => {
+    const stage = String(grow?.stage || "");
+    if (!stage) return;
+
+    if ((stage === "Consumed" || stage === "Contaminated") && String(grow?.status || "").toLowerCase() !== "archived") {
+      // implicit, no confirm
+      callUpdateGrow({ status: "Archived", archived: true, archivedAt: serverTimestamp() });
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [grow?.stage]);
+
+  // ----- HARVEST / FLUSHES (used for Bulk only) -----
+  const isHarvesting = String(grow?.stage) === "Harvesting";
+  const flushesFromGrow =
+    (Array.isArray(grow?.flushes) && grow.flushes) ||
+    (Array.isArray(grow?.harvest?.flushes) && grow.harvest.flushes) ||
+    [];
+  const [flushes, setFlushes] = useState(flushesFromGrow);
+  useEffect(() => setFlushes(flushesFromGrow), [flushesFromGrow]);
+
+  const totals = useMemo(
+    () =>
+      (flushes || []).reduce(
+        (acc, f) => {
+          acc.wet += Number(f?.wet) || 0;
+          acc.dry += Number(f?.dry) || 0;
+          return acc;
+        },
+        { wet: 0, dry: 0 }
+      ),
+    [flushes]
+  );
+
+  const persistFlushes = async (next) => {
+    setFlushes(next);
+    await callUpdateGrow({ flushes: next });
+  };
+
+  const addFlush = async () => {
+    const next = [
+      ...(Array.isArray(flushes) ? flushes : []),
+      { createdAt: new Date().toISOString(), wet: 0, dry: 0, note: "" },
+    ];
+    await persistFlushes(next);
+  };
+
+  const updateFlushAt = async (idx, patch) => {
+    const list = (Array.isArray(flushes) ? flushes : []).slice();
+    list[idx] = { ...(list[idx] || {}), ...patch };
+    await persistFlushes(list);
+  };
+
+  const deleteFlushAt = async (idx) => {
+    if (!(await confirm("Delete this flush entry?"))) return;
+    const next = (Array.isArray(flushes) ? flushes : []).filter((_, i) => i !== idx);
+    await persistFlushes(next);
+  };
+
+  // ----- Notes -----
   const addNote = async () => {
     const text = noteText.trim();
     if (!text) return;
@@ -265,6 +574,19 @@ export default function GrowDetail({
     }
   };
 
+  // LOCAL-ONLY date formatter for input[type="date"]
+  const toInputDate = (raw) => {
+    try {
+      if (!raw) return "";
+      if (typeof raw === "string" && /^\d{4}-\d{2}-\d{2}$/.test(raw)) return raw;
+      if (typeof raw?.toDate === "function") return toLocalYYYYMMDD(raw.toDate());
+      if (raw instanceof Date) return toLocalYYYYMMDD(raw);
+      if (typeof raw === "number") return toLocalYYYYMMDD(new Date(raw));
+      const d = new Date(String(raw));
+      return isNaN(d) ? "" : toLocalYYYYMMDD(d);
+    } catch { return ""; }
+  };
+
   const doUploadPhoto = async () => {
     if (!upload.file) return;
     const stage = upload.stage || grow?.stage || "General";
@@ -283,7 +605,7 @@ export default function GrowDetail({
   // Delete a photo (top-level collection: users/{uid}/photos)
   const handleDeletePhoto = async (p) => {
     if (!p || !p.id) return;
-    if (!(await confirm("Delete this photo? This cannot be undone."))) return;
+    if (!(await confirm("Delete this photo?"))) return;
 
     const user = auth.currentUser;
     if (!user) return;
@@ -428,9 +750,14 @@ export default function GrowDetail({
 
   if (!grow) return <div className="p-6">Loading grow…</div>;
 
-  const stageIdx = STAGES.indexOf(grow.stage || "");
-  const hasNextStage = stageIdx >= 0 && stageIdx < STAGES.length - 1;
-  const statusLower = String(grow.status || "").toLowerCase();
+  // Compute cover image URL for header (defaults to type icon if no cover set)
+  const headerCoverUrl = useMemo(
+    () => pickCoverUrl(grow, photos),
+    [grow?.coverUrl, grow?.coverPhotoId, grow?.type, grow?.growType, photos]
+  );
+
+  // Stage options for form selects (allowed + manual + legacy "Consumed" for tagging photos/logs)
+  const SELECT_STAGE_OPTIONS = [...ALLOWED, "Consumed", ...TERMINAL_STAGES];
 
   return (
     <div className="p-6 max-w-5xl mx-auto space-y-8">
@@ -440,10 +767,22 @@ export default function GrowDetail({
       </div>
 
       <div className="flex items-center gap-3">
-        <h1 className="text-2xl font-bold">
-          🌱 {grow.strain || "Unnamed"}{" "}
-          {grow.subName ? <span className="opacity-75">– {grow.subName}</span> : null}{" "}
-          <span className="text-sm opacity-70">({grow.stage || "—"})</span>
+        {headerCoverUrl ? (
+          <img
+            src={headerCoverUrl}
+            alt={`${grow.strain || "Grow"} cover`}
+            className="w-14 h-14 sm:w-16 sm:h-16 object-cover rounded-md border border-zinc-200 dark:border-zinc-800"
+            loading="lazy"
+          />
+        ) : null}
+
+        <h1 className="text-2xl font-bold flex items-center gap-2">
+          <TypeIcon type={grow?.type || grow?.growType} className="opacity-90" />
+          <span>
+            {grow.strain || "Unnamed"}{" "}
+            {grow.subName ? <span className="opacity-75">– {grow.subName}</span> : null}{" "}
+            <span className="text-sm opacity-70">({grow.stage || "—"})</span>
+          </span>
         </h1>
       </div>
 
@@ -463,19 +802,19 @@ export default function GrowDetail({
           type="button"
           className="chip"
           onClick={handleArchiveToggle}
-          title={statusLower === "archived" ? "Unarchive" : "Archive"}
+          title={isArchived ? "Unarchive" : "Archive"}
         >
-          {statusLower === "archived" ? "Unarchive" : "Archive"}
+          {isArchived ? "Unarchive" : "Archive"}
         </button>
 
-        {canStoreToggle && (
+        {(tNorm === "Agar" || tNorm === "LC") && (
           <button
             type="button"
             className="chip"
             onClick={handleStoreToggle}
-            title={statusLower === "stored" ? "Unstore" : "Store"}
+            title={String(grow.status || "").toLowerCase() === "stored" ? "Unstore" : "Store"}
           >
-            {statusLower === "stored" ? "Unstore" : "Store"}
+            {String(grow.status || "").toLowerCase() === "stored" ? "Unstore" : "Store"}
           </button>
         )}
 
@@ -491,13 +830,17 @@ export default function GrowDetail({
 
       {/* Stage chips (manual set) */}
       <div className="flex flex-wrap gap-2">
-        {STAGES.map((s) => (
+        {ALLOWED.map((s) => (
           <button
             key={s}
             onClick={async () => {
-              if (grow.stage === s) return;
+              if (grow.stage === s || isArchived) return;
               if (!(await confirm(`Set stage to "${s}"?`))) return;
-              await callUpdateGrow({ stage: s, [`stageDates.${s}`]: serverTimestamp() });
+              if (s === "Harvested") {
+                await archiveAndEnqueue(s);
+              } else {
+                await callUpdateGrow({ stage: s, [`stageDates.${s}`]: serverTimestamp() });
+              }
             }}
             className={`px-3 py-1 rounded-full ${grow.stage === s ? "accent-chip" : "bg-zinc-200 dark:bg-zinc-700"}`}
             aria-pressed={grow.stage === s ? "true" : "false"}
@@ -505,7 +848,223 @@ export default function GrowDetail({
             {s}
           </button>
         ))}
+
+        {/* Manual terminal stage */}
+        {TERMINAL_STAGES.map((s) => (
+          <button
+            key={s}
+            onClick={async () => {
+              if (grow.stage === s || isArchived) return;
+              if (!(await confirm(`Set stage to "${s}"?`))) return;
+              await callUpdateGrow({ stage: s, [`stageDates.${s}`]: serverTimestamp() });
+            }}
+            className={`px-3 py-1 rounded-full ${grow.stage === s ? "accent-chip" : "bg-zinc-200 dark:bg-zinc-700"}`}
+            aria-pressed={grow.stage === s ? "true" : "false"}
+            title="Terminal stage"
+          >
+            {s}
+          </button>
+        ))}
       </div>
+
+      {/* Remaining / Consumption (hidden for Bulk; disabled for archived) */}
+      {isConsumable && !isArchived && (
+        <section className="space-y-3">
+          <h2 className="text-lg font-semibold">📦 Remaining</h2>
+
+          {total > 0 ? (
+            <>
+              <div className="text-sm opacity-80">
+                {remaining} {amountUnit} left of {total} {amountUnit}
+              </div>
+              <div className="w-full max-w-md h-3 rounded-full bg-zinc-300/60 dark:bg-zinc-700/60 overflow-hidden">
+                <div
+                  className="h-full accent-bg"
+                  style={{ width: `${pctRemaining}%` }}
+                  aria-label={`Remaining ${pctRemaining.toFixed(0)}%`}
+                />
+              </div>
+
+              <div className="flex flex-wrap items-center gap-2">
+                <input
+                  type="number"
+                  inputMode="decimal"
+                  min="0"
+                  step="0.1"
+                  placeholder={`Use amount (${amountUnit})`}
+                  value={useAmt}
+                  onChange={(e) => setUseAmt(e.target.value)}
+                  className="p-2 border rounded bg-white dark:bg-zinc-900"
+                  aria-label="Amount to use"
+                />
+                <button
+                  className="chip"
+                  onClick={logUsage}
+                  disabled={!useAmt || Number(useAmt) <= 0 || total <= 0}
+                >
+                  Log usage
+                </button>
+                <button
+                  className="btn-outline"
+                  onClick={async () => {
+                    const t = prompt("Set total amount", String(total));
+                    if (t == null) return;
+                    const u = prompt("Set unit (e.g., ml, g, pcs)", amountUnit || "ml");
+                    await saveAmountSettings(t, u || "ml");
+                  }}
+                >
+                  Edit total/unit
+                </button>
+              </div>
+              {remaining === 0 && (
+                <div className="text-sm opacity-70">Fully consumed. Archived automatically.</div>
+              )}
+            </>
+          ) : (
+            <div className="flex flex-wrap items-center gap-2">
+              <input
+                type="number"
+                inputMode="decimal"
+                min="0"
+                step="0.1"
+                placeholder="Set total amount"
+                onKeyDown={async (e) => {
+                  if (e.key === "Enter") {
+                    const t = Number(e.currentTarget.value);
+                    if (Number.isFinite(t) && t > 0) await saveAmountSettings(t, amountUnit || "ml");
+                  }
+                }}
+                className="p-2 border rounded bg-white dark:bg-zinc-900"
+              />
+              <select
+                defaultValue={amountUnit || "ml"}
+                onChange={async (e) => await saveAmountSettings(total, e.target.value)}
+                className="p-2 border rounded bg-white dark:bg-zinc-900"
+              >
+                <option value="ml">ml</option>
+                <option value="g">g</option>
+                <option value="pcs">pcs</option>
+              </select>
+              <span className="text-sm opacity-70">Set a starting amount to enable the bar.</span>
+            </div>
+          )}
+        </section>
+      )}
+
+      {/* Size display for Bulk (no consumption UI) */}
+      {tNorm === "Bulk" && (
+        <section className="space-y-2">
+          <h2 className="text-lg font-semibold">📏 Size</h2>
+          <div className="text-sm opacity-80">
+            {String(grow.containerSize || grow.size || grow.container || grow.volume || "—")}
+          </div>
+        </section>
+      )}
+
+      {/* HARVEST PANEL — ONLY for Bulk */}
+      {tNorm === "Bulk" && (
+        <section className="space-y-2">
+          <h2 className="text-lg font-semibold">🍄 Harvest</h2>
+
+          <div className="text-sm opacity-80">
+            Totals: <b>{Math.round(totals.wet * 10) / 10}g</b> wet ·{" "}
+            <b>{Math.round(totals.dry * 10) / 10}g</b> dry
+          </div>
+
+          {(flushes || []).length === 0 && (
+            <div className="text-sm opacity-70">No flushes yet.</div>
+          )}
+
+          <div className="space-y-3">
+            {(flushes || []).map((f, idx) => (
+              <div key={idx} className="grid grid-cols-1 md:grid-cols-6 gap-2 items-end border rounded p-2">
+                <label className="block">
+                  <div className="text-xs mb-1 opacity-70">Date</div>
+                  <input
+                    type="date"
+                    value={toInputDate(f?.createdAt)}
+                    disabled={!isHarvesting || isArchived}
+                    onChange={(e) => updateFlushAt(idx, { createdAt: e.target.value || new Date().toISOString() })}
+                    className="w-full rounded border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-900 px-3 py-2 disabled:opacity-60"
+                  />
+                </label>
+                <label className="block">
+                  <div className="text-xs mb-1 opacity-70">Wet (g)</div>
+                  <input
+                    type="number"
+                    inputMode="decimal"
+                    min="0"
+                    step="0.1"
+                    value={Number(f?.wet) || 0}
+                    disabled={!isHarvesting || isArchived}
+                    onChange={(e) => updateFlushAt(idx, { dry: Number(f?.dry) || 0, wet: parseFloat(e.target.value || "0") || 0 })}
+                    className="w-full rounded border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-900 px-3 py-2 disabled:opacity-60"
+                  />
+                </label>
+                <label className="block">
+                  <div className="text-xs mb-1 opacity-70">Dry (g)</div>
+                  <input
+                    type="number"
+                    inputMode="decimal"
+                    min="0"
+                    step="0.1"
+                    value={Number(f?.dry) || 0}
+                    disabled={!isHarvesting || isArchived}
+                    onChange={(e) => updateFlushAt(idx, { wet: Number(f?.wet) || 0, dry: parseFloat(e.target.value || "0") || 0 })}
+                    className="w-full rounded border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-900 px-3 py-2 disabled:opacity-60"
+                  />
+                </label>
+                <label className="block md:col-span-2">
+                  <div className="text-xs mb-1 opacity-70">Notes</div>
+                  <input
+                    type="text"
+                    value={f?.note || ""}
+                    disabled={!isHarvesting || isArchived}
+                    onChange={(e) => updateFlushAt(idx, { note: e.target.value })}
+                    className="w-full rounded border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-900 px-3 py-2 disabled:opacity-60"
+                    placeholder="Optional"
+                  />
+                </label>
+
+                <div className="flex gap-2 justify-end">
+                  <button
+                    className="btn-outline"
+                    disabled={!isHarvesting || isArchived}
+                    onClick={() => updateFlushAt(idx, { wet: 0, dry: 0 })}
+                    title="Reset weights"
+                  >
+                    Reset
+                  </button>
+                  <button
+                    className="chip bg-red-600 text-white"
+                    disabled={!isHarvesting || isArchived}
+                    onClick={() => deleteFlushAt(idx)}
+                    title="Delete this flush"
+                  >
+                    Delete
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+
+          {!isArchived && isHarvesting && (
+            <div className="flex items-center gap-2">
+              <button className="px-3 py-1.5 rounded-md border border-zinc-300 dark:border-zinc-700 hover:bg-zinc-100 dark:hover:bg-zinc-800 text-xs" onClick={addFlush}>
+                + Add flush
+              </button>
+              <div className="flex-1" />
+              <button
+                className="px-3 py-1.5 rounded-md bg-emerald-600 hover:bg-emerald-700 text-white text-xs"
+                onClick={() => archiveAndEnqueue("Harvested")}
+                title="Finish harvest & archive"
+              >
+                Finish harvest &amp; Archive
+              </button>
+            </div>
+          )}
+        </section>
+      )}
 
       {/* Notes */}
       <section>
@@ -601,7 +1160,7 @@ export default function GrowDetail({
             className="p-2 border rounded bg-white dark:bg-zinc-900"
           >
             <option value="">Stage (optional)</option>
-            {STAGES.map((s) => (
+            {SELECT_STAGE_OPTIONS.map((s) => (
               <option key={s} value={s}>{s}</option>
             ))}
           </select>
@@ -710,7 +1269,7 @@ export default function GrowDetail({
             className="p-2 border rounded bg-white dark:bg-zinc-900"
           >
             <option value="">Stage</option>
-            {STAGES.map((s) => (
+            {SELECT_STAGE_OPTIONS.map((s) => (
               <option key={s} value={s}>{s}</option>
             ))}
           </select>
@@ -760,7 +1319,7 @@ export default function GrowDetail({
                       onChange={(e) => setEditLog({ ...editLog, stage: e.target.value })}
                       className="p-2 border rounded bg-white dark:bg-zinc-900"
                     >
-                      {STAGES.map((s) => (
+                      {SELECT_STAGE_OPTIONS.map((s) => (
                         <option key={s} value={s}>{s}</option>
                       ))}
                     </select>
@@ -814,4 +1373,15 @@ export default function GrowDetail({
       </section>
     </div>
   );
+}
+
+function fmtWhen(t) {
+  if (!t) return "";
+  try {
+    if (typeof t?.toDate === "function") return t.toDate().toLocaleString();
+    if (t instanceof Date) return t.toLocaleString();
+    return new Date(t).toLocaleString();
+  } catch {
+    return String(t);
+  }
 }

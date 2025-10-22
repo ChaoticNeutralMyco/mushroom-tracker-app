@@ -1,5 +1,7 @@
 // src/pages/StrainManager.jsx
-import React, { useEffect, useMemo, useState } from "react";
+// Strain Manager + Library/Storage: auto-archive zero-qty items and hide archived ones from the list.
+import React, { useEffect, useMemo, useState, useCallback } from "react";
+import Modal from "../components/ui/Modal";
 import {
   collection,
   addDoc,
@@ -14,6 +16,7 @@ import {
   where,
 } from "firebase/firestore";
 import { auth, db, storage } from "../firebase-config";
+import { isArchivedish, normalizeStage, normalizeStatus } from "../lib/growFilters";
 import { ref as storageRef, uploadBytes, getDownloadURL, deleteObject } from "firebase/storage";
 import {
   UploadCloud,
@@ -30,10 +33,17 @@ import {
   CheckSquare,
   Image as ImageIcon,
   List as ListIcon,
+  GitBranch,
+  GitCommit,
+  ChevronRight,
+  Spline,
 } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import GrowForm from "../components/Grow/GrowForm";
 import { useConfirm } from "../components/ui/ConfirmDialog";
+import { sortAlpha, byKey, alpha } from "../lib/sort";
+import StrainCard from "../components/Strains/StrainCard";
+import { DEFAULT_STORAGE_LOCATIONS, subscribeLocations, seedDefaultsIfEmpty, addLocation, renameLocation, deleteLocation, moveLocation } from "../lib/storage-locations";
 
 /* ---------- helpers ---------- */
 const norm = (s) => String(s || "").trim().toLowerCase();
@@ -68,22 +78,24 @@ const getYields = (g) => {
   return { wet: Number.isFinite(wet) ? wet : 0, dry: Number.isFinite(dry) ? dry : 0 };
 };
 
-/* ——— robust grow-state checks ——— */
-const isArchived = (g) => {
-  const status = norm(g?.status);
-  return g?.archived === true || status === "archived";
-};
+/* —— robust grow-state checks —— */
+const isArchived = (g) => isArchivedish(g);
+
+// ✅ Active definition per spec:
+// NOT archived, NOT stored, NOT harvested;
+// and (status === Active OR stage ∈ {Inoculated, Colonizing, Colonized, Fruiting})
 const isActive = (g) => {
-  if (isArchived(g)) return false;
-  const status = norm(g?.status);
-  if (status === "active") return true;
-  if (!status) {
-    const stage = norm(g?.stage);
-    const activeStages = ["inoculated", "colonizing", "colonized", "fruiting"];
-    if (activeStages.some((s) => stage.includes(s))) return true;
-  }
-  return false;
+  if (!g) return false;
+  // Active per spec: NOT archived-ish, NOT deleted (covered by isArchivedish), NOT stored, NOT harvested
+  if (isArchivedish(g)) return false;
+  const status = normalizeStatus(g?.status);
+  const stage = normalizeStage(g?.stage);
+  if (status === "stored") return false;
+  if (stage === "Harvested") return false;
+  const activeStages = new Set(["Inoculated", "Colonizing", "Colonized", "Fruiting"]);
+  return status === "active" || activeStages.has(stage);
 };
+
 const isContamGrow = (g) => {
   const s = `${g?.status || ""} ${g?.stage || ""} ${g?.outcome || ""}`.toLowerCase();
   return (
@@ -150,6 +162,190 @@ const MED_EDIBLE_SPECIES = [
   "Morchella esculenta (Morel)",
 ];
 
+/* ---------- species alias shortcuts (type "cube" => Psilocybe cubensis) ---------- */
+const SPECIES_ALIASES = {
+  cube: "Psilocybe cubensis",
+  cubensis: "Psilocybe cubensis",
+  cyan: "Psilocybe cyanescens",
+  cyanescens: "Psilocybe cyanescens",
+  azure: "Psilocybe azurescens",
+  azurescens: "Psilocybe azurescens",
+  allenii: "Psilocybe allenii",
+  mex: "Psilocybe mexicana",
+  mexicana: "Psilocybe mexicana",
+  tamp: "Psilocybe tampanensis",
+  tamps: "Psilocybe tampanensis",
+  tampanensis: "Psilocybe tampanensis",
+  semilanceata: "Psilocybe semilanceata",
+  "liberty cap": "Psilocybe semilanceata",
+  weilii: "Psilocybe weilii",
+  baeocystis: "Psilocybe baeocystis",
+};
+
+
+/* ---------- per-strain stats helper ---------- */
+// Uses only ARCHIVED grows for analytics. Durations use fallbacks:
+// stageDates.* preferred, then *At legacy fields; Inoculated falls back to createdAt.
+function calcStatsFromGrows(arr) {
+  const days = (a, b) => {
+    const A = asDate(a), B = asDate(b);
+    return A && B ? (B - A) / 86400000 : null;
+  };
+  const avg = (xs) => (xs.length ? xs.reduce((s, v) => s + v, 0) / xs.length : null);
+  const fmt1 = (v) => (v == null ? "—" : Number(v).toFixed(1));
+
+  // Fallback date getters (legacy support)
+  const dInoc = (g) =>
+    g?.stageDates?.Inoculated ??
+    g?.inoculatedAt ??
+    g?.inoculationDate ??
+    g?.inoc ??
+    g?.createdAt;
+
+  const dColonized = (g) => g?.stageDates?.Colonized ?? g?.colonizedAt;
+  const dFruiting  = (g) => g?.stageDates?.Fruiting  ?? g?.fruitingAt;
+  const dHarvested = (g) => g?.stageDates?.Harvested ?? g?.harvestedAt;
+
+  // Only archived grows count for analytics (deleted included for stats)
+  const source = (Array.isArray(arr) ? arr : []).filter((g) => isArchived(g));
+
+  const contam = source.filter(isContamGrow).length;
+  const total = source.length;
+
+  const colonize = source
+    .map((g) => days(dInoc(g), dColonized(g)))
+    .filter((n) => Number.isFinite(n));
+  const fruit = source
+    .map((g) => days(dColonized(g), dFruiting(g)))
+    .filter((n) => Number.isFinite(n));
+  const harvest = source
+    .map((g) => days(dFruiting(g), dHarvested(g)))
+    .filter((n) => Number.isFinite(n));
+
+  const wetVals = source.map((g) => getYields(g).wet).filter((n) => Number.isFinite(n));
+  const dryVals = source.map((g) => getYields(g).dry).filter((n) => Number.isFinite(n));
+
+  return {
+    total,
+    contamRate: total ? ((contam / total) * 100).toFixed(1) : "—",
+    avgColonize: fmt1(avg(colonize)),
+    avgFruit: fmt1(avg(fruit)),
+    avgHarvest: fmt1(avg(harvest)),
+    avgWet: fmt1(avg(wetVals)),
+    avgDry: fmt1(avg(dryVals)),
+  };
+}
+
+/* ---------- lineage helpers ---------- */
+const ORIGINS = [
+  "MSS (Spore Syringe)",
+  "Spore Swab",
+  "Spore Print",
+  "LC Syringe",
+  "Wild→Agar",
+];
+
+function inferOriginFromLibrary(kind = "") {
+  const s = String(kind).toLowerCase();
+  if (s.includes("syringe")) return "MSS (Spore Syringe)";
+  if (s.includes("swab")) return "Spore Swab";
+  if (s.includes("print")) return "Spore Print";
+  if (s === "lc" || s.includes("liquid")) return "LC Syringe";
+  return null;
+}
+
+function getGrowParentId(g, growsById) {
+  if (g?.parentGrowId && growsById.has(g.parentGrowId)) return g.parentGrowId;
+  if (g?.parentId && growsById.has(g.parentId)) return g.parentId;
+  return null;
+}
+
+function growLabel(g) {
+  const abbrev = g?.abbreviation || g?.abbr || g?.code || "";
+  const type = normalizeType(g?.type || g?.growType || "");
+  return abbrev ? `${abbrev} · ${type}` : `${type}`;
+}
+
+/* ---------------- TREE LAYOUT (simple tidy algorithm) ---------------- */
+function buildForest(roots, childrenMap, growsById) {
+  const makeNode = (id) => {
+    const g = growsById.get(id);
+    return {
+      id,
+      label: growLabel(g),
+      stage: g?.stage || "—",
+      status: g?.status || "—",
+      inoc: g?.stageDates?.Inoculated || g?.createdAt,
+      children: (childrenMap.get(id) || []).map((cid) => makeNode(cid)),
+      // layout fields
+      depth: 0,
+      prelim: 0,
+      mod: 0,
+      x: 0,
+    };
+  };
+  const trees = roots.map(makeNode);
+  return trees;
+}
+
+function firstWalk(node, depth, nextX) {
+  node.depth = depth;
+  if (node.children.length === 0) {
+    node.prelim = nextX.value;
+    nextX.value += 1;
+  } else {
+    node.children.forEach((c) => firstWalk(c, depth + 1, nextX));
+    const first = node.children[0].prelim;
+    const last = node.children[node.children.length - 1].prelim;
+    node.prelim = (first + last) / 2;
+  }
+}
+
+function secondWalk(node, m = 0, positions = []) {
+  node.x = node.prelim + m;
+  positions.push(node);
+  node.children.forEach((c) => secondWalk(c, m, positions));
+  return positions;
+}
+
+function layoutForest(trees) {
+  const positions = [];
+  let offset = 0;
+  trees.forEach((tree, idx) => {
+    const nextX = { value: 0 };
+    firstWalk(tree, 0, nextX);
+    const nodes = secondWalk(tree).map((n) => ({ ...n, x: n.x + offset }));
+    positions.push(...nodes);
+    // space 2 columns between trees
+    offset = Math.max(offset, ...nodes.map((n) => n.x)) + 2;
+  });
+  const maxDepth = Math.max(0, ...positions.map((p) => p.depth));
+  const maxX = Math.max(0, ...positions.map((p) => p.x));
+  return { nodes: positions, maxDepth, maxX };
+}
+
+/* ---------- local cache for strain name suggestions ---------- */
+const LS_STRAIN_NAMES = "cnm_strain_names";
+const loadStrainNameCache = () => {
+  try {
+    const arr = JSON.parse(localStorage.getItem(LS_STRAIN_NAMES) || "[]");
+    return Array.isArray(arr) ? arr.filter((s) => typeof s === "string" && s.trim()).map((s) => s.trim()) : [];
+  } catch { return []; }
+};
+const saveStrainNameCache = (names) => {
+  try { localStorage.setItem(LS_STRAIN_NAMES, JSON.stringify(names)); } catch {}
+};
+const mergeNamesCI = (...lists) => {
+  const map = new Map();
+  lists.flat().forEach((n) => {
+    const v = String(n || "").trim();
+    if (!v) return;
+    const k = v.toLowerCase();
+    if (!map.has(k)) map.set(k, v);
+  });
+  return Array.from(map.values());
+};
+
 export default function StrainManager({
   strains,
   grows,
@@ -165,6 +361,13 @@ export default function StrainManager({
   const [localGrows, setLocalGrows] = useState(Array.isArray(grows) ? grows : []);
   const [libraryItems, setLibraryItems] = useState([]);
   const [savedSpecies, setSavedSpecies] = useState([]);
+
+  // User-defined Storage Locations
+  const [storageLocations, setStorageLocations] = useState([]);
+  const [manageLocOpen, setManageLocOpen] = useState(false);
+
+  // Strain name suggestions cache (persisted)
+  const [cachedStrainNames, setCachedStrainNames] = useState([]);
 
   // Edit form
   const [form, setForm] = useState({
@@ -183,6 +386,9 @@ export default function StrainManager({
   // Modal: all grows for a strain
   const [viewStrain, setViewStrain] = useState(null);
   const [viewTab, setViewTab] = useState("grows");
+
+  // lineage view mode
+  const [lineageView, setLineageView] = useState("tree"); // "tree" | "list"
 
   // photos across all grows of the selected strain
   const [strainPhotos, setStrainPhotos] = useState([]);
@@ -204,12 +410,26 @@ export default function StrainManager({
   const [capEditText, setCapEditText] = useState("");
 
   /* ---------------- Data wiring ---------------- */
+  // Subscribe to user Storage Locations and seed defaults if empty
+  useEffect(() => {
+    const u = auth.currentUser;
+    if (!u) return;
+    (async () => { try { await seedDefaultsIfEmpty(db, u.uid); } catch {} })();
+    const unsub = subscribeLocations(db, u.uid, setStorageLocations);
+    return () => unsub && unsub();
+  }, []);
+
   useEffect(() => {
     if (Array.isArray(strains)) setLocalStrains(strains);
   }, [strains]);
   useEffect(() => {
     if (Array.isArray(grows)) setLocalGrows(grows);
   }, [grows]);
+
+  useEffect(() => {
+    // Load cached strain-name suggestions on mount
+    setCachedStrainNames(loadStrainNameCache());
+  }, []);
 
   const snapToArray = (snap) => snap.docs.map((d) => ({ id: d.id, ...d.data() }));
 
@@ -218,8 +438,25 @@ export default function StrainManager({
     if (!u) return;
 
     const unsubLib = onSnapshot(collection(db, "users", u.uid, "library"), (snap) => {
-      setLibraryItems(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
+      const rows = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+      setLibraryItems(rows);
+
+      // 🔒 Auto-archive any library item at or below zero so it disappears from the active list
+      rows.forEach((it) => {
+        const qty = Number(it?.qty || 0);
+        const archivedish = !!it?.archived || String(it?.status || "").toLowerCase() === "archived";
+        if (qty <= 0 && !archivedish) {
+          updateDoc(doc(db, "users", u.uid, "library", it.id), {
+            qty: 0,
+            status: "Archived",
+            archived: true,
+            archivedAt: serverTimestamp(),
+            updatedAt: serverTimestamp(),
+          }).catch(() => {});
+        }
+      });
     });
+
     const unsubSpecies = onSnapshot(collection(db, "users", u.uid, "species"), (snap) => {
       setSavedSpecies(
         snap.docs.map((d) => (d.data()?.name ? String(d.data().name) : "")).filter(Boolean)
@@ -244,6 +481,13 @@ export default function StrainManager({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+
+  // Default form location to first available
+  useEffect(() => {
+    const first = storageLocations.length ? storageLocations[0].name : DEFAULT_STORAGE_LOCATIONS[0];
+    setNewItem((prev) => ({ ...prev, location: prev.location || first }));
+  }, [storageLocations]);
+
   /* ---------------- Species suggestions ---------------- */
   const speciesSuggestions = useMemo(() => {
     const set = new Set();
@@ -253,6 +497,20 @@ export default function StrainManager({
     });
     return Array.from(set).sort((a, b) => a.localeCompare(b));
   }, [savedSpecies]);
+
+
+  // Fuzzy canonicalization for species field
+  const fuzzyPickSpecies = (text) => {
+    const q = norm(text);
+    if (!q) return "";
+    if (SPECIES_ALIASES[q]) return SPECIES_ALIASES[q];
+    const all = speciesSuggestions;
+    const exact = all.find((s) => norm(s) === q);
+    if (exact) return exact;
+    // token-based contains match (prefix/substring)
+    const hit = all.find((s) => norm(s).includes(q));
+    return hit || text;
+  };
 
   const ensureSpeciesSaved = async (name) => {
     const clean = String(name || "").trim();
@@ -368,7 +626,15 @@ export default function StrainManager({
   };
 
   /* ---------------- Library ---------------- */
-  const LIBRARY_TYPES = [
+  const DEFAULT_UNIT_BY_TYPE = {
+  "Spore Swab": "count",
+  "Spore Print": "count",
+  "Spore Syringe": "ml",
+  "LC": "ml",
+  "Agar Plate": "ml",
+  "Agar Slant": "ml",
+};
+const LIBRARY_TYPES = [
     "Spore Syringe",
     "Spore Swab",
     "Spore Print",
@@ -376,35 +642,63 @@ export default function StrainManager({
     "Agar Plate",
     "Agar Slant",
   ];
+  const [speciesOpen, setSpeciesOpen] = useState(false);
   const [newItem, setNewItem] = useState({
     type: "Spore Syringe",
     strainName: "",
     scientificName: "",
     qty: 1,
-    unit: "count",
+    unit: DEFAULT_UNIT_BY_TYPE["Spore Syringe"] || "ml",
     location: "Fridge",
     acquired: new Date().toISOString().slice(0, 10),
     notes: "",
   });
 
+  // Build strain-name suggestions from active Library items + locally cached names
+  const activeLibraryItems = useMemo(() => {
+    const arr = Array.isArray(libraryItems) ? libraryItems : [];
+    return arr.filter((it) => {
+      const qty = Number(it?.qty || 0);
+      const archivedish = !!it?.archived || String(it?.status || "").toLowerCase() === "archived";
+      return qty > 0 && !archivedish;
+    });
+  }, [libraryItems]);
+
+  const strainNameSuggestions = useMemo(() => {
+    const fromLib = activeLibraryItems.map((it) => it.strainName).filter(Boolean);
+    return mergeNamesCI(fromLib, cachedStrainNames).sort((a, b) => alpha(a, b));
+  }, [activeLibraryItems, cachedStrainNames]);
+
+  const addNameToCache = (name) => {
+    const merged = mergeNamesCI(cachedStrainNames, [name]);
+    setCachedStrainNames(merged);
+    saveStrainNameCache(merged);
+  };
+
   const onAddLibraryItem = async (e) => {
     e?.preventDefault?.();
     const u = auth.currentUser;
     if (!u) return;
+
     const payload = {
       ...newItem,
       qty: Number(newItem.qty || 0),
       createdAt: new Date().toISOString(),
     };
+
     await addDoc(collection(db, "users", u.uid, "library"), payload);
     await ensureStrainExists(newItem.strainName, newItem.scientificName);
     await ensureSpeciesSaved(newItem.scientificName);
+
+    // ✨ write-through to local suggestion cache (deduped, case-insensitive)
+    addNameToCache(newItem.strainName);
+
     setNewItem((s) => ({
       ...s,
       strainName: "",
       scientificName: "",
       qty: 1,
-      unit: "count",
+      unit: DEFAULT_UNIT_BY_TYPE["Spore Syringe"] || "ml",
       acquired: new Date().toISOString().slice(0, 10),
       notes: "",
     }));
@@ -467,15 +761,22 @@ export default function StrainManager({
   /* ---------------- Derived data ---------------- */
   const strainsToShow = Array.isArray(strains) ? strains : localStrains;
 
+  // A→Z by strain name (case-insensitive, natural)
+  const strainsSorted = useMemo(
+    () => sortAlpha(strainsToShow, (s) => s?.name || ""),
+    [strainsToShow]
+  );
+
+  // Count of stored items per strain (ACTIVE items only)
   const storedItemsCountByStrain = useMemo(() => {
     const map = new Map();
-    for (const it of libraryItems) {
+    for (const it of activeLibraryItems) {
       const key = norm(it.strainName);
       if (!key) continue;
       map.set(key, (map.get(key) || 0) + 1);
     }
     return map;
-  }, [libraryItems]);
+  }, [activeLibraryItems]);
 
   const growsForSelected = useMemo(() => {
     if (!viewStrain) return [];
@@ -485,40 +786,72 @@ export default function StrainManager({
     );
   }, [viewStrain, localGrows]);
 
-  const statsForSelected = useMemo(() => {
-    const arr = Array.isArray(growsForSelected) ? growsForSelected : [];
-    const days = (a, b) => {
-      const A = asDate(a), B = asDate(b);
-      return A && B ? (B - A) / 86400000 : null;
-    };
-    const avg = (xs) => (xs.length ? xs.reduce((s, v) => s + v, 0) / xs.length : null);
-    const fmt1 = (v) => (v == null ? null : Number(v).toFixed(1));
-    const contam = arr.filter(isContamGrow).length;
-    const total = arr.length;
+  const statsForSelected = useMemo(
+    () => calcStatsFromGrows(growsForSelected),
+    [growsForSelected]
+  );
 
-    const colonize = arr
-      .map((g) => days(g?.stageDates?.Inoculated, g?.stageDates?.Colonized))
-      .filter((n) => Number.isFinite(n));
-    const fruit = arr
-      .map((g) => days(g?.stageDates?.Colonized, g?.stageDates?.Fruiting))
-      .filter((n) => Number.isFinite(n));
-    const harvest = arr
-      .map((g) => days(g?.stageDates?.Fruiting, g?.stageDates?.Harvested))
-      .filter((n) => Number.isFinite(n));
+  /* ---------- lineage derived ---------- */
+  const {
+    roots,
+    childrenMap,
+    growsById,
+    inferredOriginByRoot,
+  } = useMemo(() => {
+    const byId = new Map();
+    for (const g of growsForSelected) byId.set(g.id, g);
 
-    const wetVals = arr.map((g) => getYields(g).wet).filter((n) => Number.isFinite(n));
-    const dryVals = arr.map((g) => getYields(g).dry).filter((n) => Number.isFinite(n));
+    const kids = new Map();
+    for (const g of growsForSelected) kids.set(g.id, []);
 
-    return {
-      total,
-      contamRate: total ? ((contam / total) * 100).toFixed(1) : "—",
-      avgColonize: fmt1(avg(colonize)) || "—",
-      avgFruit: fmt1(avg(fruit)) || "—",
-      avgHarvest: fmt1(avg(harvest)) || "—",
-      avgWet: fmt1(avg(wetVals)) || "—",
-      avgDry: fmt1(avg(dryVals)) || "—",
-    };
+    const rootsArr = [];
+    for (const g of growsForSelected) {
+      const pid = getGrowParentId(g, byId);
+      if (pid && byId.has(pid)) {
+        kids.get(pid).push(g.id);
+      } else {
+        rootsArr.push(g.id);
+      }
+    }
+
+    // Inferred origin (for roots)
+    const inferred = new Map();
+    for (const rid of rootsArr) {
+      const rg = byId.get(rid);
+      let origin = rg?.origin || null;
+      if (!origin && rg?.parentSource === "Library") {
+        origin = inferOriginFromLibrary(rg?.parentType) || null;
+      }
+      inferred.set(rid, origin);
+    }
+
+    // Sort children by inoculated/created desc (so newer children render on the right)
+    for (const [pid, list] of kids) {
+      list.sort((a, b) => {
+        const ga = byId.get(a), gb = byId.get(b);
+        const ta =
+          asDate(ga?.updatedAt || ga?.createdAt || ga?.stageDates?.Inoculated)?.getTime() || 0;
+        const tb =
+          asDate(gb?.updatedAt || gb?.createdAt || gb?.stageDates?.Inoculated)?.getTime() || 0;
+        return ta - tb; // left→right oldest→newest
+      });
+    }
+
+    return { roots: rootsArr, childrenMap: kids, growsById: byId, inferredOriginByRoot: inferred };
   }, [growsForSelected]);
+
+  const updateRootOrigin = useCallback(
+    async (rootId, origin) => {
+      const uid = auth.currentUser?.uid;
+      if (!uid || !rootId) return;
+      try {
+        await updateDoc(doc(db, "users", uid, "grows", rootId), { origin: origin || null });
+      } catch (e) {
+        console.warn("Origin update failed:", e?.message || e);
+      }
+    },
+    []
+  );
 
   /* ---------------- Batch actions (helpers) ---------------- */
   const toggleLib = (id) =>
@@ -676,6 +1009,215 @@ export default function StrainManager({
   };
 
   /* ---------------- UI ---------------- */
+  // A→Z by strainName (primary) then by type for tie-breakers
+  const libraryItemsSorted = useMemo(() => {
+    const arr = Array.isArray(activeLibraryItems) ? [...activeLibraryItems] : [];
+    arr.sort((a, b) => {
+      const byStrain = alpha(a?.strainName, b?.strainName);
+      if (byStrain !== 0) return byStrain;
+      return alpha(a?.type, b?.type);
+    });
+    return arr;
+  }, [activeLibraryItems]);
+
+  const renderLineageListNode = useCallback(
+    (id) => {
+      const g = growsById.get(id);
+      if (!g) return null;
+      const children = childrenMap.get(id) || [];
+      const started = g?.stageDates?.Inoculated || g?.createdAt;
+      const stage = g?.stage || "—";
+      const status = g?.status || "—";
+      const label = growLabel(g);
+
+      return (
+        <li key={id} className="pl-2">
+          <div className="flex items-center gap-2 py-1">
+            <GitCommit className="w-4 h-4 opacity-70 shrink-0" />
+            <div className="min-w-0">
+              <div className="font-medium truncate">{label}</div>
+              <div className="text-xs text-zinc-500">
+                Stage: <strong>{stage}</strong> · Status: <strong>{status}</strong> · Inoculated:{" "}
+                <strong>{fmtDate(started)}</strong>
+              </div>
+            </div>
+            <div className="ml-auto flex items-center gap-2">
+              <button
+                className="chip px-2 py-1 text-[12px]"
+                onClick={() => navigate(`/grow/${id}`)}
+                title="Open grow"
+              >
+                Open
+              </button>
+            </div>
+          </div>
+
+          {children.length > 0 && (
+            <ul className="ml-6 border-l border-zinc-300 dark:border-zinc-700 pl-3">
+              {children.map((cid) => renderLineageListNode(cid))}
+            </ul>
+          )}
+        </li>
+      );
+    },
+    [childrenMap, growsById, navigate]
+  );
+
+  const rootsListUI = useMemo(() => {
+    if (!roots.length) {
+      return <div className="text-sm opacity-70">No lineage detected for this strain.</div>;
+    }
+    return (
+      <ul className="space-y-2">
+        {roots.map((rid) => {
+          const g = growsById.get(rid);
+          const inferred = inferredOriginByRoot.get(rid) || null;
+          const currentOrigin = g?.origin || inferred || null;
+
+          return (
+            <li key={rid} className="rounded-lg border border-zinc-200 dark:border-zinc-800 p-3">
+              <div className="flex items-center gap-2 mb-2">
+                <GitBranch className="w-4 h-4 opacity-70" />
+                <div className="font-semibold">Root</div>
+                <ChevronRight className="w-4 h-4 opacity-50" />
+                <div className="text-sm">
+                  Origin:&nbsp;
+                  <select
+                    className="chip"
+                    value={currentOrigin || ""}
+                    onChange={(e) => updateRootOrigin(rid, e.target.value || null)}
+                  >
+                    <option value="">{inferred ? `(Inferred) ${inferred}` : "Unknown"}</option>
+                    {ORIGINS.map((o) => (
+                      <option key={o} value={o}>
+                        {o}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+              <ul className="ml-1">{renderLineageListNode(rid)}</ul>
+            </li>
+          );
+        })}
+      </ul>
+    );
+  }, [roots, growsById, inferredOriginByRoot, renderLineageListNode, updateRootOrigin]);
+
+  /* ---------------- Lineage: TREE (SVG + absolutely-positioned nodes) ---------------- */
+  const lineageTreeUI = useMemo(() => {
+    if (!roots.length) {
+      return <div className="text-sm opacity-70">No lineage detected for this strain.</div>;
+    }
+
+    // Build tidy layout
+    const forest = buildForest(roots, childrenMap, growsById);
+    const { nodes, maxDepth, maxX } = layoutForest(forest);
+
+    const H = 120; // vertical gap
+    const W = 180; // horizontal column width
+    const PAD = 40; // padding inside container
+
+    const width = Math.max(600, (maxX + 1) * W + PAD * 2);
+    const height = Math.max(300, (maxDepth + 1) * H + PAD * 2);
+
+    // Index for quick lookup
+    const nodeById = new Map(nodes.map((n) => [n.id, n]));
+    const edges = [];
+    nodes.forEach((n) => {
+      const g = growsById.get(n.id);
+      (childrenMap.get(n.id) || []).forEach((cid) => {
+        edges.push([n.id, cid]);
+      });
+    });
+
+    const nodePos = (id) => {
+      const n = nodeById.get(id);
+      return {
+        x: PAD + n.x * W + W / 2,
+        y: PAD + n.depth * H + 28, // node header height
+      };
+    };
+
+    const NodeCard = ({ n }) => {
+      const g = growsById.get(n.id);
+      const label = growLabel(g);
+      const started = g?.stageDates?.Inoculated || g?.createdAt;
+      const isRoot = !getGrowParentId(g, growsById);
+
+      const left = PAD + n.x * W + (W / 2 - 90);
+      const top = PAD + n.depth * H;
+
+      return (
+        <div
+          className="absolute rounded-xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 shadow-sm px-3 py-2 w-[180px] cursor-pointer hover:shadow-md transition"
+          style={{ left, top }}
+          onClick={() => navigate(`/grow/${n.id}`)}
+          title="Open grow"
+        >
+          <div className="font-semibold text-sm truncate">{label}</div>
+          <div className="text-[11px] text-zinc-500">
+            Stage: <strong>{g?.stage || "—"}</strong> · Status: <strong>{g?.status || "—"}</strong>
+          </div>
+          <div className="text-[11px] text-zinc-500">Inoculated: {fmtDate(started)}</div>
+
+          {isRoot && (
+            <div className="mt-1">
+              <label className="text-[10px] opacity-60 mr-1">Origin</label>
+              <select
+                className="chip !px-1 !py-0.5 text-[11px]"
+                value={g?.origin || inferredOriginByRoot.get(n.id) || ""}
+                onChange={(e) => updateRootOrigin(n.id, e.target.value || null)}
+                onClick={(e) => e.stopPropagation()}
+              >
+                <option value="">
+                  {inferredOriginByRoot.get(n.id) ? `(Inferred) ${inferredOriginByRoot.get(n.id)}` : "Unknown"}
+                </option>
+                {ORIGINS.map((o) => (
+                  <option key={o} value={o}>
+                    {o}
+                  </option>
+                ))}
+              </select>
+            </div>
+          )}
+        </div>
+      );
+    };
+
+    return (
+      <div
+        className="relative rounded-lg border border-zinc-200 dark:border-zinc-800 bg-white/30 dark:bg-zinc-900/30 overflow-auto"
+        style={{ width: "100%", maxHeight: "60vh" }}
+      >
+        {/* edges */}
+        <svg width={width} height={height} className="block">
+          {edges.map(([a, b]) => {
+            const p1 = nodePos(a);
+            const p2 = nodePos(b);
+            const path = `M ${p1.x} ${p1.y + 22} C ${p1.x} ${p1.y + 60}, ${p2.x} ${p2.y - 60}, ${p2.x} ${p2.y - 4}`;
+            return (
+              <path
+                key={`${a}-${b}`}
+                d={path}
+                fill="none"
+                className="stroke-zinc-300 dark:stroke-zinc-700"
+                strokeWidth="2"
+              />
+            );
+          })}
+        </svg>
+
+        {/* nodes */}
+        <div style={{ width, height, position: "absolute", inset: 0 }}>
+          {nodes.map((n) => (
+            <NodeCard key={n.id} n={n} />
+          ))}
+        </div>
+      </div>
+    );
+  }, [roots, childrenMap, growsById, inferredOriginByRoot, navigate, updateRootOrigin]);
+
   return (
     <div className="max-w-6xl mx-auto space-y-8">
       {(selectedLib.length > 0 || selectedStrains.length > 0) && (
@@ -702,7 +1244,7 @@ export default function StrainManager({
           {selectedStrains.length > 0 && (
             <button
               onClick={batchDeleteStrains}
-              className="px-3 py-1 rounded-full bg-red-600 text-white text-sm"
+              className="px-3 py-1 rounded-full bg-red-600 text-white"
             >
               Delete strains
             </button>
@@ -729,9 +1271,12 @@ export default function StrainManager({
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <input
               name="name"
+              list="strainNames"
               placeholder="Strain Name"
               value={form.name}
               onChange={handleChange}
+                onBlur={() => setForm((f) => ({ ...f, scientificName: fuzzyPickSpecies(f.scientificName) }))}
+                onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); setForm((f) => ({ ...f, scientificName: fuzzyPickSpecies(f.scientificName) })); } }}
               required
               className="p-2 rounded border dark:bg-zinc-800 dark:border-zinc-700"
               aria-label="Strain name"
@@ -809,6 +1354,13 @@ export default function StrainManager({
         </form>
       )}
 
+      {/* Datalists used across the page */}
+      <datalist id="strainNames">
+        {strainNameSuggestions.map((n) => (
+          <option key={n} value={n} />
+        ))}
+      </datalist>
+
       {/* Strain Library / Storage */}
       <div className="bg-white dark:bg-zinc-900 p-4 rounded-2xl shadow space-y-4">
         <div className="flex items-center gap-2 mb-1">
@@ -817,103 +1369,142 @@ export default function StrainManager({
         </div>
 
         {/* Add library item */}
-        <form onSubmit={onAddLibraryItem} className="grid grid-cols-1 md:grid-cols-7 gap-2">
+        <form onSubmit={onAddLibraryItem} className="grid grid-cols-1 md:grid-cols-12 gap-2 items-center">
+          {/* Type */}
           <select
-            className="chip w-full"
+            className="chip w-full md:col-span-4"
             value={newItem.type}
-            onChange={(e) => setNewItem((s) => ({ ...s, type: e.target.value }))}
-            aria-label="Item type"
+            onChange={(e) => setNewItem((s) => { const t=e.target.value; const u=DEFAULT_UNIT_BY_TYPE[t]||s.unit||"ml"; return { ...s, type: t, unit: u }; })}
+            aria-label="Type"
+            title="Type"
           >
             {LIBRARY_TYPES.map((t) => (
-              <option key={t} value={t}>
-                {t}
-              </option>
+              <option key={t} value={t} title={t}>{t}</option>
             ))}
           </select>
 
+          {/* Strain name */}
           <input
-            className="chip w-full"
-            placeholder="Strain name"
+            className="chip w-full md:col-span-4"
+            placeholder="Strain name (e.g., Albino Penis Envy)"
             value={newItem.strainName}
             onChange={(e) => setNewItem((s) => ({ ...s, strainName: e.target.value }))}
-            required
+            onBlur={() => { const v = String(newItem.strainName||"").trim(); if (v.length >= 2) addNameToCache(v); }}
+            list="strainNameOptions"
             aria-label="Strain name"
+            title={newItem.strainName || "Strain name"}
           />
+          <datalist id="strainNameOptions">
+            {strainNameSuggestions.map((n) => (
+              <option key={n} value={n} />
+            ))}
+          </datalist>
 
-          <div className="relative">
+          {/* Species (scientific name) */}
+          <div className="relative md:col-span-2">
             <input
-              list="speciesOptions"
-              className="chip w-full"
-              placeholder="Scientific name"
+              className="chip w-full pr-10"
+              placeholder="Species (e.g., Psilocybe cubensis)"
               value={newItem.scientificName}
               onChange={(e) => setNewItem((s) => ({ ...s, scientificName: e.target.value }))}
-              aria-label="Scientific name"
+              onBlur={() => setNewItem((p) => ({ ...p, scientificName: fuzzyPickSpecies(p.scientificName) }))}
+              onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); setNewItem((p) => ({ ...p, scientificName: fuzzyPickSpecies(p.scientificName) })); setSpeciesOpen(false); } }}
+              list="speciesOptions"
+              aria-label="Species"
+              title={newItem.scientificName || "Scientific name"}
+              onFocus={() => setSpeciesOpen(true)}
             />
-            <datalist id="speciesOptions">
-              {speciesSuggestions.map((s) => (
-                <option value={s} key={s} />
-              ))}
-            </datalist>
+            <button type="button" className="absolute right-2 top-1/2 -translate-y-1/2 text-sm opacity-80"
+              onClick={() => setSpeciesOpen((v)=>!v)} aria-label="Show species list">▾</button>
+            {speciesOpen && (
+              <div className="absolute z-20 mt-1 max-h-48 overflow-auto w-full rounded-md border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-900 shadow">
+                {speciesSuggestions
+                  .filter(s => norm(s).includes(norm(newItem.scientificName)))
+                  .slice(0, 50)
+                  .map(s => (
+                    <div key={s}
+                      className="px-2 py-1 text-sm hover:bg-zinc-100 dark:hover:bg-zinc-800 cursor-pointer"
+                      onMouseDown={(e) => { e.preventDefault(); setNewItem((p)=>({ ...p, scientificName: s })); setSpeciesOpen(false); }}>
+                      {s}
+                    </div>
+                  ))}
+                {speciesSuggestions.length === 0 && (
+                  <div className="px-2 py-1 text-sm opacity-60">No suggestions</div>
+                )}
+              </div>
+            )}
           </div>
 
-          <div className="flex gap-2">
-            <input
-              type="number"
-              min="0"
-              step="1"
-              className="chip w-full"
-              placeholder="Qty"
-              value={newItem.qty}
-              onChange={(e) => setNewItem((s) => ({ ...s, qty: e.target.value }))}
-              required
-              aria-label="Quantity"
-            />
-            <select
-              className="chip"
-              value={newItem.unit}
-              onChange={(e) => setNewItem((s) => ({ ...s, unit: e.target.value }))}
-              title="Unit"
-              aria-label="Unit"
-            >
-              <option value="count">count</option>
-              <option value="ml">ml</option>
-              <option value="plate">plate</option>
-            </select>
-          </div>
+          {/* Qty */}
+          <input
+            type="number"
+            min="0"
+            step={newItem.unit === "ml" ? "0.1" : "1"}
+            className="chip w-full md:col-span-1"
+            placeholder={newItem.unit === "ml" ? "mL" : "Qty"}
+            value={newItem.qty}
+            onChange={(e) => setNewItem((s) => ({ ...s, qty: e.target.value }))}
+            aria-label="Quantity"
+            title="Quantity"
+          />
 
+          {/* Unit */}
           <select
-            className="chip w-full"
-            value={newItem.location}
-            onChange={(e) => setNewItem((s) => ({ ...s, location: e.target.value }))}
-            aria-label="Location"
+            className="chip w-full md:col-span-1"
+            value={newItem.unit}
+            onChange={(e) => setNewItem((s) => ({ ...s, unit: e.target.value }))}
+            aria-label="Unit"
+            title="Unit"
           >
-            {["Fridge", "Freezer", "Room"].map((loc) => (
-              <option key={loc} value={loc}>
-                {loc}
-              </option>
-            ))}
+            <option value="ml">ml</option>
+            <option value="count">count</option>
           </select>
 
+          {/* Location */}
+          <div className="flex gap-2 items-center md:col-span-5 min-w-0 flex-nowrap">
+            <select
+              className="chip w-full md:min-w-[320px]"
+              value={newItem.location}
+              onChange={(e) => setNewItem((prev) => ({ ...prev, location: e.target.value }))}
+              aria-label="Location"
+              title={newItem.location}
+            >
+              {storageLocations.length === 0
+                ? DEFAULT_STORAGE_LOCATIONS.map((loc) => (
+                    <option key={loc} value={loc} title={loc}>{loc}</option>
+                  ))
+                : storageLocations.map((row) => (
+                    <option key={row.id} value={row.name} title={row.name}>{row.name}</option>
+                  ))}
+            </select>
+            <button type="button" className="chip shrink-0" title="Manage locations" onClick={() => setManageLocOpen(true)}>
+              Manage
+            </button>
+          </div>
+
+          {/* Date */}
           <input
             type="date"
-            className="chip w-full"
+            className="chip w-full md:col-span-3"
             value={newItem.acquired}
             onChange={(e) => setNewItem((s) => ({ ...s, acquired: e.target.value }))}
-            title="Acquired"
+            title="Acquired date"
             aria-label="Acquired date"
           />
 
+          {/* Submit */}
           <button
             type="submit"
-            className="inline-flex items-center justify-center gap-2 px-4 py-2 rounded-full accent-bg text-white shadow-sm"
+            className="inline-flex items-center justify-center gap-2 px-4 py-2 rounded-full accent-bg text-white shadow-sm md:col-span-2"
             title="Add to Library"
           >
             <PlusCircle className="h-4 w-4" />
             <span className="whitespace-nowrap">Add to Library</span>
           </button>
 
+          {/* Notes */}
           <textarea
-            className="chip md:col-span-7 w-full"
+            className="chip md:col-span-12 w-full"
             placeholder="Notes (optional)"
             value={newItem.notes}
             onChange={(e) => setNewItem((s) => ({ ...s, notes: e.target.value }))}
@@ -921,14 +1512,13 @@ export default function StrainManager({
             aria-label="Notes"
           />
         </form>
-
         {/* Library selection toolbar */}
         {selectedLib.length > 0 && (
           <div className="rounded-md border border-yellow-300 dark:border-yellow-700 bg-yellow-50 dark:bg-yellow-900/40 text-yellow-900 dark:text-yellow-100 p-2 text-sm flex items-center justify-between">
             <span>{selectedLib.length} selected</span>
             <div className="flex gap-2">
               <button
-                onClick={() => setSelectedLib(libraryItems.map((i) => i.id))}
+                onClick={() => setSelectedLib(libraryItemsSorted.map((i) => i.id))}
                 className="px-3 py-1 rounded-full bg-zinc-200 dark:bg-zinc-700"
               >
                 Select all
@@ -949,18 +1539,18 @@ export default function StrainManager({
           </div>
         )}
 
-        {/* Library list */}
+        {/* Library list (A→Z) */}
         <div className="rounded-xl border border-zinc-200 dark:border-zinc-800 overflow-hidden">
           <div className="bg-zinc-50 dark:bg-zinc-900/60 px-3 py-2 text-xs uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
-            {libraryItems.length} items
+            {libraryItemsSorted.length} items
           </div>
-          {libraryItems.length === 0 ? (
+          {libraryItemsSorted.length === 0 ? (
             <div className="p-4 text-sm text-zinc-500">
               Nothing in your library yet. Add Swabs, Syringes, Prints, LCs, or Agar.
             </div>
           ) : (
             <ul className="divide-y divide-zinc-200 dark:divide-zinc-800">
-              {libraryItems.map((it) => {
+              {libraryItemsSorted.map((it) => {
                 const kind = it.type || "";
                 let KindIcon = Boxes;
                 if (kind === "Spore Syringe") KindIcon = Syringe;
@@ -1024,13 +1614,13 @@ export default function StrainManager({
         </div>
       </div>
 
-      {/* Strain cards */}
+      {/* Strain cards (A→Z) */}
       {selectedStrains.length > 0 && (
         <div className="rounded-md border border-yellow-300 dark:border-yellow-700 bg-yellow-50 dark:bg-yellow-900/40 text-yellow-900 dark:text-yellow-100 p-2 text-sm flex items-center justify-between">
           <span>{selectedStrains.length} strain(s) selected</span>
           <div className="flex gap-2">
             <button
-              onClick={() => setSelectedStrains(strainsToShow.map((s) => s.id))}
+              onClick={() => setSelectedStrains(strainsSorted.map((s) => s.id))}
               className="px-3 py-1 rounded-full bg-zinc-200 dark:bg-zinc-700"
             >
               Select all
@@ -1039,7 +1629,7 @@ export default function StrainManager({
               onClick={batchDeleteStrains}
               className="px-3 py-1 rounded-full bg-red-600 text-white"
             >
-              Delete selected
+              Delete strains
             </button>
             <button
               onClick={() => setSelectedStrains([])}
@@ -1052,98 +1642,45 @@ export default function StrainManager({
       )}
 
       <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-6">
-        {strainsToShow.map((s) => {
+        {strainsSorted.map((s) => {
           const allG = (Array.isArray(localGrows) ? localGrows : []).filter(
             (g) => norm(g.strain) === norm(s.name)
           );
+
+          // Counts per spec
           const activeCount = allG.filter(isActive).length;
           const archivedCount = allG.filter(isArchived).length;
           const storedCount = storedItemsCountByStrain.get(norm(s.name)) || 0;
 
+          // Stats use ARCHIVED only (handled inside helper) with stage-date fallbacks
+          const stats = calcStatsFromGrows(allG);
+
           const isChecked = selectedStrains.includes(s.id);
 
           return (
-            <div
+            <StrainCard
               key={s.id}
-              role="button"
-              tabIndex={0}
-              onClick={() => {
+              strain={s}
+              stats={stats}
+              counts={{ activeCount, archivedCount, storedCount }}
+              checked={isChecked}
+              onToggleSelect={() => toggleStrain(s.id)}
+              onOpen={() => {
                 setViewStrain({ name: s.name, scientificName: s.scientificName });
                 setViewTab("grows");
+                setLineageView("tree");
               }}
-              onKeyDown={(e) => {
-                if (e.key === "Enter") {
-                  setViewStrain({ name: s.name, scientificName: s.scientificName });
-                  setViewTab("grows");
-                }
-              }}
-              className="bg-white dark:bg-zinc-900 rounded-2xl shadow p-4 space-y-2 relative cursor-pointer hover:ring-2 hover:ring-zinc-300 dark:hover:ring-zinc-700 transition"
-              title="Click to view all grows for this strain"
-            >
-              <input
-                type="checkbox"
-                className="absolute left-2 top-2 z-10"
-                checked={isChecked}
-                onClick={(e) => e.stopPropagation()}
-                onChange={() => toggleStrain(s.id)}
-                aria-label={`Select ${s.name}`}
-              />
-
-              {s.photoURL ? (
-                <img src={s.photoURL} alt={s.name} className="w-full h-40 object-cover rounded-xl" />
-              ) : null}
-              <h3 className="text-lg font-bold">{s.name}</h3>
-              {s.scientificName ? (
-                <p className="text-sm text-zinc-600 dark:text-zinc-300 italic">{s.scientificName}</p>
-              ) : s.genetics ? (
-                <p className="text-sm text-zinc-600 dark:text-zinc-300">{s.genetics}</p>
-              ) : null}
-              {s.description && <p className="text-sm">{s.description}</p>}
-              {s.notes && <p className="text-xs text-zinc-500 dark:text-zinc-400">{s.notes}</p>}
-
-              <div className="flex flex-wrap gap-1 pt-1">
-                <span className="px-2 py-0.5 rounded-full text-xs bg-zinc-100 dark:bg-zinc-800 border border-zinc-300 dark:border-zinc-700">
-                  Active grows: <strong>{activeCount}</strong>
-                </span>
-                <span className="px-2 py-0.5 rounded-full text-xs bg-zinc-100 dark:bg-zinc-800 border border-zinc-300 dark:border-zinc-700">
-                  Archived grows: <strong>{archivedCount}</strong>
-                </span>
-                <span className="px-2 py-0.5 rounded-full text-xs bg-zinc-100 dark:bg-zinc-800 border border-zinc-300 dark:border-zinc-700">
-                  Stored items: <strong>{storedCount}</strong>
-                </span>
-              </div>
-
-              <div className="absolute top-2 right-2 flex gap-2">
-                <button
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    handleEdit(s);
-                  }}
-                  className="text-blue-500 hover:text-blue-700 rounded p-1 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:ring-current"
-                  aria-label={`Edit ${s.name}`}
-                >
-                  <Pencil className="w-4 h-4" />
-                </button>
-                <button
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    handleDelete(s.id);
-                  }}
-                  className="text-red-500 hover:text-red-700 rounded p-1 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:ring-current"
-                  aria-label={`Delete ${s.name}`}
-                >
-                  <Trash2 className="w-4 h-4" />
-                </button>
-              </div>
-            </div>
+              onEdit={() => handleEdit(s)}
+              onDelete={() => handleDelete(s.id)}
+            />
           );
         })}
-        {strainsToShow.length === 0 && (
+        {strainsSorted.length === 0 && (
           <div className="text-sm opacity-70">No strains yet. Add a Library item to create one.</div>
         )}
       </div>
 
-      {/* Modal: All grows (and Gallery) for selected strain */}
+      {/* Modal: All grows (Gallery/Lineage) for selected strain */}
       {viewStrain && (
         <div
           className="fixed inset-0 z-[60] bg-black/40 backdrop-blur-sm flex items-center justify-center p-4"
@@ -1190,6 +1727,36 @@ export default function StrainManager({
                 <ImageIcon className="w-4 h-4" />
                 Gallery
               </button>
+              <button
+                className={`chip flex items-center gap-1 ${viewTab === "lineage" ? "accent-chip" : ""}`}
+                onClick={() => setViewTab("lineage")}
+                aria-pressed={viewTab === "lineage" ? "true" : "false"}
+                title="Show lineage tree for this strain"
+              >
+                <GitBranch className="w-4 h-4" />
+                Lineage
+              </button>
+
+              {viewTab === "lineage" && (
+                <div className="ml-auto flex items-center gap-2">
+                  <button
+                    className={`chip ${lineageView === "tree" ? "accent-chip" : ""}`}
+                    onClick={() => setLineageView("tree")}
+                    title="Visual tree"
+                  >
+                    <Spline className="w-4 h-4" />
+                    Tree
+                  </button>
+                  <button
+                    className={`chip ${lineageView === "list" ? "accent-chip" : ""}`}
+                    onClick={() => setLineageView("list")}
+                    title="Compact list"
+                  >
+                    <ListIcon className="w-4 h-4" />
+                    List
+                  </button>
+                </div>
+              )}
             </div>
 
             <div className="p-4 overflow-auto">
@@ -1365,7 +1932,7 @@ export default function StrainManager({
                         return (
                           <figure
                             key={p.id || p.url}
-                            className={`relative rounded-md overflow-hidden border bg-white dark:bg-zinc-900 ${
+                            className={`relative rounded-md overflow-hidden border bg-white dark:bg-zinc-9${"00"} ${
                               isSel
                                 ? "border-indigo-400 dark:border-indigo-500"
                                 : "border-zinc-200 dark:border-zinc-800"
@@ -1426,11 +1993,7 @@ export default function StrainManager({
                               {!isEditing ? (
                                 <div className="flex items-center gap-2">
                                   <div className="font-medium truncate flex-1">{p.caption || "—"}</div>
-                                  <button
-                                    className="chip px-2 py-0.5 text-[11px]"
-                                    onClick={() => beginCaptionEdit(p)}
-                                    title="Edit caption"
-                                  >
+                                  <button className="chip px-2 py-0.5 text-[11px]" onClick={() => beginCaptionEdit(p)}>
                                     ✎ Edit
                                   </button>
                                 </div>
@@ -1466,9 +2029,114 @@ export default function StrainManager({
                   )}
                 </>
               )}
+
+              {viewTab === "lineage" && (
+                <>
+                  <div className="mb-3 text-sm text-zinc-600 dark:text-zinc-300">
+                    Lineage shows parent→child progressions for this strain. Use <strong>Tree</strong> for a visual
+                    diagram or <strong>List</strong> for a compact view. Roots can be tagged with an{" "}
+                    <strong>Origin</strong> (MSS / Swab / Print / LC Syringe / Wild→Agar). When a grow was created from a
+                    Library item, its origin is inferred automatically — you can override it here.
+                  </div>
+                  {lineageView === "tree" ? lineageTreeUI : rootsListUI}
+                </>
+              )}
             </div>
           </div>
         </div>
+      )}
+
+
+      {/* Manage Storage Locations Modal */}
+      {manageLocOpen && (
+        <Modal open={manageLocOpen} onClose={() => setManageLocOpen(false)} title="Manage Storage Locations" size="lg">
+          <div className="space-y-3">
+            <form
+              onSubmit={async (e) => {
+                e.preventDefault();
+                const input = e.currentTarget.querySelector("input[name='newLoc']");
+                const val = input?.value?.trim();
+                if (!val) return;
+                const u = auth.currentUser;
+                if (!u) return;
+                await addLocation(db, u.uid, val);
+                input.value = "";
+              }}
+              className="flex items-center gap-2"
+            >
+              <input name="newLoc" className="chip flex-1" placeholder="Add new location…" />
+              <button type="submit" className="chip chip--active">Add</button>
+            </form>
+
+            {storageLocations.length === 0 ? (
+              <div className="text-sm opacity-70">No locations yet. Add your first one above.</div>
+            ) : (
+              <ul className="divide-y divide-zinc-200 dark:divide-zinc-800 rounded border border-zinc-200 dark:border-zinc-800">
+                {storageLocations.map((row, idx) => (
+                  <li key={row.id} className="p-2 flex items-center gap-2">
+                    <input
+                      defaultValue={row.name}
+                      className="chip flex-1"
+                      onBlur={async (e) => {
+                        const name = e.target.value.trim();
+                        if (!name || name === row.name) return;
+                        const u = auth.currentUser;
+                        if (!u) return;
+                        await renameLocation(db, u.uid, row.id, name);
+                      }}
+                      aria-label="Location name"
+                    />
+                    <div className="flex items-center gap-1">
+                      <button
+                        type="button"
+                        className="chip"
+                        disabled={idx === 0}
+                        onClick={async () => {
+                          const u = auth.currentUser;
+                          if (!u) return;
+                          await moveLocation(db, u.uid, storageLocations, idx, idx - 1);
+                        }}
+                        title="Move up"
+                      >
+                        ↑
+                      </button>
+                      <button
+                        type="button"
+                        className="chip"
+                        disabled={idx === storageLocations.length - 1}
+                        onClick={async () => {
+                          const u = auth.currentUser;
+                          if (!u) return;
+                          await moveLocation(db, u.uid, storageLocations, idx, idx + 1);
+                        }}
+                        title="Move down"
+                      >
+                        ↓
+                      </button>
+                      <button
+                        type="button"
+                        className="chip bg-red-600 text-white hover:bg-red-700"
+                        onClick={async () => {
+                          const u = auth.currentUser;
+                          if (!u) return;
+                          if (!window.confirm("Delete this location?")) return;
+                          await deleteLocation(db, u.uid, row.id);
+                        }}
+                        title="Delete"
+                      >
+                        Delete
+                      </button>
+                    </div>
+                  </li>
+                ))}
+              </ul>
+            )}
+
+            <div className="text-xs opacity-70">
+              Tip: If you have no locations, defaults (<code>Fridge</code>, <code>Freezer</code>, <code>Room</code>) are seeded automatically.
+            </div>
+          </div>
+        </Modal>
       )}
 
       {/* Inline GrowForm modal */}

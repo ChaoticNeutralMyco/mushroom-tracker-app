@@ -1,6 +1,9 @@
+// src/pages/Settings.jsx
+// Restored original Settings with your preferences logic; adds safe fallbacks for Delete All & Clear Cache.
 import React, { useCallback, useEffect, useState } from "react";
 import { auth, db } from "../firebase-config";
 import { doc, getDoc, setDoc } from "firebase/firestore";
+import { deleteAllUserData, clearAllLocalCaches } from "../lib/delete-all";
 
 /** Accent palette (removed 'chaotic'; added teal, indigo, sky) */
 const ACCENTS = [
@@ -69,6 +72,7 @@ export default function Settings({
 }) {
   const [activeTab, setActiveTab] = useState("general");
   const [prefs, setPrefs] = useState(defaultPrefs);
+  const [busy, setBusy] = useState(false);
   const uid = auth.currentUser?.uid || null;
 
   useEffect(() => {
@@ -130,12 +134,10 @@ export default function Settings({
 
   const setThemeStyle = (styleId) => {
     let style = styleId === "chaotic" ? "chaotic" : "default";
-    // If switching to default, restore last chosen accent (if you had used Chaotic before)
     if (style === "default") {
       try {
         const last = localStorage.getItem("cn_last_accent");
         if (last && last !== prefs.accent) {
-          // don’t call save twice; apply in one go
           savePrefs({ ...prefs, themeStyle: style, accent: last });
           return;
         }
@@ -164,6 +166,45 @@ export default function Settings({
 
   // Guide toggle
   const setGuideEnabled = (enabled) => savePrefs({ ...prefs, guideEnabled: !!enabled });
+
+  // ------- Danger Zone fallbacks (keep your props if provided) -------
+  async function handleClearLocal() {
+    setBusy(true);
+    try {
+      await clearAllLocalCaches(); // wipes LS/SS + common IndexedDBs
+      alert("Local cache cleared. You can refresh the page.");
+    } catch (e) {
+      console.error(e);
+      try { localStorage.clear(); } catch {}
+      alert("Local cache clearing hit an error; best-effort fallback applied.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handleDeleteAll() {
+    if (typeof onClearAllData === "function") {
+      return onClearAllData();
+    }
+    const ok = window.confirm(
+      "Delete ALL your data (grows, recipes, supplies, labels, strains, tasks, queue, etc.)? This cannot be undone."
+    );
+    if (!ok) return;
+    setBusy(true);
+    try {
+      const result = await deleteAllUserData();
+      alert(
+        `Deleted your data.\nFirestore docs removed: ${result.deleted}\nStorage purge attempted: ${
+          result.deletedFiles ? "yes" : "skipped/disabled"
+        }\n\nRefresh the page to start clean.`
+      );
+    } catch (e) {
+      console.error(e);
+      alert("Failed to delete all data. Are you signed in?");
+    } finally {
+      setBusy(false);
+    }
+  }
 
   const remindersOn = !!prefs.stageReminders;
   const digestTime = String(prefs.taskDigestTime || "09:00");
@@ -368,13 +409,14 @@ export default function Settings({
                   try { localStorage.removeItem("preferences"); } catch {}
                   savePrefs(defaultPrefs);
                 }}
+                disabled={busy}
               >
                 Reset Theme Preferences
               </button>
-              <button type="button" className="btn" onClick={() => { try { localStorage.clear(); } catch {} }}>
+              <button type="button" className="btn" onClick={handleClearLocal} disabled={busy}>
                 Clear Local Cache
               </button>
-              <button type="button" className="btn-accent" onClick={onClearAllData}>
+              <button type="button" className="btn-accent" onClick={handleDeleteAll} disabled={busy}>
                 Delete All Data
               </button>
             </div>

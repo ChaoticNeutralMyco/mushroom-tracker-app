@@ -55,7 +55,9 @@ export default function RecipeManager() {
   const [newRecipeTags, setNewRecipeTags] = useState("");
   const [newRecipeItems, setNewRecipeItems] = useState([]);
   const [newRecipeInstructions, setNewRecipeInstructions] = useState("");
-  const [newRecipeYield, setNewRecipeYield] = useState(1);
+  const [newRecipeYield, setNewRecipeYield] = useState(0);
+  const [newRecipeYieldDraft, setNewRecipeYieldDraft] = useState("0");
+  const [newRecipeYieldFocused, setNewRecipeYieldFocused] = useState(false);
   const [newRecipeServingLabel, setNewRecipeServingLabel] = useState("");
   const [selectedSupplyId, setSelectedSupplyId] = useState("");
   const [selectedAmount, setSelectedAmount] = useState("");
@@ -71,20 +73,20 @@ export default function RecipeManager() {
     yield: 1,
     servingLabel: "",
   });
+  const [editYieldDraft, setEditYieldDraft] = useState("0");
+  const [editYieldFocused, setEditYieldFocused] = useState(false);
+  React.useEffect(() => {
+    if (!editYieldFocused) {
+      setEditYieldDraft(String(editData?.yield ?? 0));
+    }
+  }, [editData, editYieldFocused]);
 
   // UI expand per-recipe
   const [expandedId, setExpandedId] = useState(null);
   const [servings, setServings] = useState(1);
 
-  // Shortage confirm modal (kept for future reuse; not triggered here)
-  const [shortageModal, setShortageModal] = useState({
-    show: false,
-    items: [],
-    recipeId: null,
-    recipeName: "",
-    servingLabel: "",
-    targetServings: 1,
-  });
+  // Start Grow modal (stock check)
+  const [startGrow, setStartGrow] = useState({ show: false, recipe: null, targetServings: 1 });
 
   const confirm = useConfirm();
 
@@ -127,6 +129,11 @@ export default function RecipeManager() {
 
   // ----- Helpers -----
   const supplyById = (id) => supplies.find((s) => s.id === id) || null;
+  const isReusable = (s) =>
+    s &&
+    (String(s.type || "").toLowerCase() === "container" ||
+      String(s.type || "").toLowerCase() === "tool") &&
+    canonicalUnit(s.unit || "") === "count";
 
   const costForItems = (items) =>
     (items || []).reduce((sum, item) => {
@@ -136,16 +143,16 @@ export default function RecipeManager() {
       return sum + Number(s.cost || 0) * normalized;
     }, 0);
 
-  const logAudit = async (supplyId, action, amount, note = "") => {
-    const user = auth.currentUser;
-    if (!user) return;
-    await addDoc(collection(db, "users", user.uid, "supply_audits"), {
-      supplyId,
-      action,
-      amount,
-      note,
-      timestamp: new Date().toISOString(),
-    });
+  // cost per serving EXCLUDING reusables (containers/tools)
+  const costPerServing = (recipe) => {
+    const baseYield = Number(recipe.yield) > 0 ? Number(recipe.yield) : 1;
+    if (!baseYield) return 0;
+    const consumableCost = (recipe.items || []).reduce((sum, item) => {
+      const s = supplyById(item.supplyId);
+      if (!s || isReusable(s)) return sum; // exclude reusables
+      return sum + Number(s.cost || 0) * Number(item.amount || 0);
+    }, 0);
+    return consumableCost / baseYield;
   };
 
   // Compute scaled amounts (for on-screen table only)
@@ -164,11 +171,18 @@ export default function RecipeManager() {
         let need = Number(it.amount || 0) * factor; // normalized (recipe items already in stock units)
         if (stockUnit === "count") need = Math.ceil(need);
 
+        // 🔧 Fix: honor both `quantity` and `qty` (and keep 0 valid)
+        const onHandRaw = Number(
+          (s.quantity ?? s.qty ?? s.q ?? 0) // prefer existing fields without clobbering 0
+        );
+
         return {
           supplyId: s.id,
           name: s.name,
           unit: s.unit || "",
           need,
+          onHand: Number.isFinite(onHandRaw) ? onHandRaw : 0,
+          reusable: isReusable(s),
         };
       })
       .filter(Boolean);
@@ -182,7 +196,10 @@ export default function RecipeManager() {
     setNewRecipeTags("");
     setNewRecipeItems([]);
     setNewRecipeInstructions("");
-    setNewRecipeYield(1);
+    // UX: draft-friendly yield input; default to 0 placeholder and easy-clear on focus
+    setNewRecipeYield(0);
+    setNewRecipeYieldDraft("0");
+    setNewRecipeYieldFocused(false);
     setNewRecipeServingLabel("");
     setSelectedSupplyId("");
     setSelectedAmount("");
@@ -393,36 +410,50 @@ export default function RecipeManager() {
               Amount for {formatAmount(targetServings)} {labelText}
             </th>
             <th className="p-2 text-left">Stock Unit</th>
+            <th className="p-2 text-left">On hand</th>
+            <th className="p-2 text-left">Status</th>
           </tr>
         </thead>
         <tbody>
-          {(recipe.items || []).map((it) => {
-            const s = supplyById(it.supplyId);
-            const unitShow = it.unit || s?.unit || "";
-            const base =
-              it.amountDisplay != null
-                ? Number(it.amountDisplay)
-                : Number(convert(Number(it.amount || 0), s?.unit, unitShow));
-            const amtShow = Number.isFinite(base) ? base : 0;
+          {computeConsumption(recipe, targetServings).map((r) => {
+            const unitCanonical = canonicalUnit(r.unit);
+            const status =
+              r.reusable
+                ? "reusable"
+                : r.onHand >= r.need
+                ? "ok"
+                : r.onHand > 0
+                ? "low"
+                : "out";
+            const statusChip =
+              status === "reusable" ? (
+                <span className="px-2 py-0.5 rounded bg-violet-600/20 text-violet-400">♻ reusable</span>
+              ) : status === "ok" ? (
+                <span className="px-2 py-0.5 rounded bg-emerald-600/20 text-emerald-400">in stock</span>
+              ) : status === "low" ? (
+                <span className="px-2 py-0.5 rounded bg-yellow-600/20 text-yellow-300">short</span>
+              ) : (
+                <span className="px-2 py-0.5 rounded bg-red-600/20 text-red-300">out</span>
+              );
 
-            let scaled = amtShow * factor;
-            const unitCanonical = canonicalUnit(unitShow);
-            if (unitCanonical === "count") {
-              scaled = Math.ceil(scaled);
-            }
+            const shownNeed =
+              unitCanonical === "count"
+                ? `${r.need} ${r.unit}`
+                : `${formatAmount(r.need)} ${r.unit}`;
+
+            // 🔧 Fix: always show on-hand, even if reusable; format like need
+            const shownOnHand =
+              unitCanonical === "count"
+                ? Math.floor(Number(r.onHand || 0))
+                : formatAmount(Number(r.onHand || 0));
 
             return (
-              <tr
-                key={it.supplyId}
-                className="border-t border-zinc-200 dark:border-zinc-700"
-              >
-                <td className="p-2">{s?.name || "Unknown"}</td>
-                <td className="p-2">
-                  {unitCanonical === "count"
-                    ? `${scaled} ${unitShow}`
-                    : `${formatAmount(scaled)} ${unitShow}`}
-                </td>
-                <td className="p-2">{s?.unit || ""}</td>
+              <tr key={r.supplyId} className="border-t border-zinc-200 dark:border-zinc-700">
+                <td className="p-2">{r.name}</td>
+                <td className="p-2">{shownNeed}</td>
+                <td className="p-2">{r.unit}</td>
+                <td className="p-2">{shownOnHand}</td>
+                <td className="p-2">{statusChip}</td>
               </tr>
             );
           })}
@@ -434,9 +465,9 @@ export default function RecipeManager() {
   // ---------------- RENDER ----------------
   return (
     <div className="p-4 max-w-6xl mx-auto space-y-6 text-gray-900 dark:text-white">
-      {/* Header + New Recipe button */}
+      {/* Header + New Recipe button (cookbook icon vibe) */}
       <div className="bg-white dark:bg-gray-900 p-4 rounded shadow flex items-center justify-between">
-        <h2 className="text-2xl font-bold">🧪 Recipes</h2>
+        <h2 className="text-2xl font-bold">📖 Recipes</h2>
         <button
           onClick={() => {
             resetCreateForm();
@@ -511,6 +542,7 @@ export default function RecipeManager() {
           const expanded = expandedId === recipe.id;
           const baseYield = Number(recipe.yield) > 0 ? Number(recipe.yield) : 1;
           const servingLabel = (recipe.servingLabel || "").trim();
+          const perServing = costPerServing(recipe);
 
           return (
             <div
@@ -551,6 +583,13 @@ export default function RecipeManager() {
                       <span className="text-xs opacity-70">
                         Total Cost: ${total.toFixed(2)}
                       </span>
+                      {/* 💲 cost-per-serving bubble (consumables only) */}
+                      <span
+                        className="ml-2 text-xs px-2 py-0.5 rounded-full bg-emerald-600/20 text-emerald-300"
+                        title="Consumables cost per serving (excludes containers/tools)"
+                      >
+                        ${perServing.toFixed(2)} / serving
+                      </span>
                     </button>
 
                     {/* Tags */}
@@ -571,7 +610,7 @@ export default function RecipeManager() {
                     {/* Expanded content */}
                     {expanded && !isEditing && (
                       <div className="mt-3 space-y-4">
-                        {/* Servings control (view-only; batch button removed) */}
+                        {/* Servings control + Start Grow */}
                         <div className="flex flex-wrap items-center gap-2 mb-2">
                           <span className="text-sm opacity-70">
                             Base yield: {baseYield}{" "}
@@ -596,7 +635,16 @@ export default function RecipeManager() {
                               )
                             }
                           />
-                          {/* Make batch button removed per request */}
+
+                          <button
+                            className="ml-2 px-3 py-1 rounded bg-blue-600 text-white hover:bg-blue-700 text-sm"
+                            title="Check stock & start a grow with this recipe"
+                            onClick={() =>
+                              setStartGrow({ show: true, recipe, targetServings: Math.max(1, Number(servings) || 1) })
+                            }
+                          >
+                            Start Grow
+                          </button>
                         </div>
 
                         {renderScaledTable(recipe)}
@@ -648,26 +696,37 @@ export default function RecipeManager() {
                               })
                             }
                             className="p-1 border rounded w-full dark:bg-gray-700"
-                            placeholder='Serving label (e.g., "agar dishes")'
+                            placeholder='Serving label (e.g., "agar dishes", "jars", "tubs")'
                             title="What the servings represent"
                           />
                           <input
                             type="number"
-                            min="1"
-                            step="1"
-                            value={editData.yield}
-                            onChange={(e) =>
+                            inputMode="decimal"
+                            min="0"
+                            step="0.01"
+                            placeholder="0"
+                            value={editYieldFocused ? editYieldDraft : String(editData?.yield ?? 0)}
+                            onFocus={() => {
+                              setEditYieldFocused(true);
+                              const n = Number(editData?.yield ?? 0);
+                              setEditYieldDraft(!Number.isFinite(n) || n === 0 ? "" : String(editData?.yield ?? 0));
+                            }}
+                            onChange={(e) => setEditYieldDraft(e.target.value)}
+                            onKeyDown={(e) => {
+                              if (e.key === "Enter") {
+                                e.currentTarget.blur();
+                              }
+                            }}
+                            onBlur={() => {
+                              const n = parseFloat(editYieldDraft);
                               setEditData({
                                 ...editData,
-                                yield: Math.max(
-                                  1,
-                                  Math.floor(Number(e.target.value || 1))
-                                ),
-                              })
-                            }
+                                yield: Number.isFinite(n) ? n : 0,
+                              });
+                              setEditYieldFocused(false);
+                            }}
                             className="p-1 border rounded w-full dark:bg-gray-700"
-                            placeholder="Yield (servings)"
-                            title="How many servings the base recipe makes"
+                            aria-label="Recipe yield (servings)"
                           />
                         </div>
 
@@ -691,39 +750,53 @@ export default function RecipeManager() {
                                   );
                             const disp = Number.isFinite(baseVal) ? baseVal : 0;
 
+                            // Smart unit conversion hint
+                            const showHint =
+                              canonicalUnit(unit) !== canonicalUnit(s.unit || "");
+                            const hintVal = showHint
+                              ? convert(disp, unit, s.unit || "")
+                              : null;
+
                             return (
                               <div
                                 key={s.id}
-                                className="flex items-center gap-2 text-sm"
+                                className="flex flex-col gap-1 text-sm"
                               >
-                                <span className="w-36 truncate">
-                                  {s.name} ({s.unit})
-                                </span>
-                                <input
-                                  type="number"
-                                  value={disp}
-                                  onChange={(e) =>
-                                    updateEditItem(
-                                      s.id,
-                                      e.target.value,
-                                      unit
-                                    )
-                                  }
-                                  className="p-1 border rounded w-24 dark:bg-gray-700"
-                                />
-                                <select
-                                  value={unit}
-                                  onChange={(e) =>
-                                    updateEditItem(s.id, disp, e.target.value)
-                                  }
-                                  className="p-1 border rounded w-24 dark:bg-gray-700"
-                                >
-                                  {ALL_UNITS.map((u) => (
-                                    <option key={u} value={u}>
-                                      {u}
-                                    </option>
-                                  ))}
-                                </select>
+                                <div className="flex items-center gap-2">
+                                  <span className="w-36 truncate">
+                                    {s.name} ({s.unit})
+                                  </span>
+                                  <input
+                                    type="number"
+                                    value={disp}
+                                    onChange={(e) =>
+                                      updateEditItem(
+                                        s.id,
+                                        e.target.value,
+                                        unit
+                                      )
+                                    }
+                                    className="p-1 border rounded w-24 dark:bg-gray-700"
+                                  />
+                                  <select
+                                    value={unit}
+                                    onChange={(e) =>
+                                      updateEditItem(s.id, disp, e.target.value)
+                                    }
+                                    className="p-1 border rounded w-24 dark:bg-gray-700"
+                                  >
+                                    {ALL_UNITS.map((u) => (
+                                      <option key={u} value={u}>
+                                        {u}
+                                      </option>
+                                    ))}
+                                  </select>
+                                </div>
+                                {showHint && (
+                                  <div className="text-xs opacity-70 ml-36">
+                                    ≈ {formatAmount(hintVal)} {s.unit} (stock unit)
+                                  </div>
+                                )}
                               </div>
                             );
                           })}
@@ -780,7 +853,7 @@ export default function RecipeManager() {
       {showCreate && (
         <div className="fixed inset-0 z-50 flex items-center justify-center" role="dialog" aria-modal="true">
           <div className="absolute inset-0 bg-black/40" onClick={() => setShowCreate(false)} />
-          <div className="relative bg-white dark:bg-gray-900 rounded-2xl shadow-xl w-full max-w-3xl p-4 md:p-6">
+          <div className="relative bg-white dark:bg-gray-900 rounded-2xl shadow-xl w-full max-w-5xl p-4 md:p-6">
             <div className="flex items-center justify-between mb-3">
               <h3 className="text-lg font-semibold">New Recipe</h3>
               <button
@@ -809,23 +882,36 @@ export default function RecipeManager() {
                 type="text"
                 value={newRecipeServingLabel}
                 onChange={(e) => setNewRecipeServingLabel(e.target.value)}
-                className="p-2 border rounded dark:bg-gray-800"
-                placeholder='Serving label (e.g., "agar dishes")'
-                title="What the servings represent"
+                className="p-2 border rounded dark:bg-gray-800 md:col-span-2"
+                placeholder='Serving label (e.g., "agar dishes", "jars", "tubs")'
+                title="What the servings represent (examples: agar dishes, jars, tubs)"
               />
               <input
                 type="number"
-                min="1"
-                step="1"
-                value={newRecipeYield}
-                onChange={(e) =>
-                  setNewRecipeYield(
-                    Math.max(1, Math.floor(Number(e.target.value || 1)))
-                  )
-                }
+                inputMode="decimal"
+                min="0"
+                step="0.01"
+                placeholder="0"
+                value={newRecipeYieldFocused ? newRecipeYieldDraft : String(newRecipeYield ?? 0)}
+                onFocus={() => {
+                  setNewRecipeYieldFocused(true);
+                  const n = Number(newRecipeYield);
+                  setNewRecipeYieldDraft(!Number.isFinite(n) || n === 0 ? "" : String(newRecipeYield));
+                }}
+                onChange={(e) => setNewRecipeYieldDraft(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") {
+                    e.currentTarget.blur();
+                  }
+                }}
+                onBlur={() => {
+                  const n = parseFloat(newRecipeYieldDraft);
+                  setNewRecipeYield(Number.isFinite(n) ? n : 0);
+                  setNewRecipeYieldFocused(false);
+                }}
                 className="p-2 border rounded dark:bg-gray-800"
-                placeholder="Yield (servings)"
                 title="How many servings the base recipe makes"
+                aria-label="Recipe yield (servings)"
               />
             </div>
 
@@ -847,34 +933,54 @@ export default function RecipeManager() {
                   </option>
                 ))}
               </select>
-              <input
-                type="number"
-                min="0"
-                step="0.01"
-                value={selectedAmount}
-                onChange={(e) => setSelectedAmount(e.target.value)}
-                placeholder="Amt"
-                className="p-2 border rounded w-24 dark:bg-gray-800"
-              />
-              <select
-                value={selectedUnit}
-                onChange={(e) => setSelectedUnit(e.target.value)}
-                className="p-2 border rounded w-28 dark:bg-gray-800"
-              >
-                <option value="">unit</option>
-                {ALL_UNITS.map((u) => (
-                  <option key={u} value={u}>
-                    {u}
-                  </option>
-                ))}
-              </select>
-              <button
-                onClick={addItemToRecipe}
-                className="flex items-center gap-1 bg-blue-600 text-white px-3 rounded hover:bg-blue-700"
-                title="Add item"
-              >
-                <PlusCircle size={16} /> Add
-              </button>
+              <div className="flex-1">
+                <div className="flex gap-2">
+                  <input
+                    type="number"
+                    min="0"
+                    step="0.01"
+                    value={selectedAmount}
+                    onChange={(e) => setSelectedAmount(e.target.value)}
+                    placeholder="Amt"
+                    className="p-2 border rounded w-24 dark:bg-gray-800"
+                  />
+                  <select
+                    value={selectedUnit}
+                    onChange={(e) => setSelectedUnit(e.target.value)}
+                    className="p-2 border rounded w-28 dark:bg-gray-800"
+                  >
+                    <option value="">unit</option>
+                    {ALL_UNITS.map((u) => (
+                      <option key={u} value={u}>
+                        {u}
+                      </option>
+                    ))}
+                  </select>
+                  <button
+                    onClick={addItemToRecipe}
+                    className="flex items-center gap-1 bg-blue-600 text-white px-3 rounded hover:bg-blue-700"
+                    title="Add item"
+                  >
+                    <PlusCircle size={16} /> Add
+                  </button>
+                </div>
+                {/* Smart unit conversion hint */}
+                {(() => {
+                  const s = supplies.find((x) => x.id === selectedSupplyId);
+                  if (!s || !selectedAmount || !selectedUnit) return null;
+                  const from = canonicalUnit(selectedUnit);
+                  const to = canonicalUnit(s.unit || "");
+                  if (from && to && from !== to && areCompatible(from, to)) {
+                    const val = convert(Number(selectedAmount || 0), from, to);
+                    return (
+                      <div className="text-xs opacity-70 mt-1">
+                        ≈ {formatAmount(val)} {s.unit} (stock unit)
+                      </div>
+                    );
+                  }
+                  return null;
+                })()}
+              </div>
             </div>
 
             {!!newRecipeItems.length && (
@@ -915,6 +1021,61 @@ export default function RecipeManager() {
                 className="px-4 py-2 rounded bg-green-600 hover:bg-green-700 text-white"
               >
                 Save Recipe
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ---------- START GROW MODAL (stock check) ---------- */}
+      {startGrow.show && startGrow.recipe && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center" role="dialog" aria-modal="true">
+          <div className="absolute inset-0 bg-black/40" onClick={() => setStartGrow({ show: false, recipe: null, targetServings: 1 })} />
+          <div className="relative bg-white dark:bg-gray-900 rounded-2xl shadow-xl w-full max-w-4xl p-4 md:p-6">
+            <div className="flex items-center justify-between mb-3">
+              <h3 className="text-lg font-semibold">
+                Start Grow: {startGrow.recipe.name}
+              </h3>
+              <button
+                onClick={() => setStartGrow({ show: false, recipe: null, targetServings: 1 })}
+                className="p-1 rounded hover:bg-black/5 dark:hover:bg-white/10"
+                aria-label="Close"
+              >
+                <X size={18} />
+              </button>
+            </div>
+
+            {renderScaledTable(startGrow.recipe)}
+
+            <div className="mt-3 text-sm opacity-70">
+              Proceeding will use 1 grow = {startGrow.targetServings} serving(s) of this recipe.
+              Reusables (containers/tools) are not consumed and will be queued for cleaning after harvest.
+            </div>
+
+            <div className="mt-4 flex justify-end gap-2">
+              <button
+                onClick={() => {
+                  // Fire a lightweight event other parts of the app can hook.
+                  window.dispatchEvent(
+                    new CustomEvent("cnm:start-grow", {
+                      detail: {
+                        recipeId: startGrow.recipe.id,
+                        servings: startGrow.targetServings,
+                      },
+                    })
+                  );
+                  setStartGrow({ show: false, recipe: null, targetServings: 1 });
+                }}
+                className="px-4 py-2 rounded bg-blue-600 hover:bg-blue-700 text-white"
+                title="Other screens can listen to 'cnm:start-grow' to open Grow form prefilled."
+              >
+                Proceed
+              </button>
+              <button
+                onClick={() => setStartGrow({ show: false, recipe: null, targetServings: 1 })}
+                className="px-4 py-2 rounded bg-zinc-200 dark:bg-zinc-700"
+              >
+                Close
               </button>
             </div>
           </div>

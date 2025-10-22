@@ -1,3 +1,4 @@
+// src/components/ui/ConfirmDialog.jsx
 import React, {
   createContext,
   useCallback,
@@ -14,7 +15,7 @@ import { createPortal } from "react-dom";
  * Unified, accessible confirm dialog to replace window.confirm.
  *
  * Usage (root):
- *   import { ConfirmProvider } from "./components/ui/ConfirmDialog";
+ *   import ConfirmProvider, { ConfirmProvider as Provider } from "./components/ui/ConfirmDialog";
  *   // <ConfirmProvider>{app}</ConfirmProvider>
  */
 
@@ -214,3 +215,7 @@ export function useConfirm() {
   }
   return ctx.confirm;
 }
+
+// ✅ Back-compat for places importing a default:
+export default ConfirmProvider;
+export { ConfirmProvider as ConfirmDialog }; // optional alias if you used this name before
