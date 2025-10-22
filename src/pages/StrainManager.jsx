@@ -42,7 +42,7 @@ import { useNavigate } from "react-router-dom";
 import GrowForm from "../components/Grow/GrowForm";
 import { useConfirm } from "../components/ui/ConfirmDialog";
 import { sortAlpha, byKey, alpha } from "../lib/sort";
-import StrainCard from "../components/Strains/StrainCard";
+import StrainCard from "../components/strains/StrainCard";
 import { DEFAULT_STORAGE_LOCATIONS, subscribeLocations, seedDefaultsIfEmpty, addLocation, renameLocation, deleteLocation, moveLocation } from "../lib/storage-locations";
 
 /* ---------- helpers ---------- */
