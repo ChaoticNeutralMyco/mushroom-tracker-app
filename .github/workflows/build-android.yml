@@ -1,0 +1,118 @@
+name: Build Android APK/AAB
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  build-android:
+    runs-on: ubuntu-latest
+    env:
+      NODE_OPTIONS: --max-old-space-size=4096
+      CI: "1"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install deps
+        run: npm ci
+
+      - name: Ensure Capacitor deps
+        run: |
+          npm i @capacitor/core@latest
+          npm i -D @capacitor/cli@latest @capacitor/android@latest
+
+      - name: Build web bundle
+        run: npm run build
+
+      - name: Setup Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android SDK packages
+        run: |
+          yes | sdkmanager --licenses
+          sdkmanager "platform-tools" "build-tools;35.0.0" "platforms;android-35" "cmdline-tools;latest"
+
+      - name: Add Android platform & sync
+        run: |
+          echo '{}' > /tmp/empty.json
+          if [ ! -f capacitor.config.json ] && [ -f capacitor.config.ts ]; then rm -f capacitor.config.ts; fi
+          [ -f capacitor.config.json ] || cat <<'JSON' > capacitor.config.json
+          {
+            "appId": "com.chaoticneutral.myco",
+            "appName": "Mushroom Tracker",
+            "webDir": "dist",
+            "bundledWebRuntime": false,
+            "server": { "androidScheme": "https", "allowNavigation": ["*"] }
+          }
+          JSON
+          npx cap add android
+          npx cap sync android
+
+      - name: Assemble Release & Debug
+        working-directory: android
+        run: |
+          ./gradlew :app:assembleRelease || true
+          ./gradlew :app:assembleDebug || true
+          ./gradlew :app:bundleRelease || true
+
+      - name: Collect unsigned/signed outputs
+        id: collect
+        run: |
+          rel_apk=$(ls -1 android/app/build/outputs/apk/release/*-release*.apk 2>/dev/null | head -n1 || true)
+          dbg_apk=$(ls -1 android/app/build/outputs/apk/debug/*-debug*.apk 2>/dev/null | head -n1 || true)
+          aab=$(ls -1 android/app/build/outputs/bundle/release/*.aab 2>/dev/null | head -n1 || true)
+          echo "rel_apk=$rel_apk" >> $GITHUB_OUTPUT
+          echo "dbg_apk=$dbg_apk" >> $GITHUB_OUTPUT
+          echo "aab=$aab" >> $GITHUB_OUTPUT
+
+      - name: Decode keystore (if provided)
+        if: ${{ secrets.ANDROID_KEYSTORE_B64 && secrets.ANDROID_KEYSTORE_ALIAS && secrets.ANDROID_KEYSTORE_PASSWORD }}
+        run: |
+          mkdir -p android-keystore
+          echo "${{ secrets.ANDROID_KEYSTORE_B64 }}" | base64 -d > android-keystore/release.keystore
+
+      - name: Sign release APK with apksigner (if keystore provided)
+        if: ${{ steps.collect.outputs.rel_apk && secrets.ANDROID_KEYSTORE_B64 && secrets.ANDROID_KEYSTORE_ALIAS && secrets.ANDROID_KEYSTORE_PASSWORD }}
+        run: |
+          apksigner sign --ks android-keystore/release.keystore \
+            --ks-key-alias "${{ secrets.ANDROID_KEYSTORE_ALIAS }}" \
+            --ks-pass pass:"${{ secrets.ANDROID_KEYSTORE_PASSWORD }}" \
+            --out app-release-signed.apk \
+            "${{ steps.collect.outputs.rel_apk }}"
+          apksigner verify --print-certs app-release-signed.apk
+
+      - name: Sign AAB with jarsigner (if keystore provided)
+        if: ${{ steps.collect.outputs.aab && secrets.ANDROID_KEYSTORE_B64 && secrets.ANDROID_KEYSTORE_ALIAS && secrets.ANDROID_KEYSTORE_PASSWORD }}
+        run: |
+          jarsigner -keystore android-keystore/release.keystore \
+            -storepass "${{ secrets.ANDROID_KEYSTORE_PASSWORD }}" \
+            -keypass "${{ secrets.ANDROID_KEYSTORE_PASSWORD }}" \
+            "${{ steps.collect.outputs.aab }}" \
+            "${{ secrets.ANDROID_KEYSTORE_ALIAS }}"
+
+      - name: Upload artifacts (Android)
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-artifacts
+          path: |
+            app-release-signed.apk
+            ${{ steps.collect.outputs.rel_apk }}
+            ${{ steps.collect.outputs.dbg_apk }}
+            ${{ steps.collect.outputs.aab }}
+          if-no-files-found: ignore

@@ -1,0 +1,56 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Mushroom Tracker",
+  "version": "1.0.2",
+  "identifier": "com.chaoticneutral.myco",
+
+  "build": {
+    "beforeDevCommand": "vite",
+    "beforeBuildCommand": "vite build",
+    "frontendDist": "../dist",
+    "devUrl": "http://localhost:5180/"
+  },
+
+  "app": {
+    "withGlobalTauri": true,
+    "security": { "csp": null },
+
+    "windows": [
+      {
+        "title": "Mushroom Tracker",
+        "width": 400,
+        "height": 720,
+        "resizable": true
+      }
+    ],
+
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+
+    "android": {
+      "minSdkVersion": 26,
+      "targetSdkVersion": 34,
+      "manifest": {
+        "package": "com.chaoticneutral.myco",
+        "usesPermission": [
+          "android.permission.CAMERA"
+        ],
+        "application": {
+          "networkSecurityConfig": "network_security_config"
+        }
+      },
+      "resources": {
+        "xml": {
+          "network_security_config.xml": "<network-security-config><domain-config cleartextTrafficPermitted=\"true\"><domain includeSubdomains=\"true\">localhost</domain></domain-config></network-security-config>"
+        }
+      }
+    }
+  },
+
+  "plugins": { }
+}

@@ -1,0 +1,16 @@
+{
+  "projectId": "prj_SwgIlq1gaF3k0QchfGfXrmNtSSSp",
+  "orgId": "team_Z0TcUdycmQwdZ2jkTtRRpEFf",
+  "projectName": "mushroom-tracker-app",
+  "settings": {
+    "createdAt": 1754011357625,
+    "framework": "vite",
+    "devCommand": null,
+    "installCommand": null,
+    "buildCommand": "vite build",
+    "outputDirectory": "dist",
+    "rootDirectory": null,
+    "directoryListing": false,
+    "nodeVersion": "22.x"
+  }
+}

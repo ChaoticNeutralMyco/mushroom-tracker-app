@@ -1,0 +1,50 @@
+﻿# --- Node / Vite ---
+node_modules/
+dist/
+.vite/
+*.log
+*.local
+
+# --- Vercel local build output ---
+.vercel/output/
+
+# --- Env / tooling ---
+.env*
+!.env.example
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# --- Rust / Tauri ---
+/target/
+/src-tauri/target/
+/src-tauri/gen/
+/src-tauri/.cargo/
+**/*.pdb
+**/*.dSYM/
+**/*.rlib
+**/*.rmeta
+**/*.so
+**/*.dll
+**/*.exe
+
+# Android/iOS build products (if present)
+/src-tauri/gen/android/
+/src-tauri/gen/ios/
+
+# --- Tests / coverage ---
+coverage/
+playwright-report/
+test-results/
+
+# --- Misc ---
+*.patch
+
+deploy/
+
+dev-dist/
+
+.vs/
+
+playwright-report-ci/

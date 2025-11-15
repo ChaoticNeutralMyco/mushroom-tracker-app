@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="192" height="192" viewBox="0 0 96 96" role="img" aria-label="Chaotic Neutral Mycology">
+  <defs>
+    <linearGradient id="g" x1="0" x2="1">
+      <stop offset="0%" stop-color="#34d399"/>
+      <stop offset="100%" stop-color="#22c55e"/>
+    </linearGradient>
+  </defs>
+  <rect width="96" height="96" rx="20" fill="#0b0b0b"/>
+  <g transform="translate(6,6)">
+    <circle cx="42" cy="42" r="36" fill="none" stroke="rgba(255,255,255,.06)" stroke-width="2"/>
+    <path d="M12 36c3-12 17-20 30-20s27 8 30 20c-7 2-16 3-30 3S19 38 12 36z" fill="url(#g)"/>
+    <rect x="36" y="40" width="12" height="18" rx="5" fill="#16a34a"/>
+    <circle cx="32" cy="34" r="3" fill="#fff" opacity=".9"/>
+    <circle cx="50" cy="34" r="3" fill="#fff" opacity=".9"/>
+  </g>
+</svg>

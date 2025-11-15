@@ -1,0 +1,35 @@
+<!doctype html>
+<html>
+  <meta charset="utf-8" />
+  <title>Kill Service Workers & Caches (Dev)</title>
+  <style>
+    body { font-family: system-ui, sans-serif; padding: 1.25rem; background:#0b0f17; color:#e5e7eb }
+    code { background:#111827; padding:2px 6px; border-radius:6px }
+  </style>
+  <h1>Kill Service Workers & Caches</h1>
+  <p>This page unregisters all service workers and clears all <code>caches</code> for this origin, then reloads.</p>
+  <pre id="log" style="white-space:pre-wrap;background:#111827;padding:12px;border-radius:8px;"></pre>
+  <script>
+    (async () => {
+      const out = (m) => (document.getElementById('log').textContent += m + "\n");
+      try {
+        if ('serviceWorker' in navigator) {
+          const regs = await navigator.serviceWorker.getRegistrations();
+          for (const r of regs) { out(`Unregistering SW: ${r.scope}`); await r.unregister(); }
+        } else {
+          out("No serviceWorker API on this browser.");
+        }
+        if ('caches' in window) {
+          const keys = await caches.keys();
+          for (const k of keys) { out(`Deleting cache: ${k}`); await caches.delete(k); }
+        } else {
+          out("No caches API on this browser.");
+        }
+        out("Done. Reloading in 800ms…");
+        setTimeout(() => location.replace("/"), 800);
+      } catch (e) {
+        out("Error: " + (e && e.message || e));
+      }
+    })();
+  </script>
+</html>

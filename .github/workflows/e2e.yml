@@ -1,0 +1,53 @@
+name: E2E
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+concurrency:
+  group: e2e-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  web-e2e:
+    runs-on: ubuntu-latest
+    env:
+      CI: "1"
+      BASE_PATH: "/mushroom-tracker-app/"
+      # Single secret that contains either JSON:
+      #   {"email":"user@example.com","password":"StrongPass!"}
+      # or "email:password"
+      TEST_ACCOUNT: ${{ secrets.TEST_ACCOUNT }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+
+      - name: Install deps
+        run: npm ci
+
+      - name: Install Playwright browsers
+        run: npx playwright install --with-deps
+
+      # playwright.config.ts will parse TEST_ACCOUNT and start the webServer
+      - name: Run Playwright tests
+        run: npx playwright test
+
+      - name: Upload Playwright artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-artifacts
+          path: |
+            playwright-report
+            test-results
+          if-no-files-found: ignore

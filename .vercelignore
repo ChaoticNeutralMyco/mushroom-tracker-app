@@ -1,0 +1,7 @@
+# Keep Vercel uploads lean
+src-tauri/
+.github/
+scripts/
+tests/
+coverage/
+*.md

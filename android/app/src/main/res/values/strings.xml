@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">Mushroom Tracker</string>
+    <string name="title_activity_main">Mushroom Tracker</string>
+    <string name="package_name">com.chaoticneutral.myco</string>
+    <string name="custom_url_scheme">com.chaoticneutral.myco</string>
+</resources>
