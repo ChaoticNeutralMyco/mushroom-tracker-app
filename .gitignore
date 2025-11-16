@@ -48,3 +48,4 @@ dev-dist/
 .vs/
 
 playwright-report-ci/
+release/
