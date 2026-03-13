@@ -2006,12 +2006,15 @@ export default function StrainManager(props) {
                   scientificName: e.target.value,
                 }))
               }
-              onBlur={() =>
+              onBlur={() => {
                 setNewItem((p) => ({
                   ...p,
                   scientificName: fuzzyPickSpecies(p.scientificName),
-                }))
-              }
+                }));
+                window.setTimeout(() => {
+                  setSpeciesOpenState(false);
+                }, 0);
+              }}
               onKeyDown={(e) => {
                 if (e.key === "Enter") {
                   e.preventDefault();
@@ -2031,11 +2034,6 @@ export default function StrainManager(props) {
               aria-label="Species"
               title={newItem.scientificName || "Scientific name"}
               onFocus={() => setSpeciesOpenState(true)}
-              onBlur={() => {
-                window.setTimeout(() => {
-                  setSpeciesOpenState(false);
-                }, 0);
-              }}
             />
             <button
               type="button"
