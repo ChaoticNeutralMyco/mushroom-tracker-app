@@ -90,7 +90,7 @@ export default function FabQuickActions({
           <div className="p-3 space-y-3">
             {/* New Grow */}
             <button
-              className="w-full px-3 py-2 rounded-xl bg-indigo-600 text-white hover:bg-indigo-500 text-sm font-medium"
+              className="w-full px-3 py-2 rounded-xl accent-bg text-sm font-medium"
               onClick={handleNew}
             >
               + New Grow
@@ -176,7 +176,7 @@ export default function FabQuickActions({
       {/* Main FAB */}
       <button
         onClick={() => setOpen((v) => !v)}
-        className="h-14 w-14 rounded-full shadow-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xl grid place-items-center"
+        className="h-14 w-14 rounded-full shadow-xl accent-bg text-xl grid place-items-center"
         aria-label="Open quick actions"
       >
         {open ? "–" : "＋"}

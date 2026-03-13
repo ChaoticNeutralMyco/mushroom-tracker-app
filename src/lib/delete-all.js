@@ -52,9 +52,18 @@ export async function deleteAllUserFirestore(uid, progress = () => {}) {
     "analytics",
     "events",
     "notes",
+    "photos",
     "images",
     "audit",
     "logs",
+
+    // post processing
+    "materialLots",
+    "processBatches",
+    "inventoryMovements",
+
+    // misc app support
+    "storage_locations",
 
     // strain library / storage (cover common variants)
     "library",
@@ -86,7 +95,11 @@ export async function deleteGrowDataOnly(progress = () => {}) {
     "analytics",
     "events",
     "notes",
+    "photos",
     "images",
+    "materialLots",
+    "processBatches",
+    "inventoryMovements",
   ];
 
   let deleted = 0;

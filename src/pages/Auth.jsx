@@ -10,35 +10,40 @@ import {
 } from "firebase/auth";
 
 function BrandLogo() {
-  const [src, setSrc] = useState("/app-logo.svg");
+  // Use your CNM PWA icon as the primary logo
+  const [src, setSrc] = useState("/pwa-192.png");
   const [showImg, setShowImg] = useState(true);
 
   useEffect(() => {
+    // Try to preload the CNM logo; fall back to inline SVG if it fails
     const img = new Image();
-    img.onload = () => setShowImg(true);
+    img.onload = () => {
+      setSrc("/pwa-192.png");
+      setShowImg(true);
+    };
     img.onerror = () => {
       const png = new Image();
       png.onload = () => {
-        setSrc("/app-logo.png");
+        setSrc("/pwa-192.png");
         setShowImg(true);
       };
       png.onerror = () => setShowImg(false);
-      png.src = "/app-logo.png";
+      png.src = "/pwa-192.png";
     };
-    img.src = "/app-logo.svg";
+    img.src = "/pwa-192.png";
   }, []);
 
   if (showImg) {
     return (
       <img
         src={src}
-        alt="App Logo"
-        className="w-20 h-20 object-contain drop-shadow mx-auto"
+        alt="Chaotic Neutral Mycology"
+        className="w-20 h-20 object-contain drop-shadow mx-auto rounded-full bg-zinc-900"
         draggable="false"
       />
     );
   }
-  // Fallback minimal SVG (theme-accent aware)
+  // Fallback minimal SVG (theme-accent aware) — unchanged from your original
   return (
     <svg
       width="80"
@@ -69,22 +74,24 @@ function BrandLogo() {
     </svg>
   );
 }
-
 export default function Auth() {
   const [mode, setMode] = useState("signin"); // signin | signup | reset
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
+  const [notice, setNotice] = useState("");
 
   const setAndClearError = (e) => {
     setErr(e?.message || String(e) || "Something went wrong.");
+    setNotice("");
     setBusy(false);
   };
 
   const signIn = async () => {
     setBusy(true);
     setErr("");
+    setNotice("");
     try {
       await signInWithEmailAndPassword(auth, email.trim(), password);
     } catch (e) {
@@ -97,6 +104,7 @@ export default function Auth() {
   const signUp = async () => {
     setBusy(true);
     setErr("");
+    setNotice("");
     try {
       await createUserWithEmailAndPassword(auth, email.trim(), password);
     } catch (e) {
@@ -109,10 +117,11 @@ export default function Auth() {
   const reset = async () => {
     setBusy(true);
     setErr("");
+    setNotice("");
     try {
       await sendPasswordResetEmail(auth, email.trim());
       setMode("signin");
-      alert("Password reset email sent (if the address exists).");
+      setNotice("Password reset email sent if the address exists.");
     } catch (e) {
       setAndClearError(e);
     } finally {
@@ -123,6 +132,7 @@ export default function Auth() {
   const google = async () => {
     setBusy(true);
     setErr("");
+    setNotice("");
     try {
       const provider = new GoogleAuthProvider();
       await signInWithPopup(auth, provider);
@@ -143,7 +153,11 @@ export default function Auth() {
           </div>
 
           {err && (
-            <div className="mb-3 text-sm text-red-600 dark:text-red-400">{err}</div>
+            <div className="mb-3 rounded-lg border border-rose-200 dark:border-rose-900/60 bg-rose-50 dark:bg-rose-950/30 px-3 py-2 text-sm text-rose-700 dark:text-rose-200">{err}</div>
+          )}
+
+          {notice && (
+            <div className="mb-3 rounded-lg border border-[rgba(var(--_accent-rgb),0.35)] bg-[rgba(var(--_accent-rgb),0.10)] px-3 py-2 text-sm text-zinc-800 dark:text-zinc-100">{notice}</div>
           )}
 
           {mode !== "reset" && (

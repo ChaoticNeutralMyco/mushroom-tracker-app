@@ -49,3 +49,9 @@ dev-dist/
 
 playwright-report-ci/
 release/
+keystore.properties/
+# Android signing keys - DO NOT COMMIT
+android/app/my-release-key.jks
+*.jks
+*.keystore
+

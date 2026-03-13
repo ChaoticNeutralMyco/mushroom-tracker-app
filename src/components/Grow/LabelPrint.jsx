@@ -1,10 +1,20 @@
 // src/components/Grow/LabelPrint.jsx
 import React, { useEffect, useMemo, useRef, useState } from "react";
+import { useLocation } from "react-router-dom";
 import { db, auth } from "../../firebase-config";
 import { collection, getDocs } from "firebase/firestore";
+import { onAuthStateChanged } from "firebase/auth";
 import { QRCodeSVG } from "qrcode.react";
 import { Printer } from "lucide-react";
 import { isActiveGrow } from "../../lib/growFilters";
+import {
+  buildLotCode,
+  getLabelMetadataSnapshot,
+  getLotWorkflowState,
+  getShelfLifeAction,
+  isFinishedGoodsLot,
+  isLotBlockedForUse,
+} from "../../lib/postprocess";
 
 /** ---------- Templates (no new files) ---------- */
 const LABEL_TEMPLATES = {
@@ -15,35 +25,33 @@ const LABEL_TEMPLATES = {
     rows: 10,
     labelW: "2.625in",
     labelH: "1in",
+    gapX: "0in",
+    gapY: "0in",
     sheetW: "8.5in",
     sheetH: "11in",
-    sheetPad: "0.5in 0.1875in",
-    gapX: "0.125in",
-    gapY: "0in",
+    padX: "0.1875in",
+    padY: "0.5in",
   },
   "5167": {
     id: "5167",
-    name: 'Avery 5167 (1.75" × 0.5")',
+    name: 'Avery 5167 (mini, 1.75" × 0.5")',
     cols: 4,
     rows: 20,
     labelW: "1.75in",
     labelH: "0.5in",
+    gapX: "0in",
+    gapY: "0in",
     sheetW: "8.5in",
     sheetH: "11in",
-    sheetPad: "0.5in 0.1875in",
-    gapX: "0.125in",
-    gapY: "0in",
+    padX: "0.25in",
+    padY: "0.5in",
   },
 };
 
-/** ---------- Typography & QR ---------- */
-const QR_SIZE = "0.80in";         // fixed QR in both templates
-const PAD_X = "0.16in";           // inner side padding
-const PAD_Y = "0.06in";           // inner top/bottom padding
-
-const T1_PT = 8.7;   // Strain (bold)
-const T2_PT = 7.2;   // Abbrev/code (semibold)
-const F_PT  = 6.7;   // Type / Inoc lines
+/** ---------- Typography ---------- */
+const T1_PT = 11;
+const T2_PT = 7.5;
+const F_PT = 6.7;
 
 /** ---------- Watermark ---------- */
 const WM_CANDIDATES = [
@@ -54,107 +62,435 @@ const WM_CANDIDATES = [
   "/android-chrome-192x192.png",
   "/favicon.png",
 ];
-const LOGO_OPACITY = 0.20;
-const LOGO_SCALE = 1.2;
+const LOGO_OPACITY = 0.18;
+const LOGO_SCALE = 1.0;
 
 /** ---------- localStorage keys ---------- */
 const LOCAL_KEY_WATERMARK_ENABLED = "labels.watermark.enabled";
 const LOCAL_KEY_WATERMARK_URL = "labels.watermark.url";
 const LOCAL_KEY_STARTPOS = "labels.start.position";
-const LOCAL_KEY_TEMPLATE = "labels.template";       // "5160" | "5167"
-const LOCAL_KEY_GRID = "labels.gridOverlay";        // "1" | "0"
-const LOCAL_KEY_SCALE = "labels.previewScale";      // "50..150"
-const LOCAL_KEY_CODE = "labels.codeType";           // "qr" | "none"
+const LOCAL_KEY_TEMPLATE = "labels.template";
+const LOCAL_KEY_GRID = "labels.gridOverlay";
+const LOCAL_KEY_SCALE = "labels.previewScale";
+const LOCAL_KEY_CODE = "labels.codeType";
+const LOCAL_KEY_SOURCE = "labels.source";
 
-/* ---------------- helpers ---------------- */
-const toText = (v) => {
-  if (v == null) return "";
-  if (typeof v === "string") return v;
-  if (typeof v === "number") return String(v);
-  if (typeof v === "object" && typeof v.toDate === "function") {
-    try { return v.toDate().toISOString(); } catch {}
-  }
-  if (typeof v === "object" && "seconds" in v) {
-    try { return new Date(v.seconds * 1000).toISOString(); } catch {}
-  }
-  if (v instanceof Date) return v.toISOString();
-  return String(v);
-};
-const isoYYYYMMDD = (txt) => (txt || "").match(/\d{4}-\d{2}-\d{2}/)?.[0] || "";
-const looksLikeDateValue = (val) => {
-  if (!val && val !== 0) return false;
-  if (val instanceof Date) return true;
-  if (typeof val === "object" && (typeof val.toDate === "function" || "seconds" in val)) return true;
-  const s = String(val);
-  if (isoYYYYMMDD(s)) return true;
-  return !Number.isNaN(Date.parse(s));
-};
+/** ---------- Helpers ---------- */
+const toText = (v) => (v == null ? "" : String(v).trim());
+const isoYYYYMMDD = (s) => /^\d{4}-\d{2}-\d{2}/.test(toText(s));
+const looksLikeDateValue = (v) =>
+  v instanceof Date ||
+  (typeof v === "string" && isoYYYYMMDD(v)) ||
+  (typeof v === "object" && v && typeof v.seconds === "number");
+
 const normalizeDate10 = (v) => {
+  if (!v) return "";
+  if (v instanceof Date) return v.toISOString().slice(0, 10);
+  if (typeof v === "object" && v && typeof v.seconds === "number") {
+    const d = new Date(v.seconds * 1000);
+    return d.toISOString().slice(0, 10);
+  }
   const s = toText(v);
-  if (!s) return "";
-  const iso = isoYYYYMMDD(s);
-  if (iso) return iso;
-  const d = new Date(s);
-  return Number.isNaN(d.getTime()) ? "" : d.toISOString().slice(0, 10);
+  if (isoYYYYMMDD(s)) return s.slice(0, 10);
+  return "";
 };
 
-const getStrain = (g) => {
-  if (typeof g?.strain === "string") return g.strain;
-  if (g?.strain && typeof g.strain === "object") {
-    if (typeof g.strain.name === "string") return g.strain.name;
-    if (typeof g.strain.title === "string") return g.strain.title;
-  }
-  return toText(g?.strain || g?.strainName || g?.name || g?.title || g?.label) || "Unknown";
-};
+const getStrain = (g) =>
+  toText(g?.strain || g?.strainName || g?.name || g?.title || g?.label) || "Unknown";
+
 const getAbbrev = (g) => {
-  const keys = ["abbreviation","abbr","code","labelCode","growCode","batchCode","subName"];
+  const keys = ["abbreviation", "abbr", "code", "labelCode", "growCode", "batchCode", "subName"];
   for (const k of keys) {
     const v = toText(g?.[k]);
     if (v) return v;
   }
   return "";
 };
+
 const getInoc = (g) => {
   const explicit = g?.inoc || g?.inocDate || g?.inoculationDate || g?.inoculatedAt;
   if (looksLikeDateValue(explicit)) return normalizeDate10(explicit);
-  const fb = g?.createdAt || g?.created_on || g?.startDate || g?.startedAt;
+
+  const fb = g?.createdAt || g?.created_on || g?.startDate || g?.start;
   if (looksLikeDateValue(fb)) return normalizeDate10(fb);
+
   const isoInside =
-    (typeof g?.inoc === "string" && isoYYYYMMDD(g.inoc)) ? g.inoc :
-    (typeof g?.inocDate === "string" && isoYYYYMMDD(g.inocDate)) ? g.inocDate : "";
+    typeof g?.inoc === "string" && isoYYYYMMDD(g.inoc)
+      ? g.inoc
+      : typeof g?.inocDate === "string" && isoYYYYMMDD(g.inocDate)
+        ? g.inocDate
+        : "";
+
   return normalizeDate10(isoInside);
 };
+
 const getType = (g) => toText(g?.type ?? g?.growType ?? g?.container ?? g?.kind ?? g?.category);
 
-const preloadOK = (url) => new Promise((resolve) => {
-  if (!url) return resolve(false);
-  const img = new Image();
-  img.onload = () => resolve(true);
-  img.onerror = () => resolve(false);
-  img.src = url;
-});
+/** ---------- Stored Items helpers ---------- */
+const isActiveLibraryItem = (it) => {
+  if (!it) return false;
+  const archived = !!(it.archived || it.isArchived || it.deleted || it.trashed);
+  if (archived) return false;
+  const qty = Number(
+    it.qty ?? it.quantity ?? it.count ?? it.amount ?? it.onHand ?? it.available ?? 0
+  );
+  if (!Number.isFinite(qty)) return true;
+  return qty > 0;
+};
+
+const getLibStrain = (it) =>
+  toText(it?.strainName || it?.strain || it?.name || it?.label || it?.title) || "Unknown";
+const getLibSpecies = (it) =>
+  toText(it?.scientificName || it?.species || it?.latinName || it?.genusSpecies) || "";
+const getLibType = (it) => toText(it?.type || it?.itemType || it?.category || it?.kind || it?.form) || "";
+const getLibQtyNum = (it) => {
+  const v = it?.qty ?? it?.quantity ?? it?.count ?? it?.amount ?? it?.onHand ?? it?.available;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : 0;
+};
+const getLibUnit = (it) => toText(it?.unit || it?.uom || it?.units) || "";
+const getLibLocation = (it) =>
+  toText(it?.location || it?.storageLocation || it?.storedAt || it?.bin || it?.shelf) || "";
+const getLibAcquired = (it) => {
+  const v = it?.acquiredAt || it?.acquiredOn || it?.dateAcquired || it?.createdAt;
+  if (looksLikeDateValue(v)) return normalizeDate10(v);
+  return "";
+};
+
+/** ---------- Finished goods helpers ---------- */
+const isActiveFinishedGood = (it) => {
+  if (!it) return false;
+  if (!isFinishedGoodsLot(it)) return false;
+
+  const archived =
+    !!(it.archived || it.isArchived || it.deleted || it.trashed) ||
+    String(it?.status || "").toLowerCase() === "archived" ||
+    String(it?.status || "").toLowerCase() === "inactive" ||
+    String(it?.status || "").toLowerCase() === "depleted";
+
+  if (archived) return false;
+
+  const qty = Number(it?.remainingQuantity ?? it?.quantity ?? it?.count ?? 0);
+  return Number.isFinite(qty) ? qty > 0 : true;
+};
+
+const getFinishedName = (it) =>
+  toText(it?.name || it?.batchName || it?.variant || it?.label || it?.title) || "Finished Lot";
+
+const getFinishedTypeLabel = (it) => {
+  const raw = toText(it?.finishedGoodType || it?.productType || it?.lotType).toLowerCase();
+  if (raw === "capsule" || raw === "capsules") return "Capsules";
+  if (raw === "gummy" || raw === "gummies") return "Gummies";
+  if (raw === "chocolate" || raw === "chocolates") return "Chocolates";
+  if (raw === "tincture" || raw === "tinctures") return "Tinctures";
+  return toText(it?.finishedGoodType || it?.productType || it?.lotType) || "Finished Goods";
+};
+
+const getFinishedQtyNum = (it) => {
+  const v = it?.remainingQuantity ?? it?.quantity ?? it?.count ?? it?.initialQuantity ?? 0;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : 0;
+};
+
+const getFinishedInitialQtyNum = (it) => {
+  const v = it?.initialQuantity ?? it?.quantity ?? it?.count ?? it?.remainingQuantity ?? 0;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : 0;
+};
+
+const getFinishedUnitLabel = (it) => {
+  return (
+    toText(it?.displayUnitLabel || it?.unitLabel || it?.unit || it?.pieceLabelPlural || it?.pieceLabel) ||
+    "units"
+  );
+};
+
+const getFinishedBatchDate = (it) => {
+  const v =
+    it?.createdDate ||
+    it?.updatedDate ||
+    it?.date ||
+    it?.createdAt ||
+    it?.updatedAt ||
+    it?.manufacturedAt;
+  if (looksLikeDateValue(v)) return normalizeDate10(v);
+  return "";
+};
+
+const getFinishedPrice = (it) => {
+  const n = Number(it?.pricePerUnit ?? it?.pricing?.pricePerUnit ?? 0);
+  return Number.isFinite(n) ? n : 0;
+};
+
+const getFinishedMsrp = (it) => {
+  const n = Number(it?.msrpPerUnit ?? it?.pricing?.suggestedMsrpPerUnit ?? 0);
+  return Number.isFinite(n) ? n : 0;
+};
+
+const getFinishedUnitCost = (it) => {
+  const explicit =
+    it?.costs?.unitCost ??
+    it?.unitCost ??
+    it?.costPerUnit ??
+    it?.pricing?.unitCost ??
+    0;
+  const numeric = Number(explicit);
+  if (Number.isFinite(numeric) && numeric > 0) return numeric;
+
+  const total =
+    it?.costs?.batchTotalCost ??
+    it?.batchTotalCost ??
+    it?.costs?.totalCost ??
+    it?.totalCost ??
+    0;
+  const qty = getFinishedInitialQtyNum(it);
+  const totalNum = Number(total);
+  if (Number.isFinite(totalNum) && totalNum > 0 && qty > 0) return totalNum / qty;
+  return 0;
+};
+
+const compactJoin = (parts = [], sep = " · ") =>
+  (Array.isArray(parts) ? parts : []).map((part) => toText(part)).filter(Boolean).join(sep);
+
+const getFinishedLabelSnapshot = (it) => getLabelMetadataSnapshot(it) || {};
+
+const getFinishedLotCode = (it) => {
+  const meta = getFinishedLabelSnapshot(it);
+  if (meta.lotCode) return meta.lotCode;
+  return buildLotCode({
+    prefix: "CNM",
+    productType: it?.finishedGoodType || it?.productType || it?.lotType || "lot",
+    date: meta.packDate || getFinishedBatchDate(it),
+    variant: it?.variant || it?.strain || getFinishedName(it),
+    lotId: it?.id || it?.lotId || it?.batchId || "",
+  });
+};
+
+const getFinishedPackDate = (it) => {
+  const meta = getFinishedLabelSnapshot(it);
+  return normalizeDate10(meta.packDate || getFinishedBatchDate(it) || it?.createdDate || it?.date || "");
+};
+
+const getFinishedBestByDate = (it) => {
+  const meta = getFinishedLabelSnapshot(it);
+  return normalizeDate10(meta.bestBy || meta.expirationDate || it?.shelfLife?.bestBy || it?.shelfLife?.expirationDate || "");
+};
+
+const getFinishedLabelDeclaration = (it) => {
+  const meta = getFinishedLabelSnapshot(it);
+  const warnings = Array.isArray(meta.warnings) ? meta.warnings : [];
+  const allergens = Array.isArray(meta.allergens) ? meta.allergens : [];
+  const ingredients = Array.isArray(meta.ingredients) ? meta.ingredients : [];
+  const storage = toText(meta.storage);
+  const footer = toText(meta.footer);
+
+  const primary =
+    compactJoin([
+      warnings.length ? `Warn ${warnings.slice(0, 2).join("/")}` : "",
+      allergens.length ? `Allergens ${allergens.slice(0, 2).join("/")}` : "",
+      storage ? `Store ${storage}` : "",
+    ]) ||
+    (ingredients.length ? `Ingredients ${ingredients.slice(0, 3).join(", ")}` : "") ||
+    footer;
+
+  return primary;
+};
+
+const getFinishedLabelSupportTitle = (it) => {
+  const meta = getFinishedLabelSnapshot(it);
+  return [
+    Array.isArray(meta.ingredients) && meta.ingredients.length
+      ? `Ingredients: ${meta.ingredients.join(", ")}`
+      : "",
+    Array.isArray(meta.allergens) && meta.allergens.length
+      ? `Allergens: ${meta.allergens.join(", ")}`
+      : "",
+    Array.isArray(meta.warnings) && meta.warnings.length
+      ? `Warnings: ${meta.warnings.join(", ")}`
+      : "",
+    meta.storage ? `Storage: ${meta.storage}` : "",
+    meta.footer ? `Footer: ${meta.footer}` : "",
+    meta.bestBy ? `Best by: ${meta.bestBy}` : "",
+    meta.expirationDate ? `Expiration: ${meta.expirationDate}` : "",
+  ]
+    .filter(Boolean)
+    .join("\n");
+};
+
+const getFinishedLabelEligibility = (it) => {
+  if (!isActiveFinishedGood(it)) {
+    return { printable: false, reason: "Inactive or depleted" };
+  }
+
+  const workflow = getLotWorkflowState(it);
+  if (isLotBlockedForUse(it, "label")) {
+    return {
+      printable: false,
+      reason: workflow.blockReason || "Blocked for labels",
+      workflow,
+      shelfAction: getShelfLifeAction(it),
+    };
+  }
+
+  const shelfAction = String(getShelfLifeAction(it) || "").toLowerCase();
+  if (shelfAction === "expired") {
+    return { printable: false, reason: "Expired", workflow, shelfAction };
+  }
+  if (shelfAction === "do_not_sell") {
+    return { printable: false, reason: "Do not sell", workflow, shelfAction };
+  }
+
+  return { printable: true, reason: "", workflow, shelfAction };
+};
+
+const formatMoneyShort = (value) => {
+  const n = Number(value);
+  if (!Number.isFinite(n) || n <= 0) return "";
+  return `$${n.toFixed(2).replace(/\.00$/, "")}`;
+};
+
+const preloadOK = (url) =>
+  new Promise((resolve) => {
+    if (!url) {
+      resolve(false);
+      return;
+    }
+    const img = new Image();
+    img.onload = () => resolve(true);
+    img.onerror = () => resolve(false);
+    img.src = url;
+  });
+
+const waitForIframeImages = async (doc) => {
+  const images = Array.from(doc.images || []);
+  if (!images.length) return;
+
+  await Promise.all(
+    images.map(
+      (img) =>
+        new Promise((resolve) => {
+          if (img.complete) {
+            resolve(true);
+            return;
+          }
+          const done = () => resolve(true);
+          img.addEventListener("load", done, { once: true });
+          img.addEventListener("error", done, { once: true });
+        })
+    )
+  );
+};
+
+const safeOrigin = () => {
+  if (typeof window !== "undefined" && window.location?.origin) return window.location.origin;
+  if (typeof location !== "undefined" && location.origin) return location.origin;
+  return "";
+};
+
+const buildAppUrl = (path, params) => {
+  const origin = safeOrigin();
+  if (!origin) {
+    if (!params) return path;
+    const sp = new URLSearchParams();
+    Object.entries(params).forEach(([k, v]) => {
+      if (v != null && v !== "") sp.set(k, String(v));
+    });
+    const qs = sp.toString();
+    return qs ? `${path}?${qs}` : path;
+  }
+
+  const url = new URL(path, origin);
+  if (params) {
+    Object.entries(params).forEach(([k, v]) => {
+      if (v != null && v !== "") url.searchParams.set(k, String(v));
+    });
+  }
+  return url.toString();
+};
+
+function normalizeLabelSource(value) {
+  const normalized = String(value || "").toLowerCase();
+  if (normalized === "library") return "library";
+  if (normalized === "finished" || normalized === "finished_goods") return "finished_goods";
+  return "grows";
+}
 
 /** ---------- component ---------- */
 function LabelPrint(props) {
   const hasGrowsProp = Object.prototype.hasOwnProperty.call(props || {}, "grows");
-  const propGrows = hasGrowsProp ? (props.grows || []) : undefined;
+  const propGrows = hasGrowsProp ? props.grows || [] : undefined;
 
-  const uid = useMemo(() => auth.currentUser?.uid || null, [auth?.currentUser]);
+  const hasLibraryProp = Object.prototype.hasOwnProperty.call(props || {}, "libraryItems");
+  const propLibraryItems = hasLibraryProp ? props.libraryItems || [] : undefined;
+
+  const hasFinishedGoodsProp = Object.prototype.hasOwnProperty.call(props || {}, "finishedGoods");
+  const propFinishedGoods = hasFinishedGoodsProp ? props.finishedGoods || [] : undefined;
+
+  const [uid, setUid] = useState(() => auth.currentUser?.uid || null);
+  const location = useLocation();
+
+  useEffect(() => {
+    const unsub = onAuthStateChanged(auth, (u) => setUid(u?.uid || null));
+    return () => {
+      try {
+        unsub?.();
+      } catch {}
+    };
+  }, []);
+
   const [fetched, setFetched] = useState([]);
+  const [fetchedLibrary, setFetchedLibrary] = useState([]);
+  const [fetchedFinishedGoods, setFetchedFinishedGoods] = useState([]);
 
-  // Template / overlay / scale / code
   const [templateId, setTemplateId] = useState(() => {
-    try { return localStorage.getItem(LOCAL_KEY_TEMPLATE) || "5160"; } catch {}
+    try {
+      return localStorage.getItem(LOCAL_KEY_TEMPLATE) || "5160";
+    } catch {}
     return "5160";
   });
+
   const template = LABEL_TEMPLATES[templateId] || LABEL_TEMPLATES["5160"];
   const COLS = template.cols;
   const ROWS = template.rows;
   const PER_SHEET = COLS * ROWS;
+
+  const metrics = useMemo(() => {
+    const isMini = templateId === "5167";
+    const qrPx = isMini ? 26 : 56;
+    const qrIn = isMini ? 0.26 : 0.6;
+    const wmPx = isMini ? 20 : 56;
+    const wmIn = isMini ? 0.22 : 0.55;
+    const padIn = isMini ? 0.04 : 0.06;
+    const qrMarginPx = 0;
+    const qrMarginIn = 0;
+    const contentPadRightPx = qrPx + qrMarginPx * 2;
+    const contentPadBottomPx = Math.max(10, Math.round(qrPx * 0.55));
+    const contentPadRightIn = qrIn + qrMarginIn * 2;
+    const contentPadBottomIn = Math.max(padIn, qrIn * 0.55);
+
+    return {
+      qrPx,
+      wmPx,
+      qrMarginPx,
+      qrIn,
+      wmIn,
+      padIn,
+      qrMarginIn,
+      contentPadRightPx,
+      contentPadBottomPx,
+      contentPadRightIn,
+      contentPadBottomIn,
+      labelTextColor: "#111827",
+    };
+  }, [templateId]);
+
   const [gridOverlay, setGridOverlay] = useState(() => {
-    try { return localStorage.getItem(LOCAL_KEY_GRID) === "1"; } catch {}
+    try {
+      return localStorage.getItem(LOCAL_KEY_GRID) === "1";
+    } catch {}
     return false;
   });
+
   const [scalePct, setScalePct] = useState(() => {
     try {
       const v = parseInt(localStorage.getItem(LOCAL_KEY_SCALE) || "100", 10);
@@ -162,80 +498,193 @@ function LabelPrint(props) {
     } catch {}
     return 100;
   });
+
   const [codeType, setCodeType] = useState(() => {
-    try { return localStorage.getItem(LOCAL_KEY_CODE) || "qr"; } catch {}
+    try {
+      return localStorage.getItem(LOCAL_KEY_CODE) || "qr";
+    } catch {}
     return "qr";
   });
 
-  // Watermark
+  const [source, setSource] = useState(() => {
+    try {
+      return normalizeLabelSource(localStorage.getItem(LOCAL_KEY_SOURCE) || "grows");
+    } catch {}
+    return "grows";
+  });
+
+  useEffect(() => {
+    try {
+      const params = new URLSearchParams(location.search || "");
+      if (!params.has("labelSource")) return;
+      const requested = normalizeLabelSource(params.get("labelSource") || "grows");
+      setSource(requested);
+    } catch {
+      // ignore bad label source query strings
+    }
+  }, [location.search]);
+
   const [watermarkEnabled, setWatermarkEnabled] = useState(() => {
-    try { return localStorage.getItem(LOCAL_KEY_WATERMARK_ENABLED) !== "0"; } catch {}
+    try {
+      return localStorage.getItem(LOCAL_KEY_WATERMARK_ENABLED) !== "0";
+    } catch {}
     return true;
   });
+
   const [wmInput, setWmInput] = useState(() => {
-    try { return localStorage.getItem(LOCAL_KEY_WATERMARK_URL) || ""; } catch {}
+    try {
+      return localStorage.getItem(LOCAL_KEY_WATERMARK_URL) || "";
+    } catch {}
     return "";
   });
+
   const [wmUrl, setWmUrl] = useState("");
   const [wmTextFallback, setWmTextFallback] = useState(false);
 
-  // Selection & start position
   const [selectedIds, setSelectedIds] = useState(new Set());
   const [startRow, setStartRow] = useState(1);
   const [startCol, setStartCol] = useState(1);
 
   const printSheetsRef = useRef(null);
   const selectAllRef = useRef(null);
+  const printFrameRef = useRef(null);
 
-  // Persist options
-  useEffect(() => { try { localStorage.setItem(LOCAL_KEY_TEMPLATE, templateId); } catch {} }, [templateId]);
-  useEffect(() => { try { localStorage.setItem(LOCAL_KEY_GRID, gridOverlay ? "1" : "0"); } catch {} }, [gridOverlay]);
-  useEffect(() => { try { localStorage.setItem(LOCAL_KEY_SCALE, String(scalePct)); } catch {} }, [scalePct]);
-  useEffect(() => { try { localStorage.setItem(LOCAL_KEY_CODE, codeType); } catch {} }, [codeType]);
-  useEffect(() => { try { localStorage.setItem(LOCAL_KEY_WATERMARK_ENABLED, watermarkEnabled ? "1" : "0"); } catch {} }, [watermarkEnabled]);
-  useEffect(() => { try { localStorage.setItem(LOCAL_KEY_WATERMARK_URL, wmInput || ""); } catch {} }, [wmInput]);
-
-  // Keep start pos in bounds when template changes
-  useEffect(() => {
-    setStartRow((r) => Math.min(Math.max(1, r), ROWS));
-    setStartCol((c) => Math.min(Math.max(1, c), COLS));
-  }, [ROWS, COLS]);
-
-  // Load start position (once)
   useEffect(() => {
     try {
-      const s = localStorage.getItem(LOCAL_KEY_STARTPOS);
-      if (s) {
-        const [r, c] = String(s).split(",").map((n) => parseInt(n, 10));
-        if (r >= 1 && r <= ROWS && c >= 1 && c <= COLS) { setStartRow(r); setStartCol(c); }
+      localStorage.setItem(LOCAL_KEY_TEMPLATE, templateId);
+    } catch {}
+  }, [templateId]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(LOCAL_KEY_GRID, gridOverlay ? "1" : "0");
+    } catch {}
+  }, [gridOverlay]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(LOCAL_KEY_SCALE, String(scalePct));
+    } catch {}
+  }, [scalePct]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(LOCAL_KEY_CODE, codeType);
+    } catch {}
+  }, [codeType]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(LOCAL_KEY_SOURCE, source);
+    } catch {}
+  }, [source]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(LOCAL_KEY_WATERMARK_ENABLED, watermarkEnabled ? "1" : "0");
+    } catch {}
+  }, [watermarkEnabled]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(LOCAL_KEY_WATERMARK_URL, wmInput || "");
+    } catch {}
+  }, [wmInput]);
+
+  useEffect(() => {
+    try {
+      const v = localStorage.getItem(LOCAL_KEY_STARTPOS) || "";
+      const [r, c] = v.split(",").map((x) => parseInt(x, 10));
+      if (Number.isFinite(r) && Number.isFinite(c)) {
+        setStartRow(Math.max(1, Math.min(ROWS, r)));
+        setStartCol(Math.max(1, Math.min(COLS, c)));
       }
     } catch {}
-  }, []); // intentional: only once on mount
+  }, [ROWS, COLS]);
+
   useEffect(() => {
-    try { localStorage.setItem(LOCAL_KEY_STARTPOS, `${startRow},${startCol}`); } catch {}
+    try {
+      localStorage.setItem(LOCAL_KEY_STARTPOS, `${startRow},${startCol}`);
+    } catch {}
   }, [startRow, startCol]);
 
-  // Fetch grows when not passed in
   useEffect(() => {
-    if (hasGrowsProp || !uid) return;
+    if (hasGrowsProp || !uid) return undefined;
+
+    let cancelled = false;
+
     (async () => {
-      const snap = await getDocs(collection(db, "users", uid, "grows"));
-      const items = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
-      setFetched(items.filter(isActiveGrow));
+      try {
+        const snap = await getDocs(collection(db, "users", uid, "grows"));
+        if (cancelled) return;
+        const items = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+        setFetched(items.filter(isActiveGrow));
+      } catch {
+        if (!cancelled) setFetched([]);
+      }
     })();
+
+    return () => {
+      cancelled = true;
+    };
   }, [hasGrowsProp, uid]);
 
-  // Resolve watermark (now also listens to wmInput)
+  useEffect(() => {
+    if (hasLibraryProp || !uid) return undefined;
+
+    let cancelled = false;
+
+    (async () => {
+      try {
+        const snap = await getDocs(collection(db, "users", uid, "library"));
+        if (cancelled) return;
+        const items = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+        setFetchedLibrary(items.filter(isActiveLibraryItem));
+      } catch {
+        if (!cancelled) setFetchedLibrary([]);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [hasLibraryProp, uid]);
+
+  useEffect(() => {
+    if (hasFinishedGoodsProp || !uid) return undefined;
+
+    let cancelled = false;
+
+    (async () => {
+      try {
+        const snap = await getDocs(collection(db, "users", uid, "materialLots"));
+        if (cancelled) return;
+        const items = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+        setFetchedFinishedGoods(items.filter(isActiveFinishedGood));
+      } catch {
+        if (!cancelled) setFetchedFinishedGoods([]);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [hasFinishedGoodsProp, uid]);
+
   useEffect(() => {
     let abort = false;
+
     (async () => {
       let custom = "";
-      try { custom = localStorage.getItem(LOCAL_KEY_WATERMARK_URL) || ""; } catch {}
+      try {
+        custom = localStorage.getItem(LOCAL_KEY_WATERMARK_URL) || "";
+      } catch {}
+
       const list = [wmInput || custom, ...(props.watermarkUrl ? [props.watermarkUrl] : []), ...WM_CANDIDATES]
         .filter(Boolean)
         .filter((v, i, a) => a.indexOf(v) === i);
+
       for (const url of list) {
-        // eslint-disable-next-line no-await-in-loop
         const ok = await preloadOK(url);
         if (abort) return;
         if (ok) {
@@ -244,154 +693,348 @@ function LabelPrint(props) {
           return;
         }
       }
+
       setWmUrl("");
       setWmTextFallback(true);
     })();
-    return () => { abort = true; };
+
+    return () => {
+      abort = true;
+    };
   }, [props.watermarkUrl, wmInput]);
 
-  // Base data source
-  const baseGrows = hasGrowsProp ? propGrows : fetched;
-  const allGrows = useMemo(() => baseGrows || [], [baseGrows]);
-
-  // Maintain selection
   useEffect(() => {
-    if (!allGrows.length) {
+    return () => {
+      if (printFrameRef.current?.parentNode) {
+        try {
+          printFrameRef.current.parentNode.removeChild(printFrameRef.current);
+        } catch {}
+      }
+      printFrameRef.current = null;
+    };
+  }, []);
+
+  const baseGrows = hasGrowsProp ? propGrows : fetched;
+  const baseLibrary = hasLibraryProp ? propLibraryItems : fetchedLibrary;
+  const baseFinishedGoods = hasFinishedGoodsProp ? propFinishedGoods : fetchedFinishedGoods;
+
+  const allGrows = useMemo(() => baseGrows || [], [baseGrows]);
+  const allLibrary = useMemo(() => baseLibrary || [], [baseLibrary]);
+  const allFinishedGoods = useMemo(() => baseFinishedGoods || [], [baseFinishedGoods]);
+
+  const finishedGoodsBuckets = useMemo(() => {
+    const printable = [];
+    const blocked = [];
+
+    for (const lot of Array.isArray(allFinishedGoods) ? allFinishedGoods : []) {
+      const eligibility = getFinishedLabelEligibility(lot);
+      if (eligibility.printable) {
+        printable.push(lot);
+      } else {
+        blocked.push({
+          ...lot,
+          __labelBlockReason: eligibility.reason || "Blocked for labels",
+          __labelWorkflow: eligibility.workflow || getLotWorkflowState(lot),
+          __labelShelfAction: eligibility.shelfAction || getShelfLifeAction(lot),
+        });
+      }
+    }
+
+    return { printable, blocked };
+  }, [allFinishedGoods]);
+
+  const allItems = useMemo(() => {
+    if (source === "library") return allLibrary;
+    if (source === "finished_goods") return finishedGoodsBuckets.printable;
+    return allGrows;
+  }, [source, allLibrary, finishedGoodsBuckets.printable, allGrows]);
+
+  useEffect(() => {
+    if (!allItems.length) {
       setSelectedIds(new Set());
       return;
     }
+
     setSelectedIds((prev) => {
       if (prev.size) {
-        const next = new Set([...prev].filter((id) => allGrows.some((g) => g.id === id)));
-        return next.size ? next : new Set(allGrows.map((g) => g.id));
+        const next = new Set([...prev].filter((id) => allItems.some((x) => x.id === id)));
+        return next.size ? next : new Set(allItems.map((x) => x.id));
       }
-      return new Set(allGrows.map((g) => g.id));
+      return new Set(allItems.map((x) => x.id));
     });
-  }, [allGrows]);
+  }, [allItems]);
 
-  // Indeterminate select-all
   useEffect(() => {
     if (!selectAllRef.current) return;
-    const all = allGrows.length;
+    const all = allItems.length;
     const sel = selectedIds.size;
     selectAllRef.current.indeterminate = sel > 0 && sel < all;
-  }, [allGrows.length, selectedIds]);
+  }, [allItems.length, selectedIds]);
 
-  // Screen styles (derived from template)
   const sheetStyle = {
     width: template.sheetW,
     height: template.sheetH,
-    padding: template.sheetPad,
-    background: "white",
+    paddingLeft: template.padX,
+    paddingRight: template.padX,
+    paddingTop: template.padY,
+    paddingBottom: template.padY,
     boxSizing: "border-box",
+  };
+
+  const gridStyle = {
     display: "grid",
     gridTemplateColumns: `repeat(${COLS}, ${template.labelW})`,
-    gridTemplateRows: `repeat(${ROWS}, ${template.labelH})`,
+    gridAutoRows: template.labelH,
     columnGap: template.gapX,
     rowGap: template.gapY,
-    alignContent: "start",
-    justifyContent: "start",
     transform: `scale(${scalePct / 100})`,
     transformOrigin: "top left",
-    fontFamily:
-      'ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial',
-    color: "#000",
   };
-  const labelStyle = (selected) => ({
+
+  const labelBoxStyle = {
     width: template.labelW,
     height: template.labelH,
     boxSizing: "border-box",
+    border: gridOverlay ? "1px dashed rgba(0,0,0,0.25)" : "1px solid transparent",
+    position: "relative",
     overflow: "hidden",
-    breakInside: "avoid",
-    position: "relative",
-    userSelect: "none",
-    cursor: "pointer",
-    padding: `${PAD_Y} ${PAD_X}`,
-    border: gridOverlay ? "1px solid rgba(14,165,233,0.35)" : "none",
-    outline: selected ? "2px solid #22c55e" : "none",
-  });
-  const blankLabelStyle = { width: template.labelW, height: template.labelH };
-  const rowStyle = {
-    position: "relative",
-    zIndex: 2,
-    display: "grid",
-    gridTemplateColumns: `calc(100% - ${QR_SIZE} - 0.12in) ${codeType === "qr" ? QR_SIZE : "0px"}`,
-    gap: "0.10in",
-    alignItems: "stretch",
+    background: "white",
+    color: metrics.labelTextColor,
   };
-  const fieldsWrapStyle = { marginTop: "0.02in", position: "relative", zIndex: 2 };
-  const TEXT_SHADOW = "0 0 2px rgba(255,255,255,0.95), 0 0 1px rgba(255,255,255,0.95)";
-  const t1Style = { position: "relative", zIndex: 2, fontWeight: 700, fontSize: `${T1_PT}pt`, lineHeight: 1.05, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", textShadow: TEXT_SHADOW };
-  const t2Style = { position: "relative", zIndex: 2, fontWeight: 600, fontSize: `${T2_PT}pt`, lineHeight: 1.05, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", textShadow: TEXT_SHADOW };
-  const fStyle  = { position: "relative", zIndex: 2, fontSize: `${F_PT}pt`,  lineHeight: 1.1,  whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", textShadow: TEXT_SHADOW };
-  const wmImgStyle = { position: "absolute", left: 0, top: 0, width: `calc(${QR_SIZE}*${LOGO_SCALE})`, height: `calc(${QR_SIZE}*${LOGO_SCALE})`, opacity: LOGO_OPACITY, objectFit: "contain", pointerEvents: "none", filter: "grayscale(100%)", zIndex: 1, mixBlendMode: "multiply" };
-  const wmTextStyle = { position: "absolute", left: "50%", top: "50%", transform: "translate(-50%,-50%)", width: `calc(${QR_SIZE}*${LOGO_SCALE})`, height: `calc(${QR_SIZE}*${LOGO_SCALE})`, display: "flex", alignItems: "center", justifyContent: "center", fontWeight: 800, fontSize: ".42in", letterSpacing: ".02in", color: "rgba(0,0,0,.85)", opacity: LOGO_OPACITY, pointerEvents: "none", filter: "grayscale(100%)", zIndex: 1, mixBlendMode: "multiply" };
-  const contentContainerStyle = { position: "relative", minWidth: 0, height: "100%", minHeight: QR_SIZE };
-  const selectBadgeStyle = (selected) => ({ position: "absolute", inset: 0, border: selected ? "2px solid #22c55e" : "none", borderRadius: "2px", pointerEvents: "none" });
 
-  const origin =
-    window.location.origin || (typeof location !== "undefined" ? location.origin : "");
+  const checkboxStyle = { position: "absolute", top: 3, left: 3, zIndex: 10 };
+  const selectedOverlay = (selected) => ({
+    position: "absolute",
+    inset: 0,
+    border: selected ? "2px solid #22c55e" : "none",
+    borderRadius: "2px",
+    pointerEvents: "none",
+    zIndex: 9,
+  });
 
-  /** ---------- Print HTML (uses current template) ---------- */
+  const sourceLabel =
+    source === "library"
+      ? "Stored Items"
+      : source === "finished_goods"
+        ? "Finished Inventory"
+        : "Grows";
+
+  const finishedLabelStats = useMemo(() => ({
+    printable: finishedGoodsBuckets.printable.length,
+    blocked: finishedGoodsBuckets.blocked.length,
+  }), [finishedGoodsBuckets.blocked.length, finishedGoodsBuckets.printable.length]);
+
+  const getLabelData = (x) => {
+    if (source === "library") {
+      const strain = getLibStrain(x);
+      const species = getLibSpecies(x);
+      const kind = getLibType(x);
+      const qty = getLibQtyNum(x);
+      const unit = getLibUnit(x);
+      const loc = getLibLocation(x);
+      const acq = getLibAcquired(x);
+
+      let f2 = `Qty: ${qty}${unit ? ` ${unit}` : ""}`;
+      if (loc) f2 += ` · ${loc}`;
+      if (acq) f2 += ` · ${acq}`;
+
+      const stamp =
+        normalizeDate10(
+          x?.updatedAt ||
+            x?.updated_on ||
+            x?.modifiedAt ||
+            x?.createdAt ||
+            x?.acquiredAt ||
+            x?.acquiredOn ||
+            ""
+        ) || x.id;
+
+      return {
+        t1: strain,
+        t2: species,
+        f1: `Type: ${kind || "—"}`,
+        f2,
+        codeValue: buildAppUrl("/", {
+          tab: "strains",
+          lib: x.id,
+          _: `lib-${stamp}`,
+        }),
+        t1Title: strain,
+        t2Title: species || "",
+        f1Title: kind || "",
+        f2Title: [f2, x?.notes ? `Notes: ${toText(x.notes)}` : ""].filter(Boolean).join("\n"),
+      };
+    }
+
+    if (source === "finished_goods") {
+      const labelMeta = getFinishedLabelSnapshot(x);
+      const workflow = getLotWorkflowState(x);
+      const shelfAction = getShelfLifeAction(x);
+      const name = getFinishedName(x);
+      const variant = toText(x?.variant);
+      const productType = getFinishedTypeLabel(x);
+      const qty = getFinishedQtyNum(x);
+      const unitLabel = getFinishedUnitLabel(x);
+      const batchDate = getFinishedBatchDate(x);
+      const batchName = toText(x?.batchName || x?.sourceBatchId);
+      const mgPerUnit = Number(x?.mgPerUnit || 0);
+      const bottleSize = Number(x?.bottleSize || 0);
+      const bottleSizeUnit = toText(x?.bottleSizeUnit) || "mL";
+      const price = formatMoneyShort(getFinishedPrice(x));
+      const msrp = formatMoneyShort(getFinishedMsrp(x));
+      const unitCost = formatMoneyShort(getFinishedUnitCost(x));
+      const lotCode = getFinishedLotCode(x);
+      const packDate = getFinishedPackDate(x);
+      const bestBy = getFinishedBestByDate(x);
+      const declarationLine = getFinishedLabelDeclaration(x);
+      const supportTitle = getFinishedLabelSupportTitle(x);
+
+      const primaryName = variant || name;
+      const t1 = lotCode || primaryName;
+      const t2Base = [primaryName && primaryName !== t1 ? primaryName : "", productType, toText(x?.strain)].filter(Boolean).join(" · ");
+
+      const f1Parts = [];
+      if (packDate) f1Parts.push(`Pack ${packDate}`);
+      if (bestBy) f1Parts.push(`BB ${bestBy}`);
+      if (mgPerUnit > 0) f1Parts.push(`${mgPerUnit} mg`);
+      if ((x?.productType === "tincture" || x?.finishedGoodType === "tincture" || x?.lotType === "tinctures") && bottleSize > 0) {
+        f1Parts.push(`${bottleSize} ${bottleSizeUnit}`);
+      }
+      if (!f1Parts.length && batchDate) f1Parts.push(`Made ${batchDate}`);
+      if (!f1Parts.length) f1Parts.push(`Qty ${qty} ${unitLabel}`);
+      const f1 = f1Parts.join(" · ");
+
+      const f2 =
+        declarationLine ||
+        compactJoin([batchName ? `Batch ${batchName}` : "", `Qty ${qty} ${unitLabel}`]) ||
+        `Qty ${qty} ${unitLabel}`;
+
+      const stamp =
+        normalizeDate10(
+          x?.updatedAt ||
+            x?.createdAt ||
+            x?.updatedDate ||
+            x?.createdDate ||
+            x?.date ||
+            ""
+        ) || x.id;
+
+      return {
+        t1,
+        t2: t2Base,
+        f1,
+        f2,
+        codeValue: buildAppUrl("/", {
+          tab: "postprocess",
+          finished: x.id,
+          _: `fg-${stamp}`,
+        }),
+        t1Title: [
+          `Lot code: ${lotCode}`,
+          primaryName && primaryName !== t1 ? `Name: ${primaryName}` : name ? `Name: ${name}` : "",
+          variant ? `Variant: ${variant}` : "",
+        ].filter(Boolean).join("\n"),
+        t2Title: [
+          productType ? `Type: ${productType}` : "",
+          x?.strain ? `Strain: ${x.strain}` : "",
+          workflow.releaseRequired ? `Release: ${workflow.releaseStatus || "released"}` : "Release: not required",
+          workflow.blocked ? `Workflow block: ${workflow.blockReason || "Blocked"}` : "",
+          shelfAction ? `Shelf action: ${String(shelfAction).replace(/_/g, " ")}` : "",
+        ].filter(Boolean).join("\n"),
+        f1Title: [
+          packDate ? `Pack date: ${packDate}` : "",
+          bestBy ? `Best by: ${bestBy}` : "",
+          batchDate ? `Batch date: ${batchDate}` : "",
+          batchName ? `Batch: ${batchName}` : "",
+          mgPerUnit > 0 ? `Potency: ${mgPerUnit} mg per unit` : "",
+          bottleSize > 0 ? `Bottle size: ${bottleSize} ${bottleSizeUnit}` : "",
+          `Remaining: ${qty} ${unitLabel}`,
+        ].filter(Boolean).join("\n"),
+        f2Title: [
+          supportTitle,
+          price ? `Price per unit: ${price}` : "",
+          msrp ? `Suggested MSRP: ${msrp}` : "",
+          unitCost ? `Unit cost: ${unitCost}` : "",
+          labelMeta.footer ? `Footer: ${labelMeta.footer}` : "",
+          labelMeta.storage ? `Storage: ${labelMeta.storage}` : "",
+        ].filter(Boolean).join("\n"),
+      };
+    }
+
+    const strain = getStrain(x);
+    const sub = getAbbrev(x);
+    const type = getType(x);
+    const inoc = getInoc(x);
+
+    return {
+      t1: sub || strain,
+      t2: sub ? strain : "",
+      f1: `Type: ${type || "—"}`,
+      f2: `Inoc: ${inoc || "—"}`,
+      codeValue: buildAppUrl(`/quick/${encodeURIComponent(x.id)}`),
+      t1Title: sub || strain,
+      t2Title: sub ? strain : "",
+      f1Title: type || "",
+      f2Title: inoc || "",
+      isGrowWithAbbrev: Boolean(sub),
+    };
+  };
+
   const buildPrintHTML = (sheetsInnerHTML) => {
-    const columnsCSS = Array.from({ length: COLS }, () => template.labelW).join(" ");
-    const wmCSS = `
-      .wm{
-        position:absolute;left:0;top:0;width:calc(${QR_SIZE}*${LOGO_SCALE});height:calc(${QR_SIZE}*${LOGO_SCALE});
-        opacity:${LOGO_OPACITY};object-fit:contain;pointer-events:none;filter:grayscale(100%);z-index:1;mix-blend-mode:multiply;
-      }
-      .wmtxt{
-        position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);
-        width:calc(${QR_SIZE}*${LOGO_SCALE});height:calc(${QR_SIZE}*${LOGO_SCALE});
-        display:flex;align-items:center;justify-content:center;
-        font-weight:800;font-size:.42in;letter-spacing:.02in;color:rgba(0,0,0,.85);
-        opacity:${LOGO_OPACITY};pointer-events:none;filter:grayscale(100%);z-index:1;mix-blend-mode:multiply;
-      }
-      .t1,.t2,.f{ text-shadow: 0 0 2px rgba(255,255,255,.95), 0 0 1px rgba(255,255,255,.95); }
+    const contentPadR = metrics.padIn + metrics.contentPadRightIn;
+    const contentPadB = metrics.padIn + metrics.contentPadBottomIn;
+
+    const css = `
+      @page { size: letter; margin: 0; }
+      html, body { margin: 0; padding: 0; }
+      body { -webkit-print-color-adjust: exact; print-color-adjust: exact; font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; }
+
+      .sheet { width: ${template.sheetW}; height: ${template.sheetH}; padding: ${template.padY} ${template.padX}; box-sizing: border-box; page-break-after: always; }
+      .grid { display: grid; grid-template-columns: repeat(${COLS}, ${template.labelW}); grid-auto-rows: ${template.labelH}; column-gap: ${template.gapX}; row-gap: ${template.gapY}; }
+
+      .label { width: ${template.labelW}; height: ${template.labelH}; box-sizing: border-box; overflow: hidden; position: relative; background: white; color: #111827; }
+      .content { width: 100%; height: 100%; box-sizing: border-box; position: relative; padding: ${metrics.padIn}in ${contentPadR}in ${contentPadB}in ${metrics.padIn}in; color: #111827; }
+
+      .wm { position: absolute; left: 50%; top: 50%; width: ${metrics.wmIn}in; height: ${metrics.wmIn}in; object-fit: contain; opacity: ${LOGO_OPACITY}; transform: translate(-50%, -50%) scale(${LOGO_SCALE}); transform-origin: center; z-index: 0; }
+      .wmtxt { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); font-weight: 900; font-size: 10px; opacity: ${LOGO_OPACITY}; z-index: 0; }
+
+      .t1 { font-weight: 800; font-size: ${T1_PT}pt; line-height: 1.05; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: #111827; position: relative; z-index: 1; }
+      .t2 { margin-top: 1px; font-weight: 600; font-size: ${T2_PT}pt; line-height: 1.05; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; opacity: 0.85; color: #111827; position: relative; z-index: 1; }
+      .fields { margin-top: 2px; font-size: ${F_PT}pt; line-height: 1.05; opacity: 0.85; color: #111827; position: relative; z-index: 1; }
+      .f { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+      .qr { position: absolute; right: 0; bottom: 0; width: ${metrics.qrIn}in; height: ${metrics.qrIn}in; display: flex; align-items: center; justify-content: center; z-index: 2; }
+      .qr svg { width: ${metrics.qrIn}in !important; height: ${metrics.qrIn}in !important; }
     `;
+
     return `<!doctype html>
-<html>
-<head>
-<meta charset="utf-8"/>
-<title>Labels</title>
-<style>
-  @page { size: ${template.sheetW} ${template.sheetH}; margin: 0; }
-  html, body { margin: 0; padding: 0; background: #fff; }
-  .sheet {
-    width: ${template.sheetW}; height: ${template.sheetH}; padding: ${template.sheetPad}; box-sizing: border-box;
-    display: grid; grid-template-columns: ${columnsCSS}; column-gap: ${template.gapX}; row-gap: ${template.gapY};
-    align-content: start; justify-content: start;
-    print-color-adjust: exact; -webkit-print-color-adjust: exact;
-    font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial; color: #000;
-  }
-  .sheet + .sheet { page-break-before: always; }
-  .label { position: relative; width: ${template.labelW}; height: ${template.labelH}; padding: ${PAD_Y} ${PAD_X}; box-sizing: border-box; overflow: hidden; break-inside: avoid; }
-  .row { position: relative; z-index: 2; display: grid; grid-template-columns: calc(100% - ${QR_SIZE} - 0.12in) ${codeType === "qr" ? QR_SIZE : "0px"}; gap: 0.10in; align-items: stretch; }
-  .content { position: relative; min-width: 0; height: 100%; min-height: ${QR_SIZE}; }
-  .qr { width: ${QR_SIZE}; height: ${QR_SIZE}; }
-  .t1 { position: relative; z-index: 2; font-weight: 700; font-size: ${T1_PT}pt; line-height: 1.05; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .t2 { position: relative; z-index: 2; font-weight: 600; font-size: ${T2_PT}pt; line-height: 1.05; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .fields { margin-top: 0.02in; position: relative; z-index: 2; }
-  .f { position: relative; z-index: 2; font-size: ${F_PT}pt; line-height: 1.1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  ${wmCSS}
-</style>
-</head>
-<body>
-  <div id="sheets">${sheetsInnerHTML}</div>
-  <script>setTimeout(() => { window.focus(); window.print(); }, 30);</script>
-</body>
-</html>`;
+      <html>
+        <head><meta charset="utf-8" /><title>Print Labels</title><style>${css}</style></head>
+        <body>${sheetsInnerHTML}</body>
+      </html>
+    `;
   };
 
   const printNow = async () => {
-    if (!selectedGrows.length) {
+    if (!selectedIds.size) {
       alert("Select at least one label to print.");
       return;
     }
-    // double rAF to ensure hidden DOM is laid out before snapshot
-    await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+
+    await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+
     const sheetsEl = printSheetsRef.current;
-    if (!sheetsEl) return alert("Print sheets not found.");
+    if (!sheetsEl) {
+      alert("Print sheets not found.");
+      return;
+    }
+
+    if (printFrameRef.current?.parentNode) {
+      try {
+        printFrameRef.current.parentNode.removeChild(printFrameRef.current);
+      } catch {}
+      printFrameRef.current = null;
+    }
 
     const html = buildPrintHTML(sheetsEl.innerHTML);
     const iframe = document.createElement("iframe");
@@ -401,12 +1044,54 @@ function LabelPrint(props) {
     iframe.style.width = "0";
     iframe.style.height = "0";
     iframe.style.border = "0";
+
     document.body.appendChild(iframe);
+    printFrameRef.current = iframe;
 
     const doc = iframe.contentDocument || iframe.contentWindow?.document;
-    doc.open(); doc.write(html); doc.close();
+    if (!doc) {
+      alert("Unable to open print frame.");
+      return;
+    }
 
-    setTimeout(() => { try { document.body.removeChild(iframe); } catch {} }, 1500);
+    doc.open();
+    doc.write(html);
+    doc.close();
+
+    await new Promise((resolve) => {
+      if (iframe.contentWindow?.document?.readyState === "complete") {
+        resolve(true);
+        return;
+      }
+      iframe.onload = () => resolve(true);
+      setTimeout(() => resolve(true), 250);
+    });
+
+    await waitForIframeImages(doc);
+    await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+
+    const cleanup = () => {
+      if (iframe.parentNode) {
+        try {
+          iframe.parentNode.removeChild(iframe);
+        } catch {}
+      }
+      if (printFrameRef.current === iframe) {
+        printFrameRef.current = null;
+      }
+    };
+
+    try {
+      iframe.contentWindow?.focus();
+      if (iframe.contentWindow) {
+        iframe.contentWindow.onafterprint = cleanup;
+      }
+      iframe.contentWindow?.print();
+      setTimeout(cleanup, 2000);
+    } catch {
+      cleanup();
+      alert("Print failed to open.");
+    }
   };
 
   const toggleSelect = (id) => {
@@ -417,21 +1102,39 @@ function LabelPrint(props) {
       return next;
     });
   };
+
   const toggleSelectAll = (checked) => {
-    if (checked) setSelectedIds(new Set(allGrows.map((g) => g.id)));
+    if (checked) setSelectedIds(new Set(allItems.map((x) => x.id)));
     else setSelectedIds(new Set());
   };
 
   return (
     <div className="px-6 py-6">
-      {/* Toolbar */}
       <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
         <div className="text-sm text-zinc-400">
-          {LABEL_TEMPLATES[templateId]?.name || 'Avery 5160 / 8160'} · {allGrows.length} labels
+          {LABEL_TEMPLATES[templateId]?.name || "Avery 5160 / 8160"} · {sourceLabel} ·{" "}
+          {allItems.length} labels
+          {source === "finished_goods" ? (
+            <>
+              {" "}· {finishedLabelStats.printable} printable · {finishedLabelStats.blocked} blocked
+            </>
+          ) : null}
         </div>
 
         <div className="inline-flex flex-wrap items-center gap-4">
-          {/* Template */}
+          <div className="inline-flex items-center gap-2">
+            <span className="text-sm">Source</span>
+            <select
+              className="rounded border border-zinc-300 bg-white px-2 py-1 text-sm"
+              value={source}
+              onChange={(e) => setSource(normalizeLabelSource(e.target.value))}
+            >
+              <option value="grows">Grows</option>
+              <option value="library">Stored Items</option>
+              <option value="finished_goods">Finished Inventory</option>
+            </select>
+          </div>
+
           <div className="inline-flex items-center gap-2">
             <span className="text-sm">Template</span>
             <select
@@ -449,101 +1152,78 @@ function LabelPrint(props) {
             </select>
           </div>
 
-          {/* Start position */}
           <div className="inline-flex items-center gap-2">
             <span className="text-sm">Start at</span>
             <label className="text-xs opacity-70">Row</label>
             <select
               className="rounded border border-zinc-300 bg-white px-2 py-1 text-sm"
               value={startRow}
-              onChange={(e) => setStartRow(Math.max(1, Math.min(ROWS, parseInt(e.target.value || "1", 10))))}
+              onChange={(e) =>
+                setStartRow(Math.max(1, Math.min(ROWS, parseInt(e.target.value || "1", 10))))
+              }
             >
               {Array.from({ length: ROWS }, (_, i) => i + 1).map((n) => (
-                <option key={n} value={n}>{n}</option>
+                <option key={`r-${n}`} value={n}>
+                  {n}
+                </option>
               ))}
             </select>
+
             <label className="text-xs opacity-70">Col</label>
             <select
               className="rounded border border-zinc-300 bg-white px-2 py-1 text-sm"
               value={startCol}
-              onChange={(e) => setStartCol(Math.max(1, Math.min(COLS, parseInt(e.target.value || "1", 10))))}
+              onChange={(e) =>
+                setStartCol(Math.max(1, Math.min(COLS, parseInt(e.target.value || "1", 10))))
+              }
             >
               {Array.from({ length: COLS }, (_, i) => i + 1).map((n) => (
-                <option key={n} value={n}>{n}</option>
+                <option key={`c-${n}`} value={n}>
+                  {n}
+                </option>
               ))}
             </select>
           </div>
 
-          {/* Select all */}
           <label className="inline-flex items-center gap-2 select-none">
             <input
               ref={selectAllRef}
               type="checkbox"
               className="h-4 w-4 align-middle"
-              checked={Boolean(selectedIds.size) && selectedIds.size === allGrows.length}
+              checked={allItems.length > 0 && selectedIds.size === allItems.length}
               onChange={(e) => toggleSelectAll(e.target.checked)}
-              aria-label="Select all labels"
-              data-testid="select-all"
+              aria-label="select-all"
             />
             <span className="text-sm">
               Select all
               <span className="ml-2 rounded bg-zinc-200/50 px-1 py-[1px] text-xs text-zinc-600">
-                {Array.from(selectedIds).length}/{allGrows.length} selected
+                {selectedIds.size}/{allItems.length} selected
               </span>
             </span>
           </label>
 
-          {/* Grid */}
           <label className="inline-flex items-center gap-2 select-none">
             <input
               type="checkbox"
               className="h-4 w-4 align-middle"
               checked={gridOverlay}
               onChange={(e) => setGridOverlay(e.target.checked)}
-              aria-label="Grid overlay"
             />
             <span className="text-sm">Grid</span>
           </label>
 
-          {/* Scale */}
           <div className="inline-flex items-center gap-2">
             <span className="text-sm">Scale</span>
             <input
               type="range"
               min={50}
               max={150}
-              step={5}
               value={scalePct}
-              onChange={(e) => setScalePct(parseInt(e.target.value || "100", 10))}
+              onChange={(e) => setScalePct(parseInt(e.target.value, 10))}
             />
-            <span className="text-xs opacity-70">{scalePct}%</span>
+            <span className="text-xs opacity-70 w-10 text-right">{scalePct}%</span>
           </div>
 
-          {/* Watermark */}
-          <label className="inline-flex items-center gap-2 select-none">
-            <input
-              type="checkbox"
-              className="h-4 w-4 align-middle"
-              checked={watermarkEnabled}
-              onChange={(e) => setWatermarkEnabled(e.target.checked)}
-              data-testid="watermark-toggle"
-              aria-label="Watermark toggle"
-            />
-            <span className="text-sm">Watermark</span>
-          </label>
-
-          {/* Watermark URL */}
-          <div className="inline-flex items-center gap-2">
-            <span className="text-sm">WM URL</span>
-            <input
-              className="rounded border border-zinc-300 bg-white px-2 py-1 text-sm w-[220px]"
-              placeholder="https://… or data:image/png;base64,…"
-              value={wmInput}
-              onChange={(e) => setWmInput(e.target.value)}
-            />
-          </div>
-
-          {/* Code type */}
           <div className="inline-flex items-center gap-2">
             <span className="text-sm">Code</span>
             <select
@@ -556,46 +1236,187 @@ function LabelPrint(props) {
             </select>
           </div>
 
-          {/* Print */}
+          <label className="inline-flex items-center gap-2 select-none">
+            <input
+              type="checkbox"
+              className="h-4 w-4 align-middle"
+              checked={watermarkEnabled}
+              onChange={(e) => setWatermarkEnabled(e.target.checked)}
+            />
+            <span className="text-sm">Watermark</span>
+          </label>
+
+          <div className="inline-flex items-center gap-2">
+            <span className="text-sm">WM URL</span>
+            <input
+              className="rounded border border-zinc-300 bg-white px-2 py-1 text-sm w-56"
+              placeholder="optional override"
+              value={wmInput}
+              onChange={(e) => setWmInput(e.target.value)}
+            />
+          </div>
+
           <button
             onClick={printNow}
-            className="px-3 py-1 rounded-md bg-blue-600 hover:bg-blue-700 text-white border border-blue-600 inline-flex items-center gap-2"
-            disabled={Array.from(selectedIds).length === 0}
+            className="inline-flex items-center gap-2 rounded bg-zinc-900 px-3 py-2 text-sm font-medium text-white hover:bg-zinc-800"
           >
-            <Printer className="w-4 h-4" />
-            Print labels ({Array.from(selectedIds).length})
+            <Printer size={16} /> Print
           </button>
         </div>
       </div>
 
-      {/* On-screen preview */}
-      <div className="w-full overflow-auto rounded-md border border-zinc-200 dark:border-zinc-800 bg-white">
-        <div id="screenSheet" style={sheetStyle}>
-          {Array.from({ length: Math.max(0, Math.min(PER_SHEET - 1, (startRow - 1) * COLS + (startCol - 1))) }).map((_, i) => (
-            <div key={`blank-${i}`} style={blankLabelStyle} aria-hidden="true" />
-          ))}
-          {allGrows.map((g) => {
-            const strain = getStrain(g);
-            const sub = getAbbrev(g);
-            const type = getType(g);
-            const inoc = getInoc(g);
-            const url = `${origin}/quick/${g.id}`;
-            const selected = selectedIds.has(g.id);
-            return (
-              <div
-                key={g.id}
-                style={labelStyle(selected)}
-                data-testid="label"
-                onClick={() => toggleSelect(g.id)}
-                onKeyDown={(e) => (e.key === "Enter" || e.key === " ") && toggleSelect(g.id)}
-                role="button"
-                tabIndex={0}
-                title={selected ? "Click to deselect" : "Click to select"}
-              >
-                <div style={selectBadgeStyle(selected)} />
-                <div style={rowStyle}>
-                  <div className="content" style={contentContainerStyle} data-testid="label-text">
-                    {/* watermark image or fallback */}
+      {source === "finished_goods" && finishedGoodsBuckets.blocked.length > 0 ? (
+        <div className="mb-4 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+          <div className="font-medium">Blocked finished lots are excluded from sellable label printing.</div>
+          <div className="mt-1 text-xs text-amber-800">
+            Released finished lots can print labels here. Quarantined, recalled, on-hold, pending-release, or do-not-sell lots stay out of the printable set.
+          </div>
+          <div className="mt-2 grid gap-2 md:grid-cols-2 xl:grid-cols-3">
+            {finishedGoodsBuckets.blocked.slice(0, 9).map((lot) => (
+              <div key={`blocked-${lot.id}`} className="rounded border border-amber-200 bg-white/70 px-3 py-2">
+                <div className="font-medium">{getFinishedName(lot)}</div>
+                <div className="text-xs opacity-80">{lot.__labelBlockReason || "Blocked for labels"}</div>
+              </div>
+            ))}
+          </div>
+          {finishedGoodsBuckets.blocked.length > 9 ? (
+            <div className="mt-2 text-xs text-amber-800">
+              Showing 9 of {finishedGoodsBuckets.blocked.length} blocked finished lots.
+            </div>
+          ) : null}
+        </div>
+      ) : null}
+
+      <div
+        className="rounded-lg border border-zinc-200 bg-white p-3 overflow-auto"
+        style={{ maxHeight: "70vh" }}
+      >
+        <div style={sheetStyle}>
+          <div style={gridStyle}>
+            {Array.from({
+              length: Math.max(0, Math.min(PER_SHEET - 1, (startRow - 1) * COLS + (startCol - 1))),
+            }).map((_, i) => (
+              <div key={`blank-${i}`} style={labelBoxStyle} aria-hidden="true" />
+            ))}
+
+            {allItems.map((x) => {
+              const d = getLabelData(x);
+              const selected = selectedIds.has(x.id);
+
+              const wmImgStyle = {
+                position: "absolute",
+                left: "50%",
+                top: "50%",
+                width: metrics.wmPx,
+                height: metrics.wmPx,
+                objectFit: "contain",
+                opacity: LOGO_OPACITY,
+                transform: `translate(-50%, -50%) scale(${LOGO_SCALE})`,
+                transformOrigin: "center",
+                pointerEvents: "none",
+                zIndex: 0,
+              };
+
+              const wmTextStyle = {
+                position: "absolute",
+                left: "50%",
+                top: "50%",
+                transform: "translate(-50%, -50%)",
+                fontWeight: 900,
+                fontSize: 10,
+                opacity: LOGO_OPACITY,
+                pointerEvents: "none",
+                color: metrics.labelTextColor,
+                zIndex: 0,
+              };
+
+              const contentStyle = {
+                position: "relative",
+                width: "100%",
+                height: "100%",
+                boxSizing: "border-box",
+                padding: 4,
+                paddingRight: 4 + metrics.contentPadRightPx,
+                paddingBottom: 4 + metrics.contentPadBottomPx,
+              };
+
+              const t1Style = {
+                fontWeight: 800,
+                fontSize: `${T1_PT}pt`,
+                lineHeight: 1.05,
+                whiteSpace: "nowrap",
+                overflow: "hidden",
+                textOverflow: "ellipsis",
+                color: metrics.labelTextColor,
+                position: "relative",
+                zIndex: 1,
+              };
+
+              const t2Style = {
+                marginTop: 1,
+                fontWeight: 600,
+                fontSize: `${T2_PT}pt`,
+                lineHeight: 1.05,
+                whiteSpace: "nowrap",
+                overflow: "hidden",
+                textOverflow: "ellipsis",
+                opacity: 0.85,
+                color: metrics.labelTextColor,
+                position: "relative",
+                zIndex: 1,
+              };
+
+              const fStyle = {
+                marginTop: 2,
+                fontSize: `${F_PT}pt`,
+                lineHeight: 1.05,
+                opacity: 0.85,
+                whiteSpace: "nowrap",
+                overflow: "hidden",
+                textOverflow: "ellipsis",
+                color: metrics.labelTextColor,
+                position: "relative",
+                zIndex: 1,
+              };
+
+              const qrStyle = {
+                position: "absolute",
+                right: 0,
+                bottom: 0,
+                width: metrics.qrPx,
+                height: metrics.qrPx,
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                zIndex: 5,
+                pointerEvents: "none",
+              };
+
+              return (
+                <div
+                  key={x.id}
+                  style={labelBoxStyle}
+                  role="button"
+                  tabIndex={0}
+                  onClick={() => toggleSelect(x.id)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" || e.key === " ") {
+                      e.preventDefault();
+                      toggleSelect(x.id);
+                    }
+                  }}
+                >
+                  <input
+                    type="checkbox"
+                    style={checkboxStyle}
+                    checked={selected}
+                    onChange={() => toggleSelect(x.id)}
+                    onClick={(e) => e.stopPropagation()}
+                    aria-label={`select-${x.id}`}
+                  />
+                  <div style={selectedOverlay(selected)} />
+
+                  <div style={contentStyle}>
                     {watermarkEnabled ? (
                       wmUrl ? (
                         <img src={wmUrl} alt="" style={wmImgStyle} />
@@ -603,32 +1424,53 @@ function LabelPrint(props) {
                         <div style={wmTextStyle}>CN</div>
                       ) : null
                     ) : null}
-                    <div style={t1Style} title={sub ? sub : strain} data-testid={sub ? "label-abbr" : "label-title"}>
-                      {sub ? sub : strain}
+
+                    <div
+                      style={t1Style}
+                      title={d.t1Title || d.t1}
+                      data-testid={d.isGrowWithAbbrev ? "label-abbr" : "label-title"}
+                    >
+                      {d.t1}
                     </div>
-                    {sub ? (
-                      <div style={t2Style} title={strain} data-testid="label-strain">{strain}</div>
+
+                    {d.t2 ? (
+                      <div style={t2Style} title={d.t2Title || d.t2} data-testid="label-strain">
+                        {d.t2}
+                      </div>
                     ) : (
-                      <div style={{ ...t2Style, opacity: 0 }} aria-hidden="true">&nbsp;</div>
+                      <div style={{ ...t2Style, opacity: 0 }} aria-hidden="true">
+                        &nbsp;
+                      </div>
                     )}
-                    <div style={fieldsWrapStyle} className="fields">
-                      <div style={fStyle} title={type || ""} data-testid="label-type">Type: {type || "—"}</div>
-                      <div style={fStyle} title={inoc || ""} data-testid="label-inoc">Inoc: {inoc || "—"}</div>
+
+                    <div className="mt-[1px]">
+                      <div style={fStyle} title={d.f1Title || ""} data-testid="label-type">
+                        {d.f1}
+                      </div>
+                      <div style={fStyle} title={d.f2Title || ""} data-testid="label-inoc">
+                        {d.f2}
+                      </div>
                     </div>
                   </div>
+
                   {codeType === "qr" ? (
-                    <div className="qr" style={{ width: QR_SIZE, height: QR_SIZE }} aria-label="QR code">
-                      <QRCodeSVG value={url} width="100%" height="100%" />
+                    <div style={qrStyle} aria-label="QR code">
+                      <QRCodeSVG
+                        value={d.codeValue}
+                        width={metrics.qrPx}
+                        height={metrics.qrPx}
+                        includeMargin
+                        level="M"
+                      />
                     </div>
                   ) : null}
                 </div>
-              </div>
-            );
-          })}
+              );
+            })}
+          </div>
         </div>
       </div>
 
-      {/* Hidden printable sheets */}
       <div
         ref={printSheetsRef}
         style={{ position: "absolute", left: "-10000px", top: 0, visibility: "hidden" }}
@@ -637,67 +1479,94 @@ function LabelPrint(props) {
       >
         {(() => {
           const pages = [];
-          const items = Array.from(selectedIds).map((id) => allGrows.find((g) => g.id === id)).filter(Boolean);
-          const prefill = Math.max(0, Math.min(PER_SHEET - 1, (startRow - 1) * COLS + (startCol - 1)));
+          const items = Array.from(selectedIds)
+            .map((id) => allItems.find((g) => g.id === id))
+            .filter(Boolean);
 
-          // Make a label DOM block (print version)
-          const makeLabel = (g, key) => {
-            const strain = getStrain(g);
-            const sub = getAbbrev(g);
-            const type = getType(g);
-            const inoc = getInoc(g);
-            const url = `${origin}/quick/${g.id}`;
+          const prefill = Math.max(
+            0,
+            Math.min(PER_SHEET - 1, (startRow - 1) * COLS + (startCol - 1))
+          );
+
+          const makeLabel = (x, key) => {
+            const d = getLabelData(x);
             return (
               <div key={key} className="label">
-                <div className="row">
-                  <div className="content">
-                    {watermarkEnabled ? (
-                      wmUrl ? (
-                        <img src={wmUrl} alt="" className="wm" />
-                      ) : wmTextFallback ? (
-                        <div className="wmtxt">CN</div>
-                      ) : null
-                    ) : null}
-                    <div className="t1" title={sub ? sub : strain} data-testid={sub ? "label-abbr" : "label-title"}>
-                      {sub ? sub : strain}
+                <div className="content">
+                  {watermarkEnabled ? (
+                    wmUrl ? (
+                      <img src={wmUrl} alt="" className="wm" />
+                    ) : wmTextFallback ? (
+                      <div className="wmtxt">CN</div>
+                    ) : null
+                  ) : null}
+
+                  <div
+                    className="t1"
+                    title={d.t1Title || d.t1}
+                    data-testid={d.isGrowWithAbbrev ? "label-abbr" : "label-title"}
+                  >
+                    {d.t1}
+                  </div>
+
+                  {d.t2 ? (
+                    <div className="t2" title={d.t2Title || d.t2} data-testid="label-strain">
+                      {d.t2}
                     </div>
-                    {sub ? (
-                      <div className="t2" title={strain} data-testid="label-strain">{strain}</div>
-                    ) : (
-                      <div className="t2" style={{ opacity: 0 }} aria-hidden="true">&nbsp;</div>
-                    )}
-                    <div className="fields">
-                      <div className="f" title={type || ""} data-testid="label-type">Type: {type || "—"}</div>
-                      <div className="f" title={inoc || ""} data-testid="label-inoc">Inoc: {inoc || "—"}</div>
+                  ) : (
+                    <div className="t2" style={{ opacity: 0 }} aria-hidden="true">
+                      &nbsp;
+                    </div>
+                  )}
+
+                  <div className="fields">
+                    <div className="f" title={d.f1Title || ""} data-testid="label-type">
+                      {d.f1}
+                    </div>
+                    <div className="f" title={d.f2Title || ""} data-testid="label-inoc">
+                      {d.f2}
                     </div>
                   </div>
-                  {codeType === "qr" ? (
-                    <div className="qr">
-                      <QRCodeSVG value={url} width="100%" height="100%" />
-                    </div>
-                  ) : null}
                 </div>
+
+                {codeType === "qr" ? (
+                  <div className="qr" aria-label="QR code">
+                    <QRCodeSVG value={d.codeValue} width={120} height={120} includeMargin level="M" />
+                  </div>
+                ) : null}
               </div>
             );
           };
 
-          // If starting mid-sheet, add blanks first
-          const blanks = Array.from({ length: prefill }, (_, i) => <div key={`blank-${i}`} className="label" />);
-          let page = [ ...blanks ];
+          const blanks = Array.from({ length: prefill }, (_, i) => (
+            <div key={`blank-${i}`} className="label" />
+          ));
+
+          let page = [...blanks];
           let countOnPage = blanks.length;
 
-          for (const g of items) {
-            page.push(makeLabel(g, `g-${g.id}-${countOnPage}`));
-            countOnPage++;
+          for (const item of items) {
+            page.push(makeLabel(item, `g-${item.id}-${countOnPage}`));
+            countOnPage += 1;
             if (countOnPage === PER_SHEET) {
-              pages.push(<div key={`sheet-${pages.length}`} className="sheet">{page}</div>);
+              pages.push(
+                <div key={`sheet-${pages.length}`} className="sheet">
+                  <div className="grid">{page}</div>
+                </div>
+              );
               page = [];
               countOnPage = 0;
             }
           }
+
           if (page.length) {
-            pages.push(<div key={`sheet-${pages.length}`} className="sheet">{page}</div>);
+            pages.push(
+              <div key={`sheet-${pages.length}`} className="sheet">
+                <div className="grid">{page}</div>
+              </div>
+            );
           }
+
           return pages;
         })()}
       </div>

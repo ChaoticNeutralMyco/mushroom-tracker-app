@@ -1,5 +1,4 @@
 // src/pages/Analytics.jsx
-// src/pages/Analytics.jsx
 import React, { useEffect, useMemo, useState } from "react";
 import {
   PieChart, Pie, BarChart, Bar, LineChart, Line, ScatterChart, Scatter,
@@ -140,17 +139,145 @@ function resolveRecipeItemsForGrow(g, recipeById) {
   const rec = rid ? recipeById.get(rid) : null;
   return rec && Array.isArray(rec.items) ? rec.items : null;
 }
+
+/**
+ * Compute TOTAL batch cost for a set of recipe items using supply costs.
+ * (Per-serving normalization happens later using the recipe's yield.)
+ */
 function computeItemsCost(items, supplyCostById) {
   if (!Array.isArray(items) || !items.length) return null;
   let sum = 0;
   for (const it of items) {
     const sid = it?.supplyId;
     const per =
-      (sid && supplyCostById.has(sid) ? toNumber(supplyCostById.get(sid), toNumber(it?.cost, 0)) : toNumber(it?.cost, 0));
+      sid && supplyCostById.has(sid)
+        ? toNumber(supplyCostById.get(sid), toNumber(it?.cost, 0))
+        : toNumber(it?.cost, 0);
     const amt = toNumber(it?.amount, 0);
     sum += per * amt;
   }
   return Math.max(0, Number(sum.toFixed(2)));
+}
+
+/**
+ * Yield helper: how many jars/tubs a recipe makes.
+ * Priority:
+ *  - grow.recipeYield (inline override)
+ *  - recipe.yield from the recipe document
+ *  - default 1 when missing/invalid
+ */
+function getRecipeYieldForGrow(g, recipeById) {
+  if (!g) return 1;
+
+  const inline = toNumber(g?.recipeYield, 0);
+  if (inline > 0) return inline;
+
+  const rid = g?.recipeId || g?.recipe_id || g?.recipe?.id;
+  if (!rid) return 1;
+
+  const rec = recipeById.get(rid);
+  if (!rec) return 1;
+
+  const y = toNumber(rec?.yield, 0);
+  return y > 0 ? y : 1;
+}
+
+
+
+/* ---------- post-process helpers ---------- */
+const POST_PROCESS_FINISHED_TYPES = new Set(["capsules", "gummies", "chocolates", "tinctures"]);
+const PACKAGING_TYPE_HINTS = new Set([
+  "container", "packaging", "package", "bottle", "jar", "bag", "box", "label", "labels",
+  "capsule", "capsules", "dropper", "droppers", "shrink_band", "shrink band", "wrapper", "wrappers"
+]);
+const lower = (v) => String(v || "").trim().toLowerCase();
+const num = (v, fb = 0) => (Number.isFinite(Number(v)) ? Number(v) : fb);
+function isFinishedPostProcessLot(lot) {
+  return POST_PROCESS_FINISHED_TYPES.has(lower(lot?.lotType || lot?.finishedGoodType || lot?.productType));
+}
+function getLotAvailableQty(lot = {}) {
+  const explicit = num(lot?.availableQuantity, NaN);
+  if (Number.isFinite(explicit)) return explicit;
+  const initial = num(lot?.initialQuantity ?? lot?.quantity ?? lot?.count, 0);
+  const allocated = num(lot?.allocatedQuantity ?? lot?.usedQuantity ?? lot?.consumedQuantity, 0);
+  return Math.max(0, initial - allocated);
+}
+function isArchivedPostProcessLot(lot = {}) {
+  const status = lower(lot?.status || lot?.workflowState);
+  return !!lot?.archived || !!lot?.archivedAt || status === "archived" || status === "depleted" || getLotAvailableQty(lot) <= 0;
+}
+function getLotWorkflowState(lot = {}) {
+  const workflow = lower(lot?.workflowState || lot?.workflow?.state || lot?.releaseState || lot?.status);
+  const qc = lower(lot?.qc?.status);
+  if (lot?.recalled || workflow === "recalled") return "recalled";
+  if (lot?.quarantined || workflow === "quarantined" || workflow === "quarantine") return "quarantined";
+  if (qc === "hold" || workflow === "hold") return "hold";
+  if (lot?.released === true || workflow === "released") return "released";
+  return workflow || "pending";
+}
+function isBlockedPostProcessLot(lot = {}) {
+  const wf = getLotWorkflowState(lot);
+  const qc = lower(lot?.qc?.status);
+  return ["hold", "quarantined", "quarantine", "recalled", "pending"].includes(wf) || qc === "hold" || qc === "fail";
+}
+function isLabelReadyPostProcessLot(lot = {}) {
+  return isFinishedPostProcessLot(lot) && !isArchivedPostProcessLot(lot) && !isBlockedPostProcessLot(lot);
+}
+function getLabelMeta(lot = {}) {
+  const meta = lot?.labelMetadata || lot?.label || {};
+  return {
+    lotCode: meta?.lotCode || lot?.lotCode || "",
+    packDate: meta?.packDate || lot?.packDate || "",
+    bestBy: meta?.bestBy || meta?.bestByDate || lot?.bestBy || "",
+    ingredients: Array.isArray(meta?.ingredients) ? meta.ingredients : [],
+    allergens: Array.isArray(meta?.allergens) ? meta.allergens : [],
+  };
+}
+function getBatchExpectedOutput(batch = {}) {
+  return num(
+    batch?.expectedOutput ?? batch?.expectedOutputCount ?? batch?.expectedOutputAmount ?? batch?.plannedOutput ?? batch?.plannedCount,
+    0
+  );
+}
+function getBatchActualOutput(batch = {}) {
+  return num(
+    batch?.actualOutput ?? batch?.actualOutputCount ?? batch?.actualOutputAmount ?? batch?.finalOutput ?? batch?.finalCount ?? batch?.outputCount ?? batch?.outputAmount,
+    0
+  );
+}
+function getBatchWasteQty(batch = {}) {
+  return num(batch?.wasteQuantity ?? batch?.waste?.quantity ?? batch?.shrinkQuantity, 0);
+}
+function getBatchWasteReason(batch = {}) {
+  return batch?.wasteReason || batch?.waste?.reason || batch?.shrinkReason || batch?.reason || "Unspecified";
+}
+function getBatchKind(batch = {}) {
+  return lower(batch?.processType || batch?.processCategory || batch?.batchType || batch?.type);
+}
+function isReworkBatch(batch = {}) {
+  const hay = `${getBatchKind(batch)} ${lower(batch?.name)}`;
+  return /rework|repurpose|relabel|rebottle|repackage/.test(hay);
+}
+function getMoveRevenue(move = {}) {
+  const revenue = num(move?.revenue ?? move?.totalValue, NaN);
+  if (Number.isFinite(revenue)) return revenue;
+  return num(move?.unitPrice, 0) * num(move?.quantity, 0);
+}
+function withinDays(rawDate, days) {
+  const d = toDateMaybe(rawDate);
+  if (!d) return false;
+  const now = new Date();
+  now.setHours(0,0,0,0);
+  const target = new Date(d);
+  target.setHours(0,0,0,0);
+  const diff = Math.round((target - now) / 86400000);
+  return diff >= 0 && diff <= days;
+}
+function isPackagingSupply(supply = {}) {
+  const type = lower(supply?.type);
+  const unit = lower(supply?.unit);
+  const name = lower(supply?.name);
+  return PACKAGING_TYPE_HINTS.has(type) || PACKAGING_TYPE_HINTS.has(unit) || /bottle|jar|bag|label|capsule|dropper|box|wrapper|shrink/.test(name);
 }
 
 /* ---------- component ---------- */
@@ -166,13 +293,20 @@ export default function Analytics({
   supplyAudits = null,
 }) {
   // Default to something that always has data
+  
   const [chartKey, setChartKey] = useState("stageCounts");
   const [showValues, setShowValues] = useState(true);
   const [showAll, setShowAll] = useState(false);
   const [groupMode, setGroupMode] = useState("strain"); // "strain" | "recipe"
+  const [sortMode, setSortMode] = useState("recent"); // "recent" | "alpha"
 
   // Live-load audits if not provided
   const [audits, setAudits] = useState(Array.isArray(supplyAudits) ? supplyAudits : []);
+
+  const [materialLots, setMaterialLots] = useState([]);
+  const [processBatches, setProcessBatches] = useState([]);
+  const [inventoryMoves, setInventoryMoves] = useState([]);
+
   useEffect(() => setAudits(Array.isArray(supplyAudits) ? supplyAudits : []), [supplyAudits]);
   useEffect(() => {
     if (Array.isArray(supplyAudits)) return;
@@ -181,6 +315,21 @@ export default function Analytics({
     const col = collection(db, "users", u.uid, "supply_audits");
     const unsub = onSnapshot(col, (snap) => setAudits(snap.docs.map((d) => d.data())));
     return () => unsub && unsub();
+  }, []);
+  useEffect(() => {
+    const u = auth.currentUser;
+    if (!u) return;
+    const lotsCol = collection(db, "users", u.uid, "materialLots");
+    const batchCol = collection(db, "users", u.uid, "processBatches");
+    const moveCol = collection(db, "users", u.uid, "inventoryMovements");
+    const unsubLots = onSnapshot(lotsCol, (snap) => setMaterialLots(snap.docs.map((d) => ({ id: d.id, ...d.data() }))));
+    const unsubBatches = onSnapshot(batchCol, (snap) => setProcessBatches(snap.docs.map((d) => ({ id: d.id, ...d.data() }))));
+    const unsubMoves = onSnapshot(moveCol, (snap) => setInventoryMoves(snap.docs.map((d) => ({ id: d.id, ...d.data() }))));
+    return () => {
+      unsubLots && unsubLots();
+      unsubBatches && unsubBatches();
+      unsubMoves && unsubMoves();
+    };
   }, []);
 
   // Filters (strain + date)
@@ -260,13 +409,32 @@ export default function Analytics({
   const normalizedCostById = useMemo(() => {
     const src = showAll ? datasetAll : datasetActive;
     const map = new Map();
+
     for (const g of src) {
+      if (!g?.id) continue;
+
       const items = resolveRecipeItemsForGrow(g, recipeById);
-      const derived = computeItemsCost(items, supplyCostById);
+
+      // Derived per-serving cost from recipe + supplies
+      let derived = null;
+      if (items) {
+        const batchCost = computeItemsCost(items, supplyCostById); // total recipe cost
+        if (batchCost != null) {
+          const y = getRecipeYieldForGrow(g, recipeById);          // jars/tubs per batch
+          const divisor = y > 0 ? y : 1;
+          derived = Math.max(
+            0,
+            Number(((batchCost || 0) / divisor).toFixed(2))
+          );
+        }
+      }
+
       const stored = toNumber(g?.cost, null);
-      const cost = derived != null ? derived : (stored != null ? stored : 0);
-      if (g?.id) map.set(g.id, cost);
+      const cost = derived != null ? derived : stored != null ? stored : 0;
+
+      map.set(g.id, cost);
     }
+
     return map;
   }, [showAll, datasetAll, datasetActive, recipeById, supplyCostById]);
 
@@ -292,6 +460,155 @@ export default function Analytics({
     for (const s of supplies || []) if (s?.name) m.set(String(s.name), s.id);
     return m;
   }, [supplies]);
+
+  const supplyMetaById = useMemo(() => new Map((supplies || []).map((s) => [s.id, s])), [supplies]);
+  const packagingSupplyIds = useMemo(
+    () => new Set((supplies || []).filter((s) => isPackagingSupply(s)).map((s) => s.id)),
+    [supplies]
+  );
+
+  const postProcessAnalytics = useMemo(() => {
+    const finishedLots = (materialLots || []).filter((lot) => isFinishedPostProcessLot(lot));
+    const activeFinishedLots = finishedLots.filter((lot) => !isArchivedPostProcessLot(lot));
+    const blockedFinishedLots = activeFinishedLots.filter((lot) => isBlockedPostProcessLot(lot));
+    const releasedFinishedLots = activeFinishedLots.filter((lot) => getLotWorkflowState(lot) === "released");
+    const labelReadyLots = activeFinishedLots.filter((lot) => isLabelReadyPostProcessLot(lot));
+    const expiringSoonLots = activeFinishedLots.filter((lot) => withinDays(getLabelMeta(lot).bestBy || lot?.expirationDate || lot?.shelfLife?.bestBy, 30));
+
+    const workflowCounts = [
+      { name: "Blocked", value: blockedFinishedLots.length },
+      { name: "Released", value: releasedFinishedLots.length },
+      { name: "Label Ready", value: labelReadyLots.length },
+      { name: "Expiring Soon", value: expiringSoonLots.length },
+    ];
+
+    const valuationMap = {};
+    activeFinishedLots.forEach((lot) => {
+      const key = lot?.productType || lot?.finishedGoodType || lot?.lotType || "other";
+      const available = Math.max(0, getLotAvailableQty(lot));
+      const unitCost = num(lot?.costs?.unitCost ?? lot?.unitCost ?? lot?.pricing?.unitCost, 0);
+      const unitPrice = num(lot?.pricePerUnit ?? lot?.pricing?.pricePerUnit, 0);
+      if (!valuationMap[key]) valuationMap[key] = { name: key, units: 0, costValue: 0, salesValue: 0 };
+      valuationMap[key].units += available;
+      valuationMap[key].costValue += available * unitCost;
+      valuationMap[key].salesValue += available * unitPrice;
+    });
+    const valuationByType = Object.values(valuationMap)
+      .map((row) => ({ ...row, costValue: Number(row.costValue.toFixed(2)), salesValue: Number(row.salesValue.toFixed(2)) }))
+      .sort((a, b) => b.salesValue - a.salesValue);
+
+    const salesMap = {};
+    (inventoryMoves || []).forEach((move) => {
+      const type = lower(move?.movementType);
+      if (!["sell", "donate", "sample"].includes(type)) return;
+      const key = move?.destinationName || move?.destinationType || move?.counterparty || "Unspecified";
+      if (!salesMap[key]) salesMap[key] = { name: key, quantity: 0, revenue: 0, type: move?.destinationType || type };
+      salesMap[key].quantity += num(move?.quantity, 0);
+      salesMap[key].revenue += getMoveRevenue(move);
+    });
+    const salesByDestination = Object.values(salesMap)
+      .map((row) => ({ ...row, revenue: Number(row.revenue.toFixed(2)) }))
+      .sort((a, b) => b.revenue - a.revenue)
+      .slice(0, 12);
+
+    const wasteMap = {};
+    (processBatches || []).forEach((batch) => {
+      const qty = getBatchWasteQty(batch);
+      if (qty <= 0) return;
+      const key = getBatchWasteReason(batch);
+      if (!wasteMap[key]) wasteMap[key] = { name: key, quantity: 0 };
+      wasteMap[key].quantity += qty;
+    });
+    (inventoryMoves || []).forEach((move) => {
+      if (lower(move?.movementType) !== "waste") return;
+      const key = move?.reason || move?.note || "Inventory waste";
+      if (!wasteMap[key]) wasteMap[key] = { name: key, quantity: 0 };
+      wasteMap[key].quantity += num(move?.quantity, 0);
+    });
+    const wasteByReason = Object.values(wasteMap).sort((a, b) => b.quantity - a.quantity).slice(0, 12);
+
+    const efficiencyByBatch = (processBatches || [])
+      .map((batch) => {
+        const expected = getBatchExpectedOutput(batch);
+        const actual = getBatchActualOutput(batch);
+        if (!(expected > 0 || actual > 0)) return null;
+        const variance = actual - expected;
+        const variancePct = expected > 0 ? (variance / expected) * 100 : 0;
+        return {
+          name: batch?.name || batch?.id || "Batch",
+          kind: getBatchKind(batch) || "batch",
+          expected,
+          actual,
+          variance,
+          variancePct: Number(variancePct.toFixed(2)),
+        };
+      })
+      .filter(Boolean)
+      .sort((a, b) => Math.abs(b.variancePct) - Math.abs(a.variancePct))
+      .slice(0, 14);
+
+    const reworkSeries = (processBatches || [])
+      .filter((batch) => isReworkBatch(batch))
+      .map((batch) => ({
+        name: batch?.name || batch?.id || "Rework",
+        salvage: num(batch?.salvageOutput ?? batch?.salvageQuantity ?? batch?.actualOutput, 0),
+        waste: getBatchWasteQty(batch),
+      }))
+      .sort((a, b) => (b.salvage + b.waste) - (a.salvage + a.waste));
+
+    const packagingUsageMap = {};
+    (audits || []).forEach((audit) => {
+      const sid = audit?.supplyId || audit?.supply_id;
+      if (!sid || !packagingSupplyIds.has(sid)) return;
+      if (lower(audit?.action) !== "consume") return;
+      const name = audit?.supplyName || supplyMetaById.get(sid)?.name || sid;
+      if (!packagingUsageMap[name]) packagingUsageMap[name] = { name, used: 0, onHand: num(supplyMetaById.get(sid)?.quantity, 0) };
+      packagingUsageMap[name].used += num(audit?.amount, 0);
+    });
+    const packagingUsage = Object.values(packagingUsageMap)
+      .map((row) => ({ ...row, daysCover: row.used > 0 ? Math.round((row.onHand / ((row.used / 56) || 1))) : null }))
+      .sort((a, b) => b.used - a.used)
+      .slice(0, 12);
+
+    const packagingShortages = (supplies || [])
+      .filter((s) => isPackagingSupply(s))
+      .filter((s) => {
+        const qty = num(s?.quantity, 0);
+        const threshold = num(s?.lowStockThreshold ?? s?.reorderAt ?? s?.reorderThreshold, 0);
+        return threshold > 0 ? qty <= threshold : qty <= 0;
+      });
+
+    const labelCompleteness = activeFinishedLots.reduce((acc, lot) => {
+      const meta = getLabelMeta(lot);
+      if (meta.lotCode) acc.codes += 1;
+      if (meta.packDate) acc.packDates += 1;
+      if (meta.ingredients?.length) acc.ingredients += 1;
+      if (meta.allergens?.length) acc.allergens += 1;
+      return acc;
+    }, { codes: 0, packDates: 0, ingredients: 0, allergens: 0 });
+
+    return {
+      summary: {
+        activeFinished: activeFinishedLots.length,
+        blockedFinished: blockedFinishedLots.length,
+        releasedFinished: releasedFinishedLots.length,
+        labelReady: labelReadyLots.length,
+        expiringSoon: expiringSoonLots.length,
+        packagingShortages: packagingShortages.length,
+        reworkBatches: reworkSeries.length,
+      },
+      workflowCounts,
+      valuationByType,
+      salesByDestination,
+      wasteByReason,
+      efficiencyByBatch,
+      reworkSeries,
+      packagingUsage,
+      packagingShortages,
+      labelCompleteness,
+    };
+  }, [materialLots, processBatches, inventoryMoves, audits, packagingSupplyIds, supplyMetaById, supplies]);
+
 
   const {
     stageCounts,
@@ -351,16 +668,26 @@ export default function Analytics({
     }));
 
     // Cost per grow — NEW: use normalized cost if available
-    const growCosts = filteredAll.map((x) => {
-      const cost =
-        (x?.id && normalizedCostById.has(x.id))
-          ? normalizedCostById.get(x.id)
-          : toNumber(x.cost, 0);
-      return {
-        name: x.abbreviation || x.strain || (x.id ? x.id.slice(0, 6) : ""),
-        Cost: Number(cost || 0),
-      };
-    });
+    const growCosts = filteredAll
+      .map((x) => {
+        const cost =
+          (x?.id && normalizedCostById.has(x.id))
+            ? normalizedCostById.get(x.id)
+            : toNumber(x.cost, 0);
+        const ref = getRefDate(x);
+        return {
+          name: x.abbreviation || x.strain || (x.id ? x.id.slice(0, 6) : ""),
+          Cost: Number(cost || 0),
+          _refTime: ref ? ref.getTime() : 0,
+        };
+      })
+      .sort((a, b) => {
+        if (sortMode === "alpha") {
+          return a.name.localeCompare(b.name);
+        }
+        // default: most recently inoculated first
+        return (b._refTime || 0) - (a._refTime || 0);
+      });
 
     // Most used supplies (via recipes)
     const supplyCount = {};
@@ -473,17 +800,24 @@ export default function Analytics({
       return `${year}-W${String(w).padStart(2, "0")}`;
     };
     const weekLabels = [];
-    const temp = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
-    for (let i = weeksBack - 1; i >= 0; i--) {
-      const d = new Date(temp);
-      d.setUTCDate(d.getUTCDate() - i * 7);
-      weekLabels.push(weekKey(d));
-    }
+const temp = new Date(
+  Date.UTC(
+    now.getUTCFullYear(),
+    now.getUTCMonth(),
+    now.getUTCDate()
+  )
+);
+
+for (let i = weeksBack - 1; i >= 0; i--) {
+  const d = new Date(temp);
+  d.setUTCDate(d.getUTCDate() - i * 7);
+  weekLabels.push(weekKey(d));
+}
 
     const consumeEvents = (audits || []).filter((a) => String(a?.action).toLowerCase() === "consume" && a?.timestamp);
     const usingAudits = consumeEvents.length > 0;
 
-    // byKey maps LABEL -> { weeks:{wk:amount}, total }
+        // byKey maps LABEL -> { weeks:{wk:amount}, total }
     const byKey = {};
 
     if (usingAudits) {
@@ -493,37 +827,69 @@ export default function Analytics({
         if (!Number.isFinite(d.getTime())) return;
         const wk = weekKey(d);
         if (!weekLabels.includes(wk)) return;
-        const sid = a.supplyId || a.supply_id || "unknown";
-        const label = (supplyNameById.get(sid) || sid) + "";
+
+        const sid = a.supplyId || a.supply_id || null;
+        const friendly =
+          a.supplyName ||
+          a.name ||
+          (sid ? supplyNameById.get(sid) : null);
+
+        // If we still can't resolve a friendly name, ignore this audit
+        if (!friendly) return;
+
+        const label = String(friendly);
+
         if (!byKey[label]) byKey[label] = { weeks: {}, total: 0, sid };
         const amt = Number(a.amount || 0);
-        byKey[label].weeks[wk] = (byKey[label].weeks[wk] || 0) + (Number.isFinite(amt) ? amt : 0);
-        byKey[label].total += Number.isFinite(amt) ? amt : 0;
+        const safe = Number.isFinite(amt) ? amt : 0;
+        byKey[label].weeks[wk] =
+          (byKey[label].weeks[wk] || 0) + safe;
+        byKey[label].total += safe;
       });
     } else {
       // Synthetic estimate from recipe items on the grow's start week
       const windowStart = new Date(temp);
-      windowStart.setUTCDate(windowStart.getUTCDate() - (weeksBack - 1) * 7);
+      windowStart.setUTCDate(
+        windowStart.getUTCDate() - (weeksBack - 1) * 7
+      );
+
       filteredAll.forEach((g) => {
         const start = getRefDate(g);
         if (!start || start < windowStart) return;
         const wk = weekKey(start);
         if (!weekLabels.includes(wk)) return;
-        let items = resolveRecipeItemsForGrow(g, recipeById);
+
+        const items = resolveRecipeItemsForGrow(g, recipeById);
         if (!items) return;
+
         items.forEach((it) => {
-          const label =
+          const sid = it?.supplyId || null;
+          const friendly =
             it?.name ||
-            supplyNameById.get(it?.supplyId) ||
-            (it?.supplyId ? `Supply ${it.supplyId}` : "Unknown");
-          if (!byKey[label]) byKey[label] = { weeks: {}, total: 0, sid: it?.supplyId || null };
+            (sid ? supplyNameById.get(sid) : null);
+
+          // Skip items we can't map to a supply name
+          if (!friendly) return;
+
+          const label = String(friendly);
+
+          if (!byKey[label]) {
+            byKey[label] = {
+              weeks: {},
+              total: 0,
+              sid,
+            };
+          }
+
           const amt = Number(it?.amount);
           const use = Number.isFinite(amt) ? amt : 1; // assume 1 if undefined
-          byKey[label].weeks[wk] = (byKey[label].weeks[wk] || 0) + use;
+          byKey[label].weeks[wk] =
+            (byKey[label].weeks[wk] || 0) + use;
           byKey[label].total += use;
         });
       });
     }
+
 
     const topKeys = Object.entries(byKey)
       .sort((a, b) => b[1].total - a[1].total)
@@ -625,6 +991,7 @@ export default function Analytics({
     supplyQtyById,
     supplyIdByName,
     normalizedCostById,
+    sortMode,
   ]);
 
   // CSV export
@@ -645,6 +1012,13 @@ export default function Analytics({
       ...burnRateSeries.map((row) => ["BurnRate", row.week, JSON.stringify({ ...row, week: undefined }), ""].join(",")),
       ...yieldVsCost.map((p) => ["YieldVsCost", p.name, p.x, p.y].join(",")),
       ...throughputSeries.map((r) => ["Throughput", r.month, r.Started, r.Harvested].join(",")),
+      ...postProcessAnalytics.workflowCounts.map((d) => ["PostProcessWorkflow", d.name, d.value, ""].join(",")),
+      ...postProcessAnalytics.valuationByType.map((d) => ["PostProcessValuation", d.name, d.costValue.toFixed(2), d.salesValue.toFixed(2)].join(",")),
+      ...postProcessAnalytics.salesByDestination.map((d) => ["PostProcessSales", d.name, d.quantity, d.revenue.toFixed(2)].join(",")),
+      ...postProcessAnalytics.wasteByReason.map((d) => ["PostProcessWaste", d.name, d.quantity, ""].join(",")),
+      ...postProcessAnalytics.efficiencyByBatch.map((d) => ["PostProcessEfficiency", d.name, d.expected, `${d.actual}|${d.variancePct}%`].join(",")),
+      ...postProcessAnalytics.reworkSeries.map((d) => ["PostProcessRework", d.name, d.salvage, d.waste].join(",")),
+      ...postProcessAnalytics.packagingUsage.map((d) => ["PackagingUsage", d.name, d.used, d.onHand].join(",")),
     ];
     const blob = new Blob([lines.join("\n")], { type: "text/csv;charset=utf-8" });
     const a = document.createElement("a");
@@ -683,6 +1057,7 @@ export default function Analytics({
         ttsSeries,
         burnTopSupplies,
         throughputSeries,
+        postProcess: postProcessAnalytics,
       },
     };
     const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
@@ -720,7 +1095,14 @@ export default function Analytics({
             <ResponsiveContainer width="100%" height={380}>
               <BarChart data={yieldData}>
                 <CartesianGrid {...gridProps} />
-                <XAxis dataKey="name" {...axisProps} />
+                <XAxis
+                  dataKey="name"
+                  {...axisProps}
+                  interval={0}
+                  angle={-25}
+                  textAnchor="end"
+                  height={70}
+                />
                 <YAxis {...axisProps} tickFormatter={fmtInt} />
                 <Tooltip formatter={(v, n) => (n === "Wet" || n === "Dry" ? fmtG(v) : fmtInt(v))} contentStyle={{ background: "#0b0f19", border: "1px solid #334155", color: "#e5e7eb" }} />
                 <Bar dataKey="Wet" fill={PALETTE.wet}>{showValues && <LabelList dataKey="Wet" position="top" formatter={fmtInt} />}</Bar>
@@ -754,7 +1136,14 @@ export default function Analytics({
             <ResponsiveContainer width="100%" height={360}>
               <LineChart data={growCosts}>
                 <CartesianGrid {...gridProps} />
-                <XAxis dataKey="name" {...axisProps} />
+                <XAxis
+                  dataKey="name"
+                  {...axisProps}
+                  interval={0}
+                  angle={-25}
+                  textAnchor="end"
+                  height={70}
+                />
                 <YAxis {...axisProps} tickFormatter={fmtInt} />
                 <Tooltip formatter={(v) => fmt$(v)} contentStyle={{ background: "#0b0f19", border: "1px solid #334155", color: "#e5e7eb" }} />
                 <Legend />
@@ -936,6 +1325,138 @@ export default function Analytics({
           </>
         );
 
+
+      case "ppWorkflow":
+        return (
+          <>
+            <KeyLegend items={[
+              { label: "Blocked", color: "#f87171" },
+              { label: "Released", color: "#34d399" },
+              { label: "Label Ready", color: "#60a5fa" },
+              { label: "Expiring Soon", color: "#f59e0b" },
+            ]} />
+            <ResponsiveContainer width="100%" height={360}>
+              <BarChart data={postProcessAnalytics.workflowCounts}>
+                <CartesianGrid {...gridProps} />
+                <XAxis dataKey="name" {...axisProps} />
+                <YAxis {...axisProps} tickFormatter={fmtInt} />
+                <Tooltip formatter={(v) => fmtInt(v)} contentStyle={{ background: "#0b0f19", border: "1px solid #334155", color: "#e5e7eb" }} />
+                <Bar dataKey="value" fill="#60a5fa">{showValues && <LabelList dataKey="value" position="top" formatter={fmtInt} />}</Bar>
+              </BarChart>
+            </ResponsiveContainer>
+          </>
+        );
+
+      case "ppValuation":
+        return (
+          <>
+            <KeyLegend items={[{ label: "Cost value", color: "#f59e0b" }, { label: "Sales value", color: "#34d399" }]} />
+            <ResponsiveContainer width="100%" height={380}>
+              <BarChart data={postProcessAnalytics.valuationByType}>
+                <CartesianGrid {...gridProps} />
+                <XAxis dataKey="name" {...axisProps} />
+                <YAxis {...axisProps} tickFormatter={fmtInt} />
+                <Tooltip formatter={(v) => fmt$(v)} contentStyle={{ background: "#0b0f19", border: "1px solid #334155", color: "#e5e7eb" }} />
+                <Legend />
+                <Bar dataKey="costValue" fill="#f59e0b" />
+                <Bar dataKey="salesValue" fill="#34d399" />
+              </BarChart>
+            </ResponsiveContainer>
+          </>
+        );
+
+      case "ppSales":
+        return (
+          <>
+            <KeyLegend items={[{ label: "Revenue by destination", color: "#22d3ee" }]} />
+            <ResponsiveContainer width="100%" height={380}>
+              <BarChart data={postProcessAnalytics.salesByDestination}>
+                <CartesianGrid {...gridProps} />
+                <XAxis dataKey="name" {...axisProps} interval={0} angle={-25} textAnchor="end" height={70} />
+                <YAxis {...axisProps} tickFormatter={fmtInt} />
+                <Tooltip formatter={(v, n) => n === "revenue" ? fmt$(v) : fmtInt(v)} contentStyle={{ background: "#0b0f19", border: "1px solid #334155", color: "#e5e7eb" }} />
+                <Legend />
+                <Bar dataKey="revenue" fill="#22d3ee" />
+                <Bar dataKey="quantity" fill="#60a5fa" />
+              </BarChart>
+            </ResponsiveContainer>
+          </>
+        );
+
+      case "ppWaste":
+        return (
+          <>
+            <KeyLegend items={[{ label: "Waste by reason", color: "#f87171" }]} />
+            <ResponsiveContainer width="100%" height={380}>
+              <BarChart data={postProcessAnalytics.wasteByReason}>
+                <CartesianGrid {...gridProps} />
+                <XAxis dataKey="name" {...axisProps} interval={0} angle={-25} textAnchor="end" height={80} />
+                <YAxis {...axisProps} tickFormatter={fmtInt} />
+                <Tooltip formatter={(v) => fmtInt(v)} contentStyle={{ background: "#0b0f19", border: "1px solid #334155", color: "#e5e7eb" }} />
+                <Bar dataKey="quantity" fill="#f87171" />
+              </BarChart>
+            </ResponsiveContainer>
+          </>
+        );
+
+      case "ppEfficiency":
+        return (
+          <>
+            <KeyLegend items={[{ label: "Expected", color: "#60a5fa" }, { label: "Actual", color: "#34d399" }]} />
+            <ResponsiveContainer width="100%" height={380}>
+              <BarChart data={postProcessAnalytics.efficiencyByBatch}>
+                <CartesianGrid {...gridProps} />
+                <XAxis dataKey="name" {...axisProps} interval={0} angle={-25} textAnchor="end" height={80} />
+                <YAxis {...axisProps} tickFormatter={fmtInt} />
+                <Tooltip labelFormatter={(label, payload) => {
+                  const row = payload?.[0]?.payload;
+                  return row ? `${label} · ${row.variancePct}% variance` : label;
+                }} formatter={(v) => fmtInt(v)} contentStyle={{ background: "#0b0f19", border: "1px solid #334155", color: "#e5e7eb" }} />
+                <Legend />
+                <Bar dataKey="expected" fill="#60a5fa" />
+                <Bar dataKey="actual" fill="#34d399" />
+              </BarChart>
+            </ResponsiveContainer>
+          </>
+        );
+
+      case "ppPackaging":
+        return (
+          <>
+            <KeyLegend items={[{ label: "Packaging used", color: "#a78bfa" }, { label: "On hand", color: "#f59e0b" }]} />
+            <ResponsiveContainer width="100%" height={380}>
+              <BarChart data={postProcessAnalytics.packagingUsage}>
+                <CartesianGrid {...gridProps} />
+                <XAxis dataKey="name" {...axisProps} interval={0} angle={-25} textAnchor="end" height={80} />
+                <YAxis {...axisProps} tickFormatter={fmtInt} />
+                <Tooltip formatter={(v) => fmtInt(v)} contentStyle={{ background: "#0b0f19", border: "1px solid #334155", color: "#e5e7eb" }} />
+                <Legend />
+                <Bar dataKey="used" fill="#a78bfa" />
+                <Bar dataKey="onHand" fill="#f59e0b" />
+              </BarChart>
+            </ResponsiveContainer>
+          </>
+        );
+
+      case "ppRework":
+        return (
+          <>
+            <KeyLegend items={[{ label: "Salvage", color: "#34d399" }, { label: "Waste", color: "#f87171" }]} />
+            <ResponsiveContainer width="100%" height={380}>
+              <BarChart data={postProcessAnalytics.reworkSeries}>
+                <CartesianGrid {...gridProps} />
+                <XAxis dataKey="name" {...axisProps} interval={0} angle={-25} textAnchor="end" height={80} />
+                <YAxis {...axisProps} tickFormatter={fmtInt} />
+                <Tooltip formatter={(v) => fmtInt(v)} contentStyle={{ background: "#0b0f19", border: "1px solid #334155", color: "#e5e7eb" }} />
+                <Legend />
+                <Bar dataKey="salvage" fill="#34d399" />
+                <Bar dataKey="waste" fill="#f87171" />
+              </BarChart>
+            </ResponsiveContainer>
+          </>
+        );
+
+
       default:
         return null;
     }
@@ -944,13 +1465,24 @@ export default function Analytics({
   const showGroupChooser = chartKey === "contamRate" || chartKey === "timeToStage";
 
   return (
-    <div className="space-y-4 p-4 bg-white dark:bg-zinc-900 rounded-2xl shadow">
+    <div className="space-y-4 p-4 md:p-6 bg-white dark:bg-zinc-900 rounded-2xl border border-zinc-200 dark:border-zinc-800 shadow-sm">
       {/* overview cards */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
         <StatCard label="Active Grows" value={overview.totalActive} />
         <StatCard label="Unique Strains" value={overview.uniqueStrains} />
         <StatCard label="Avg Age (days)" value={overview.avgAgeDays} />
         <StatCard label="Est. Running Cost" value={`$${overview.runningCost}`} />
+      </div>
+
+      <div className="grid grid-cols-2 md:grid-cols-4 xl:grid-cols-8 gap-4">
+        <StatCard label="PP Active Finished" value={postProcessAnalytics.summary.activeFinished} />
+        <StatCard label="PP Blocked" value={postProcessAnalytics.summary.blockedFinished} />
+        <StatCard label="PP Released" value={postProcessAnalytics.summary.releasedFinished} />
+        <StatCard label="Label Ready" value={postProcessAnalytics.summary.labelReady} />
+        <StatCard label="Expiring ≤30d" value={postProcessAnalytics.summary.expiringSoon} />
+        <StatCard label="Packaging Shortages" value={postProcessAnalytics.summary.packagingShortages} />
+        <StatCard label="Rework Batches" value={postProcessAnalytics.summary.reworkBatches} />
+        <StatCard label="Label Codes" value={`${postProcessAnalytics.labelCompleteness.codes}/${postProcessAnalytics.summary.activeFinished || 0}`} />
       </div>
 
       <div className="flex flex-wrap items-center gap-2">
@@ -967,10 +1499,17 @@ export default function Analytics({
           <option value="recipeUsage">Most Used Supplies</option>
           <option value="contamRate">Contamination Rate</option>
           <option value="timeToStage">Time to Stage (median)</option>
-          <option value="burnRate">Supply Burn Rate + Forecast</option>
+          <option value="burnRate">Top Supplies: Weekly Usage &amp; Days Until Empty</option>
           <option value="yieldVsCost">Yield vs Cost</option>
           <option value="throughput">Throughput (Started vs Harvested)</option>
           <option value="stageTransitions">Stage Transitions Over Time</option>
+          <option value="ppWorkflow">Post Process Workflow Status</option>
+          <option value="ppValuation">Post Process Inventory Valuation</option>
+          <option value="ppSales">Post Process Sales by Destination</option>
+          <option value="ppWaste">Post Process Waste by Reason</option>
+          <option value="ppEfficiency">Post Process Batch Efficiency</option>
+          <option value="ppPackaging">Packaging Usage vs On Hand</option>
+          <option value="ppRework">Rework Salvage vs Waste</option>
         </select>
 
         {showGroupChooser && (
@@ -996,6 +1535,18 @@ export default function Analytics({
           ))}
         </select>
 
+        {chartKey === "growCosts" && (
+          <select
+            className="rounded-lg border border-gray-300 dark:border-zinc-700 bg-white dark:bg-zinc-800 text-gray-900 dark:text-white px-3 py-2"
+            value={sortMode}
+            onChange={(e) => setSortMode(e.target.value)}
+            title="Sort cost chart"
+          >
+            <option value="recent">Newest inoculated first</option>
+            <option value="alpha">Name A → Z</option>
+          </select>
+        )}
+
         <div className="flex items-center gap-2 text-sm">
           <span className="opacity-70">From</span>
           <input
@@ -1016,7 +1567,7 @@ export default function Analytics({
         <label className="inline-flex items-center gap-2 text-sm select-none">
           <input
             type="checkbox"
-            className="accent-blue-600"
+            style={{ accentColor: "var(--_accent-600)" }}
             checked={showValues}
             onChange={(e) => setShowValues(e.target.checked)}
           />
@@ -1029,7 +1580,7 @@ export default function Analytics({
             <button
               type="button"
               onClick={() => setShowAll(false)}
-              className={`px-3 py-2 text-sm border-r border-zinc-300 dark:border-zinc-700 ${!showAll ? "bg-emerald-600 text-white" : "bg-white text-zinc-900 dark:bg-zinc-900 dark:text-zinc-200"}`}
+              className="chip !rounded-none !border-0 text-sm"
               aria-pressed={!showAll}
               title="Show only active grows"
             >
@@ -1038,7 +1589,7 @@ export default function Analytics({
             <button
               type="button"
               onClick={() => setShowAll(true)}
-              className={`px-3 py-2 text-sm ${showAll ? "bg-emerald-600 text-white" : "bg-white text-zinc-900 dark:bg-zinc-900 dark:text-zinc-200"}`}
+              className="chip !rounded-none !border-0 text-sm"
               aria-pressed={showAll}
               title="Include archived and contaminated"
             >
@@ -1046,12 +1597,12 @@ export default function Analytics({
             </button>
           </div>
 
-          <button onClick={exportCSV} className="px-3 py-2 rounded-lg bg-emerald-600 text-white hover:bg-emerald-700">
+          <button onClick={exportCSV} className="btn btn-accent">
             Export CSV
           </button>
           <button
             onClick={exportJSON}
-            className="px-3 py-2 rounded-lg bg-zinc-800 text-white hover:bg-zinc-700 border border-zinc-700"
+            className="btn"
             title="Export grows, tasks, recipes, supplies, audits as JSON + analytic snapshots"
           >
             Export JSON

@@ -2,11 +2,27 @@
   "cookies": [],
   "origins": [
     {
-      "origin": "https://mushroom-tracker-app.vercel.app",
+      "origin": "http://127.0.0.1:5173",
       "localStorage": [
         {
+          "name": "theme",
+          "value": "light"
+        },
+        {
+          "name": "growFiltersLast",
+          "value": "{\"types\":[],\"stages\":[],\"sortMode\":\"new\"}"
+        },
+        {
           "name": "firebase:authUser:AIzaSyAk1paC3CBjU1RH2cXf_8m6xOnZkH_xYWg:[DEFAULT]",
-          "value": "{\"uid\":\"fId2dYKl08dg3hWlDV7lOgOnPTH2\",\"email\":\"admin@chaoticmyco.com\",\"emailVerified\":false,\"isAnonymous\":false,\"providerData\":[{\"providerId\":\"password\",\"uid\":\"admin@chaoticmyco.com\",\"displayName\":null,\"email\":\"admin@chaoticmyco.com\",\"phoneNumber\":null,\"photoURL\":null}],\"stsTokenManager\":{\"refreshToken\":\"AMf-vBzGSfRP3FVFph5v6gP03r_DmHAs2ajhU-1G-5ioGjoeBYEbwMKgAWMPHFirvYdtzi6FXuO0qeEZF3vCfOZHWGakPTOWSZOOq9y-XqKVCQnD1qEWsxVulICuvQwTTptFupYAT6P1p7DHcblocdDv6_r7LsNf17f7jpYI4jva9M0T-B_Bp36vY3ZWD1bI1yN8IesZ5A9QEU-Y-oDVIae-MkLjk9EGGOwOd_WJyjcT86ljlDqgp9s\",\"accessToken\":\"eyJhbGciOiJSUzI1NiIsImtpZCI6IjJiN2JhZmIyZjEwY2FlMmIxZjA3ZjM4MTZjNTQyMmJlY2NhNWMyMjMiLCJ0eXAiOiJKV1QifQ.eyJpc3MiOiJodHRwczovL3NlY3VyZXRva2VuLmdvb2dsZS5jb20vY2hhb3RpYy1uZXV0cmFsLXRyYWNrZXIiLCJhdWQiOiJjaGFvdGljLW5ldXRyYWwtdHJhY2tlciIsImF1dGhfdGltZSI6MTc1NDYzNjg4MywidXNlcl9pZCI6ImZJZDJkWUtsMDhkZzNoV2xEVjdsT2dPblBUSDIiLCJzdWIiOiJmSWQyZFlLbDA4ZGczaFdsRFY3bE9nT25QVEgyIiwiaWF0IjoxNzU0NjM2ODgzLCJleHAiOjE3NTQ2NDA0ODMsImVtYWlsIjoiYWRtaW5AY2hhb3RpY215Y28uY29tIiwiZW1haWxfdmVyaWZpZWQiOmZhbHNlLCJmaXJlYmFzZSI6eyJpZGVudGl0aWVzIjp7ImVtYWlsIjpbImFkbWluQGNoYW90aWNteWNvLmNvbSJdfSwic2lnbl9pbl9wcm92aWRlciI6InBhc3N3b3JkIn19.rsW4Mc1X-ZdC53Hn_cNmAKDzVcwJoSaljKy6b6_GCDkKiuDZSpAmx3qyH5496OM-qZ_ina4ytQq_ZqnittU72MaZ-jP2EbCOui2NR0ipIyWwyvp9WGEfgTUFRB3HtbImG9wt5l1gDkYcEpQDhhlqrAGn1Nw_13q1WwMu4VdUxWWxmzcERd_jTrAJXpz2WzjctmSBcM6PHHKlgJQ3sTeLFsssK3kW1noFoiZxZHGY7J3nQyZiNbjmKZuLTRAF0O7r7KZwsdtMAWG4p1U7IpJ3-5LzcbYu6flo_wBfax6uh0JUihnsJCy2ltZniy3qxLXu48N1vITSXCm-eD6kiTPu1Q\",\"expirationTime\":1754640483863},\"createdAt\":\"1754632583485\",\"lastLoginAt\":\"1754636883779\",\"apiKey\":\"AIzaSyAk1paC3CBjU1RH2cXf_8m6xOnZkH_xYWg\",\"appName\":\"[DEFAULT]\"}"
+          "value": "{\"uid\":\"Ogtgqt4tw8fO2VfFL7IYTt2DQyb2\",\"email\":\"test@test.com\",\"emailVerified\":false,\"isAnonymous\":false,\"providerData\":[{\"providerId\":\"password\",\"uid\":\"test@test.com\",\"displayName\":null,\"email\":\"test@test.com\",\"phoneNumber\":null,\"photoURL\":null}],\"stsTokenManager\":{\"refreshToken\":\"AMf-vBwBytahsP2yYfrf8BTaWsj59IiRcjQ0vKICjesloSC9LmbqG6q3tNPgAkKy19npWFRRno1ffgo8P30238jX_p_iC6_C64ALio6yjxf1PcmTgeUha5EmUKJ51CAJos-kwHcH2XWFQj4BURfLCouOXEUHmIV2RZERqyW2r9iEM5ePwF2Qdr2ikMbDFk6rjuQ-SdLj8PhygQVm3DgqLxKPSPJcrc98Qn_Yhbgx743uyAPKyathN8Q\",\"accessToken\":\"eyJhbGciOiJSUzI1NiIsImtpZCI6ImEyZGZiOGEzOGI1MmQ5ZjA5ZWRjYWE1MDcwYTBlOGYwYTllMDk4YmEiLCJ0eXAiOiJKV1QifQ.eyJpc3MiOiJodHRwczovL3NlY3VyZXRva2VuLmdvb2dsZS5jb20vY2hhb3RpYy1uZXV0cmFsLXRyYWNrZXIiLCJhdWQiOiJjaGFvdGljLW5ldXRyYWwtdHJhY2tlciIsImF1dGhfdGltZSI6MTc3MzM4MDgwOCwidXNlcl9pZCI6Ik9ndGdxdDR0dzhmTzJWZkZMN0lZVHQyRFF5YjIiLCJzdWIiOiJPZ3RncXQ0dHc4Zk8yVmZGTDdJWVR0MkRReWIyIiwiaWF0IjoxNzczMzgwODA4LCJleHAiOjE3NzMzODQ0MDgsImVtYWlsIjoidGVzdEB0ZXN0LmNvbSIsImVtYWlsX3ZlcmlmaWVkIjpmYWxzZSwiZmlyZWJhc2UiOnsiaWRlbnRpdGllcyI6eyJlbWFpbCI6WyJ0ZXN0QHRlc3QuY29tIl19LCJzaWduX2luX3Byb3ZpZGVyIjoicGFzc3dvcmQifX0.U1-dEJMHXYfveYdzuxSs7zwhwrChtnDPy2l6MM7D-5V7hTXh7v1rB37eCSfM_SH4oHaQOTHIKcvt2qPbWvlZ5QHmsi9l8wObUmNIM4NQyaT2tbNKfs1dEkLd7IYZWMvkgUV6jtnKB6NggLNBat9m98Kn8gx2O9D-0-9Y8WvhvZCPzHTMRD_KJVGNsutFCE5yoDnXCDFo9QxvqkTxMODWM603hQBtYXzxgA-Y6AR4DOvLBkyee9GA635LyHcrArSRexUJvJ7mbEqWm5s67ZlvIzGkl6xuFMTc7SXwcPep-aMDGhenJrJSaNQXmvKy7GM83MmaT1GVtSeCDz0Rb2IVIg\",\"expirationTime\":1773384408125},\"createdAt\":\"1773086668060\",\"lastLoginAt\":\"1773380808066\",\"apiKey\":\"AIzaSyAk1paC3CBjU1RH2cXf_8m6xOnZkH_xYWg\",\"appName\":\"[DEFAULT]\"}"
+        },
+        {
+          "name": "__prefs__",
+          "value": "{\"theme\":\"emerald\",\"darkMode\":false}"
+        },
+        {
+          "name": "tour.version",
+          "value": "2"
         }
       ]
     }

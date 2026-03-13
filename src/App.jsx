@@ -1,6 +1,6 @@
 // src/App.jsx
 import React, { useEffect, useMemo, useRef, useState, Suspense } from "react";
-import { Routes, Route } from "react-router-dom";
+import { Routes, Route, useLocation } from "react-router-dom";
 import { auth, db, storage } from "./firebase-config";
 import { onAuthStateChanged, signOut } from "firebase/auth";
 import {
@@ -31,7 +31,6 @@ import {
 import "./index.css";
 
 import Auth from "./pages/Auth";
-// REMOVED wrapper usage: NewGrowModal/GrowModal
 import GrowList from "./components/Grow/GrowList";
 import GrowDetail from "./components/Grow/GrowDetail";
 import EditStageStatusModal from "./components/Grow/EditStageStatusModal";
@@ -45,7 +44,6 @@ import LocalReminders from "./components/ui/LocalReminders";
 import OnboardingCoach from "./utils/OnboardingCoach";
 import { ConfirmProvider } from "./components/ui/ConfirmDialog";
 
-// NEW: direct Modal + GrowForm
 import Modal from "./components/ui/Modal";
 import GrowForm from "./components/Grow/GrowForm";
 
@@ -59,6 +57,7 @@ const LabelPrintWrapper = React.lazy(() => import("./components/Grow/LabelPrintW
 const RecipeManager = React.lazy(() => import("./components/recipes/RecipeManager"));
 const COGManager = React.lazy(() => import("./components/recipes/COGManager.jsx"));
 const TaskManager = React.lazy(() => import("./components/Tasks/TaskManager"));
+const PostProcessManager = React.lazy(() => import("./components/postprocess/PostProcessManager"));
 const GrowTimeline = React.lazy(() => import("./components/Grow/GrowTimeline"));
 const ScanBarcodeModal = React.lazy(() => import("./components/ui/ScanBarcodeModal"));
 const RecipeStepsPanel = React.lazy(() => import("./components/recipes/RecipeStepsPanel"));
@@ -67,6 +66,7 @@ const prefetchers = {
   analytics: () => import("./pages/Analytics"),
   calendar: () => import("./pages/CalendarView"),
   timeline: () => import("./components/Grow/GrowTimeline"),
+  postprocess: () => import("./components/postprocess/PostProcessManager"),
   cog: () => import("./components/recipes/COGManager.jsx"),
   recipes: () => import("./components/recipes/RecipeManager"),
   strains: () => import("./pages/StrainManager"),
@@ -79,26 +79,43 @@ const prefetchers = {
 const systemPrefersDark =
   () => window.matchMedia?.("(prefers-color-scheme: dark)")?.matches || false;
 
+const DEFAULT_ACCENT = "emerald";
+const DEFAULT_THEME_STYLE = "chaotic";
+
 function normalizePrefs(input = {}) {
-  const accent = input.accent ?? input.theme ?? "chaotic";
+  let accent = input.accent ?? input.theme;
+  if (!accent) {
+    try {
+      accent = localStorage.getItem("cn_last_accent") || DEFAULT_ACCENT;
+    } catch {
+      accent = DEFAULT_ACCENT;
+    }
+  }
+
   const mode =
     input.mode ??
-    (typeof input.darkMode === "boolean" ? (input.darkMode ? "dark" : "light") : systemPrefersDark());
+    (typeof input.darkMode === "boolean"
+      ? input.darkMode
+        ? "dark"
+        : "light"
+      : "system");
   const darkMode = mode === "dark" ? true : mode === "light" ? false : systemPrefersDark();
-  return { accent, mode, theme: accent, darkMode };
+  const themeStyle = input.themeStyle === "default" ? "default" : DEFAULT_THEME_STYLE;
+  return { accent, mode, theme: accent, darkMode, themeStyle };
 }
 
 function applyThemeToDOM(prefsLike) {
   const p = normalizePrefs(prefsLike);
   const root = document.documentElement;
-  ["emerald", "violet", "amber", "rose", "slate", "chaotic", "teal", "indigo", "sky"].forEach((t) =>
-    root.classList.remove(`theme-${t}`)
+  ["emerald", "violet", "amber", "rose", "slate", "teal", "indigo", "sky"].forEach(
+    (t) => root.classList.remove(`theme-${t}`)
   );
-  root.classList.add(`theme-${p.accent || "emerald"}`);
+  root.classList.add(`theme-${p.accent || DEFAULT_ACCENT}`);
   root.classList.toggle("dark", !!p.darkMode);
 
   try {
-    const style = (prefsLike && prefsLike.themeStyle) || localStorage.getItem("cn_theme_style") || "default";
+    const style =
+      (prefsLike && prefsLike.themeStyle) || localStorage.getItem("cn_theme_style") || "default";
     root.classList.toggle("bg-chaotic", style === "chaotic");
   } catch {}
 
@@ -114,6 +131,50 @@ function applyThemeToDOM(prefsLike) {
   } catch {}
 }
 
+const PERSISTED_PREF_KEYS = [
+  "accent",
+  "mode",
+  "theme",
+  "darkMode",
+  "fontScale",
+  "dyslexiaFont",
+  "reduceMotion",
+  "compactUI",
+  "highContrast",
+  "largeTaps",
+  "showSplashOnLoad",
+  "splashMinMs",
+  "guideEnabled",
+  "temperatureUnit",
+  "autoConvertEnvNotes",
+];
+
+function buildPersistedPrefs(input = {}) {
+  return {
+    accent: input.accent,
+    mode: input.mode,
+    theme: input.accent,
+    darkMode: input.darkMode,
+    fontScale: input.fontScale,
+    dyslexiaFont: input.dyslexiaFont,
+    reduceMotion: input.reduceMotion,
+    compactUI: input.compactUI,
+    highContrast: input.highContrast,
+    largeTaps: input.largeTaps,
+    showSplashOnLoad: input.showSplashOnLoad,
+    splashMinMs: input.splashMinMs,
+    guideEnabled: input.guideEnabled,
+    temperatureUnit: input.temperatureUnit,
+    autoConvertEnvNotes: input.autoConvertEnvNotes,
+  };
+}
+
+function persistedPrefsChanged(cloud = {}, next = {}) {
+  return PERSISTED_PREF_KEYS.some(
+    (key) => JSON.stringify(cloud?.[key]) !== JSON.stringify(next?.[key])
+  );
+}
+
 (function applyInitialTheme() {
   try {
     const lsNew = JSON.parse(localStorage.getItem("preferences") || "null");
@@ -124,7 +185,7 @@ function applyThemeToDOM(prefsLike) {
       if (legacy && (legacy.theme || typeof legacy.darkMode === "boolean")) {
         applyThemeToDOM(legacy);
       } else {
-        applyThemeToDOM({ accent: "chaotic", mode: "system" });
+        applyThemeToDOM({ accent: DEFAULT_ACCENT, mode: "system", themeStyle: DEFAULT_THEME_STYLE });
       }
     }
     try {
@@ -138,9 +199,9 @@ function applyThemeToDOM(prefsLike) {
 
 const DEFAULT_PREFS = {
   mode: "system",
-  accent: "chaotic",
-  theme: "chaotic",
-  themeStyle: "chaotic",
+  accent: DEFAULT_ACCENT,
+  theme: DEFAULT_ACCENT,
+  themeStyle: DEFAULT_THEME_STYLE,
   darkMode: systemPrefersDark(),
   fontScale: "small",
   dyslexiaFont: false,
@@ -183,6 +244,7 @@ const DEFAULT_PREFS = {
 const Skel = ({ className = "" }) => (
   <div className={`animate-pulse rounded-md bg-zinc-200/80 dark:bg-zinc-800 ${className}`} />
 );
+
 const CardShell = ({ children }) => (
   <div className="bg-white dark:bg-zinc-900 rounded-2xl shadow p-4 border border-zinc-200/60 dark:border-zinc-800/60">
     {children}
@@ -212,6 +274,7 @@ const DashboardSkeleton = () => (
     </div>
   </div>
 );
+
 const AnalyticsSkeleton = () => (
   <CardShell>
     <Skel className="h-6 w-32 mb-4" />
@@ -222,12 +285,14 @@ const AnalyticsSkeleton = () => (
     </div>
   </CardShell>
 );
+
 const CalendarSkeleton = () => (
   <CardShell>
     <Skel className="h-6 w-28 mb-4" />
     <Skel className="h-[540px] w-full rounded-xl" />
   </CardShell>
 );
+
 const SettingsSkeleton = () => (
   <CardShell>
     <Skel className="h-6 w-24 mb-4" />
@@ -256,6 +321,52 @@ export default function App() {
   const [editingGrow, setEditingGrow] = useState(null);
   const [showOnboarding, setShowOnboarding] = useState(false);
   const [showScanner, setShowScanner] = useState(false);
+  const location = useLocation();
+  const scanParamRef = useRef({ tab: null, libKey: null });
+  const [openLibraryItemId, setOpenLibraryItemId] = useState(null);
+
+  const consumeOpenLibraryItem = () => {
+    setOpenLibraryItemId(null);
+    scanParamRef.current.libKey = null;
+  };
+
+  useEffect(() => {
+    try {
+      const params = new URLSearchParams(location.search || "");
+      const tab = params.get("tab");
+      const lib = params.get("lib") || params.get("library") || params.get("storage");
+      const nonce = params.get("_") || params.get("nonce") || "";
+      const libKey = lib ? `${lib}::${nonce}` : null;
+
+      const allowedTabs = new Set([
+        "dashboard",
+        "tasks",
+        "analytics",
+        "calendar",
+        "timeline",
+        "postprocess",
+        "cog",
+        "recipes",
+        "strains",
+        "labels",
+        "archive",
+        "settings",
+      ]);
+
+      if (tab && allowedTabs.has(tab) && tab !== scanParamRef.current.tab) {
+        scanParamRef.current.tab = tab;
+        setActiveTab(tab);
+      }
+
+      if (lib && libKey !== scanParamRef.current.libKey) {
+        scanParamRef.current.libKey = libKey;
+        setOpenLibraryItemId(lib);
+        setActiveTab("strains");
+      }
+    } catch {
+      // ignore bad query strings
+    }
+  }, [location.search]);
 
   const splashStartRef = useRef(Date.now());
   const [showSplash, setShowSplash] = useState(true);
@@ -270,16 +381,9 @@ export default function App() {
     const merged = { ...p, ...n };
     applyThemeToDOM(merged);
     try {
-      localStorage.setItem(
-        "preferences",
-        JSON.stringify({
-          mode: merged.mode,
-          accent: merged.accent,
-          temperatureUnit: merged.temperatureUnit,
-          autoConvertEnvNotes: merged.autoConvertEnvNotes,
-          guideEnabled: merged.guideEnabled,
-        })
-      );
+      localStorage.setItem("preferences", JSON.stringify(merged));
+      localStorage.setItem("cn_last_accent", merged.accent || DEFAULT_ACCENT);
+      localStorage.setItem("cn_theme_style", merged.themeStyle === "default" ? "default" : DEFAULT_THEME_STYLE);
     } catch {}
     document.documentElement.style.setProperty("--font-scale", merged.fontScale || "small");
   };
@@ -326,6 +430,7 @@ export default function App() {
     { id: "Grain Jar", icon: Wheat },
     { id: "Bulk", icon: Package },
   ];
+
   const STAGE_META = [
     { id: "Inoculated", icon: Syringe },
     { id: "Colonizing", icon: CircleDot },
@@ -361,9 +466,9 @@ export default function App() {
     const counts = { Agar: 0, LC: 0, "Grain Jar": 0, Bulk: 0, Other: 0 };
     for (const g of activeGrowsBase) {
       const status = String(g?.status || "").toLowerCase();
-      if (status === "stored") continue;           // exclude Stored from "Active" counts
+      if (status === "stored") continue;
       const st = normalizeStage(g?.stage);
-      if (st === "Harvested") continue;            // exclude finished-but-not-archived
+      if (st === "Harvested") continue;
       counts[normalizeType(g.type || g.growType)]++;
     }
     return counts;
@@ -492,34 +597,21 @@ export default function App() {
 
         const merged = {
           ...DEFAULT_PREFS,
-          ...normalizePrefs(cloud),
-          ...normalizePrefs(localNew),
+          ...legacy,
           ...normalizePrefs(legacy),
+          ...localNew,
+          ...normalizePrefs(localNew),
           ...cloud,
+          ...normalizePrefs(cloud),
         };
 
         setPrefs(merged);
         applyAppearance(merged);
 
-        await setDoc(
-          prefRef,
-          {
-            accent: merged.accent,
-            mode: merged.mode,
-            theme: merged.accent,
-            darkMode: merged.darkMode,
-            fontScale: merged.fontScale,
-            dyslexiaFont: merged.dyslexiaFont,
-            reduceMotion: merged.reduceMotion,
-            compactUI: merged.compactUI,
-            highContrast: merged.highContrast,
-            largeTaps: merged.largeTaps,
-            showSplashOnLoad: merged.showSplashOnLoad,
-            splashMinMs: merged.splashMinMs,
-            guideEnabled: merged.guideEnabled,
-          },
-          { merge: true }
-        );
+        const persistedPrefs = buildPersistedPrefs(merged);
+        if (!snap.exists() || persistedPrefsChanged(cloud, persistedPrefs)) {
+          await setDoc(prefRef, persistedPrefs, { merge: true });
+        }
 
         minPref = merged.showSplashOnLoad ? Number(merged.splashMinMs || 1200) : 0;
       } catch {
@@ -527,7 +619,7 @@ export default function App() {
         try {
           localNew = JSON.parse(localStorage.getItem("preferences") || "{}");
         } catch {}
-        const fallback = { ...DEFAULT_PREFS, ...normalizePrefs(localNew) };
+        const fallback = { ...DEFAULT_PREFS, ...localNew, ...normalizePrefs(localNew) };
         setPrefs(fallback);
         applyAppearance(fallback);
         minPref = fallback.showSplashOnLoad ? Number(fallback.splashMinMs || 1200) : 0;
@@ -575,15 +667,22 @@ export default function App() {
     if (!user) return;
     const ref = doc(db, "users", user.uid, "grows", growId);
 
-    // Look at current state to respect manual locks and existing dates
     let currentGrow = undefined;
     try {
       const arr = Array.isArray(rawGrows) ? rawGrows : [];
       currentGrow = arr.find((x) => x.id === growId);
     } catch {}
 
-    const isLocked = !!(currentGrow && currentGrow.stageLocks && currentGrow.stageLocks[nextStage]);
-    const hasDate = !!(currentGrow && currentGrow.stageDates && currentGrow.stageDates[nextStage]);
+    const isLocked = !!(
+      currentGrow &&
+      currentGrow.stageLocks &&
+      currentGrow.stageLocks[nextStage]
+    );
+    const hasDate = !!(
+      currentGrow &&
+      currentGrow.stageDates &&
+      currentGrow.stageDates[nextStage]
+    );
 
     const todayLocal = new Date();
     const yyyy = todayLocal.getFullYear();
@@ -608,14 +707,14 @@ export default function App() {
         return { ...g, stage: nextStage, stageDates: nextDates };
       })
     );
-  };;
+  };
 
   const onUpdateStageDate = async (growId, stage, dateISO) => {
     if (!user) return;
     const ref = doc(db, "users", user.uid, "grows", growId);
     const patch = {
       [`stageDates.${stage}`]: dateISO || null,
-      [`stageLocks.${stage}`]: !!dateISO, // manual edit lock (true when user sets a date)
+      [`stageLocks.${stage}`]: !!dateISO,
     };
     await updateDoc(ref, patch);
     setRawGrows((prev) =>
@@ -626,7 +725,7 @@ export default function App() {
         return { ...g, stageLocks: nextLocks, stageDates: nextDates };
       })
     );
-  };;
+  };
 
   const onUpdateStatus = async (growId, status) => {
     if (!user) return;
@@ -653,9 +752,11 @@ export default function App() {
   const onCreateTask = async (payload) => {
     if (user) await addDoc(collection(db, "users", user.uid, "tasks"), payload);
   };
+
   const onUpdateTask = async (id, patch) => {
     if (user) await updateDoc(doc(db, "users", user.uid, "tasks", id), patch);
   };
+
   const onDeleteTask = async (id) => {
     if (user) await deleteDoc(doc(db, "users", user.uid, "tasks", id));
   };
@@ -673,10 +774,10 @@ export default function App() {
 
     if (hasF) {
       temperatureF = Number(extras.temperatureF);
-      if (autoConvert) temperatureC = Math.round(((temperatureF - 32) * 5) / 9 * 10) / 10;
+      if (autoConvert) temperatureC = Math.round((((temperatureF - 32) * 5) / 9) * 10) / 10;
     } else if (hasC) {
       temperatureC = Number(extras.temperatureC);
-      temperatureF = Math.round(((temperatureC * 9) / 5 + 32) * 10) / 10;
+      temperatureF = Math.round((((temperatureC * 9) / 5) + 32) * 10) / 10;
       if (!autoConvert) temperatureC = undefined;
     }
 
@@ -739,12 +840,15 @@ export default function App() {
     const ref = await addDoc(collection(db, "users", user.uid, "strains"), data);
     return ref.id;
   };
+
   const onUpdateStrain = async (id, patch) => {
     if (user) await updateDoc(doc(db, "users", user.uid, "strains", id), patch);
   };
+
   const onDeleteStrain = async (id) => {
     if (user) await deleteDoc(doc(db, "users", user.uid, "strains", id));
   };
+
   const onUploadStrainImage = async (file) => {
     if (!user || !file) return "";
     const path = `users/${user.uid}/strains/${Date.now()}_${file.name}`;
@@ -765,39 +869,18 @@ export default function App() {
     } catch {}
 
     try {
+      localStorage.setItem("preferences", JSON.stringify(merged));
+      localStorage.setItem("cn_last_accent", merged.accent || DEFAULT_ACCENT);
       localStorage.setItem(
-        "preferences",
-        JSON.stringify({
-          mode: merged.mode,
-          accent: merged.accent,
-          temperatureUnit: merged.temperatureUnit,
-          autoConvertEnvNotes: merged.autoConvertEnvNotes,
-          guideEnabled: merged.guideEnabled,
-        })
+        "__prefs__",
+        JSON.stringify({ theme: merged.accent, darkMode: merged.darkMode })
       );
-      localStorage.setItem("__prefs__", JSON.stringify({ theme: merged.accent, darkMode: merged.darkMode }));
     } catch {}
 
     if (!user) return;
     await setDoc(
       doc(db, "users", user.uid, "settings", "preferences"),
-      {
-        mode: merged.mode,
-        accent: merged.accent,
-        theme: merged.accent,
-        darkMode: merged.darkMode,
-        fontScale: merged.fontScale,
-        dyslexiaFont: merged.dyslexiaFont,
-        reduceMotion: merged.reduceMotion,
-        compactUI: merged.compactUI,
-        highContrast: merged.highContrast,
-        largeTaps: merged.largeTaps,
-        showSplashOnLoad: merged.showSplashOnLoad,
-        splashMinMs: merged.splashMinMs,
-        temperatureUnit: merged.temperatureUnit,
-        autoConvertEnvNotes: merged.autoConvertEnvNotes,
-        guideEnabled: merged.guideEnabled,
-      },
+      buildPersistedPrefs(merged),
       { merge: true }
     );
   };
@@ -815,7 +898,6 @@ export default function App() {
     }
   }, [activeTab]);
 
-  // EARLY RETURNS AFTER ALL HOOKS ABOVE (no hooks below).
   if (showSplash) return <SplashScreen />;
   if (!user) return <Auth setUser={setUser} />;
 
@@ -839,7 +921,6 @@ export default function App() {
         />
       )}
 
-      {/* New Grow modal: Modal handles page lock internally */}
       {isAddingNew && (
         <Modal open={true} onClose={() => setEditingGrow(null)} title="New Grow">
           <GrowForm
@@ -900,7 +981,10 @@ export default function App() {
         <Route
           path="/"
           element={
-            <div id="app-shell" className="min-h-screen bg-zinc-100 dark:bg-zinc-950 text-zinc-900 dark:text-white">
+            <div
+              id="app-shell"
+              className="min-h-screen bg-zinc-100 dark:bg-zinc-950 text-zinc-900 dark:text-white"
+            >
               <header className="sticky top-0 z-30 bg-white/80 dark:bg-zinc-900/80 backdrop-blur border-b border-zinc-200 dark:border-zinc-800">
                 <div className="max-w-7xl mx-auto px-4 py-3 flex items-center gap-3">
                   <h1 className="text-xl font-bold">Chaotic Neutral Tracker</h1>
@@ -923,7 +1007,6 @@ export default function App() {
               </header>
 
               <div className="max-w-7xl mx-auto px-4 py-4">
-                {/* Tabs */}
                 <div className="flex flex-wrap gap-2 mb-4">
                   {[
                     ["dashboard", "Dashboard"],
@@ -931,6 +1014,7 @@ export default function App() {
                     ["analytics", "Analytics"],
                     ["calendar", "Calendar"],
                     ["timeline", "Timeline"],
+                    ["postprocess", "Post Processing"],
                     ["cog", "COG"],
                     ["recipes", "Recipes"],
                     ["strains", "Strains"],
@@ -958,7 +1042,6 @@ export default function App() {
                 <Suspense fallback={tabFallback}>
                   {activeTab === "dashboard" && (
                     <>
-                      {/* Type chips */}
                       <div className="mb-2 flex flex-wrap items-center gap-2">
                         <div className="flex items-center gap-2 flex-wrap">
                           <span className="text-xs uppercase tracking-wide text-slate-500 dark:text-slate-400">
@@ -977,8 +1060,10 @@ export default function App() {
                         </div>
                       </div>
 
-                      {/* Stage chips */}
-                      <div className="mb-4 flex flex-wrap items-center gap-2" data-tour="stage-filters">
+                      <div
+                        className="mb-4 flex flex-wrap items-center gap-2"
+                        data-tour="stage-filters"
+                      >
                         <span className="text-xs uppercase tracking-wide text-slate-500 dark:text-slate-400">
                           Stages
                         </span>
@@ -1018,6 +1103,8 @@ export default function App() {
                           <GrowList
                             growsActive={activeGrowsBase}
                             archivedGrows={archivedGrowsBase}
+                            recipes={Array.isArray(recipes) ? recipes : []}
+                            supplies={Array.isArray(supplies) ? supplies : []}
                             setEditingGrow={setEditingGrow}
                             showAddButton={false}
                             onUpdateStatus={onUpdateStatus}
@@ -1031,6 +1118,7 @@ export default function App() {
                     <div className="bg-white dark:bg-zinc-900 rounded-2xl shadow p-4">
                       <TaskManager
                         tasks={Array.isArray(tasks) ? tasks : []}
+                        grows={grows}
                         onCreate={onCreateTask}
                         onUpdate={onUpdateTask}
                         onDelete={onDeleteTask}
@@ -1067,8 +1155,17 @@ export default function App() {
                     </div>
                   )}
 
+                  {activeTab === "postprocess" && (
+                    <div className="bg-white dark:bg-zinc-900 rounded-2xl shadow p-4">
+                      <PostProcessManager grows={Array.isArray(grows) ? grows : []} />
+                    </div>
+                  )}
+
                   {activeTab === "cog" && (
-                    <div className="bg-white dark:bg-zinc-900 rounded-2xl shadow p-4" data-tour="cog-root">
+                    <div
+                      className="bg-white dark:bg-zinc-900 rounded-2xl shadow p-4"
+                      data-tour="cog-root"
+                    >
                       <COGManager />
                     </div>
                   )}
@@ -1094,12 +1191,15 @@ export default function App() {
                   {activeTab === "strains" && (
                     <div className="bg-white dark:bg-zinc-900 rounded-2xl shadow p-4">
                       <StrainManager
-                        strains={Array.isArray(strains) ? strains : []}
+                        strains={strains}
                         grows={grows}
                         onCreateStrain={onCreateStrain}
                         onUpdateStrain={onUpdateStrain}
                         onDeleteStrain={onDeleteStrain}
                         onUploadStrainImage={onUploadStrainImage}
+                        setEditingGrow={setEditingGrow}
+                        openLibraryItemId={openLibraryItemId}
+                        onConsumeOpenLibraryItem={consumeOpenLibraryItem}
                       />
                     </div>
                   )}
@@ -1132,20 +1232,16 @@ export default function App() {
                 <OnboardingModal visible={showOnboarding} onClose={() => setShowOnboarding(false)} />
               </div>
 
-              {/* Floating Quick Actions */}
               <FabQuickActions
                 grows={activeGrowsBase}
                 onNewGrow={() => setEditingGrow({})}
                 onLogStatus={(id) => {
-                  const g =
-                    activeGrowsBase.find((x) => x.id === id) ||
-                    grows.find((x) => x.id === id);
+                  const g = activeGrowsBase.find((x) => x.id === id) || grows.find((x) => x.id === id);
                   if (g) setEditingGrow(g);
                 }}
                 onUploadPhoto={onUploadPhoto}
               />
 
-              {/* Local reminders (client-only) */}
               <LocalReminders grows={grows} prefs={prefs} />
             </div>
           }
@@ -1154,7 +1250,6 @@ export default function App() {
         <Route path="/camera-probe" element={<CameraProbe />} />
       </Routes>
 
-      {/* First-run coach */}
       <OnboardingCoach pageKey={activeTab} enabled={prefs.guideEnabled !== false} />
     </ConfirmProvider>
   );

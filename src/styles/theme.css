@@ -1,57 +1,44 @@
 /* src/styles/theme.css */
-/* Accent theme tokens + tiny utility classes. Works with Tailwind since we only set colors. */
+/* Compatibility layer for legacy components that still use --accent-* vars. */
 
-:root{
-  /* default = emerald */
-  --accent-50:#ecfdf5;
-  --accent-100:#d1fae5;
-  --accent-500:#10b981;
-  --accent-600:#059669;
-  --accent-700:#047857;
-  --accent-rgb:5,150,105;
-}
-
-/* --- Theme palettes --- */
-.theme-emerald{
-  --accent-50:#ecfdf5; --accent-100:#d1fae5;
-  --accent-500:#10b981; --accent-600:#059669; --accent-700:#047857;
-  --accent-rgb:5,150,105;
-}
-.theme-violet{
-  --accent-50:#f5f3ff; --accent-100:#ede9fe;
-  --accent-500:#8b5cf6; --accent-600:#7c3aed; --accent-700:#6d28d9;
-  --accent-rgb:124,58,237;
-}
-.theme-amber{
-  --accent-50:#fffbeb; --accent-100:#fef3c7;
-  --accent-500:#f59e0b; --accent-600:#d97706; --accent-700:#b45309;
-  --accent-rgb:217,119,6;
-}
-.theme-rose{
-  --accent-50:#fff1f2; --accent-100:#ffe4e6;
-  --accent-500:#f43f5e; --accent-600:#e11d48; --accent-700:#be123c;
-  --accent-rgb:225,29,72;
-}
-.theme-slate{
-  --accent-50:#f8fafc; --accent-100:#f1f5f9;
-  --accent-500:#64748b; --accent-600:#475569; --accent-700:#334155;
-  --accent-rgb:71,85,105;
+:root {
+  --accent-50: var(--_accent-50);
+  --accent-100: var(--_accent-100);
+  --accent-200: var(--_accent-200);
+  --accent-300: var(--_accent-300);
+  --accent-400: var(--_accent-400);
+  --accent-500: var(--_accent-500);
+  --accent-600: var(--_accent-600);
+  --accent-700: var(--_accent-700);
+  --accent-800: var(--_accent-800);
+  --accent-900: var(--_accent-900);
+  --accent-rgb: var(--_accent-rgb, 79,70,229);
 }
 
-/* --- Utilities --- */
-.accent-bg{ background-color: var(--accent-600) !important; color:#fff !important; }
-.accent-bg:hover{ background-color: var(--accent-700) !important; }
-.accent-text{ color: var(--accent-600) !important; }
-.accent-border{ border-color: var(--accent-600) !important; }
-.accent-chip{ background-color: var(--accent-600) !important; color:#fff !important; border-color: var(--accent-700) !important; }
-.accent-selected{ border-color: var(--accent-600) !important; background-color: rgba(var(--accent-rgb),0.10) !important; }
+.accent-bg { background-color: var(--_accent-600) !important; color: var(--_accent-on, #fff) !important; }
+.accent-bg:hover { background-color: var(--_accent-700, var(--_accent-600)) !important; }
+.accent-text { color: var(--_accent-600) !important; }
+.accent-border { border-color: var(--_accent-600) !important; }
+.accent-chip {
+  background-color: var(--_accent-600) !important;
+  color: var(--_accent-on, #fff) !important;
+  border-color: var(--_accent-700, var(--_accent-600)) !important;
+}
+.accent-selected {
+  border-color: var(--_accent-600) !important;
+  background-color: rgba(var(--_accent-rgb, 79,70,229), 0.10) !important;
+}
 
-/* Splash spinner */
 @keyframes spinApp { to { transform: rotate(360deg); } }
-.splash-spinner{
-  width: 42px; height:42px; border-radius:50%;
+.splash-spinner {
+  width: 42px;
+  height: 42px;
+  border-radius: 50%;
   border: 3px solid rgba(0,0,0,0.12);
-  border-top-color: var(--accent-600);
+  border-top-color: var(--_accent-600);
   animation: spinApp 1s linear infinite;
 }
-html.dark .splash-spinner{ border-color: rgba(255,255,255,0.15); border-top-color: var(--accent-500); }
+html.dark .splash-spinner {
+  border-color: rgba(255,255,255,0.15);
+  border-top-color: var(--_accent-500);
+}

@@ -1,4 +1,3 @@
-src/components/ui/PhotoGallery.jsx
 // src/components/ui/PhotoGallery.jsx
 import React, { useMemo, useState } from "react";
 import { usePhotos } from "../../hooks/usePhotos";
@@ -34,6 +33,7 @@ export default function PhotoGallery({
 
   const [editingId, setEditingId] = useState(null);
   const [editingCaption, setEditingCaption] = useState("");
+  const [error, setError] = useState("");
 
   const selectedCount = selected.size;
   const selectedOne = useMemo(() => {
@@ -56,6 +56,7 @@ export default function PhotoGallery({
     if (!selectedCount) return;
     const list = photos.filter((p) => selected.has(p.id));
     if (!(await confirm(`Delete ${list.length} photo(s)? This cannot be undone.`))) return;
+    setError("");
     await deletePhotos(list);
     clearSelection();
     setSelectMode(false);
@@ -64,6 +65,7 @@ export default function PhotoGallery({
   const onSetCover = async () => {
     if (!selectedOne) return;
     if (!(await confirm("Set this photo as the cover image for this grow?"))) return;
+    setError("");
     await setCover(selectedOne);
     clearSelection();
     setSelectMode(false);
@@ -143,6 +145,10 @@ export default function PhotoGallery({
         </div>
       </div>
 
+      {error ? (
+        <div className="rounded-lg border border-rose-200 dark:border-rose-900/60 bg-rose-50 dark:bg-rose-950/30 px-3 py-2 text-sm text-rose-700 dark:text-rose-200">{error}</div>
+      ) : null}
+
       {/* --- Grid --- */}
       <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3">
         {photos.map((p) => {
@@ -154,7 +160,7 @@ export default function PhotoGallery({
             <figure
               key={p.id}
               className={`relative rounded-md overflow-hidden border bg-white dark:bg-zinc-900 ${
-                isSelected ? "border-indigo-400 dark:border-indigo-500" : "border-gray-300 dark:border-gray-700"
+                isSelected ? "accent-border" : "border-gray-300 dark:border-gray-700"
               }`}
               title={p.caption || ""}
             >
@@ -163,7 +169,7 @@ export default function PhotoGallery({
                 href={p.url}
                 target="_blank"
                 rel="noreferrer"
-                className="block focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                className="block focus:outline-none focus:ring-2 focus:ring-[rgba(var(--_accent-rgb),0.55)]"
               >
                 <img
                   src={p.url}
@@ -202,8 +208,7 @@ export default function PhotoGallery({
                     try {
                       await deletePhoto(p);
                     } catch (e) {
-                      // eslint-disable-next-line no-alert
-                      alert(e?.message || String(e));
+                      setError(e?.message || String(e));
                     }
                   }}
                   className="absolute right-2 top-2 z-20 rounded-md bg-red-600/90 px-2 py-1 text-xs text-white hover:bg-red-600 focus:outline-none focus:ring-2 focus:ring-red-400"

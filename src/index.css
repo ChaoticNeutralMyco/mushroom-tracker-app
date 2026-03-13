@@ -20,17 +20,31 @@
   --_accent-700:#4338ca;
   --_accent-800:#3730a3;
   --_accent-900:#312e81;
+  --_accent-rgb:79,70,229;
   --_accent-on:#ffffff;
+
+  /* compatibility aliases for legacy theme.css users */
+  --accent-50: var(--_accent-50);
+  --accent-100: var(--_accent-100);
+  --accent-200: var(--_accent-200);
+  --accent-300: var(--_accent-300);
+  --accent-400: var(--_accent-400);
+  --accent-500: var(--_accent-500);
+  --accent-600: var(--_accent-600);
+  --accent-700: var(--_accent-700);
+  --accent-800: var(--_accent-800);
+  --accent-900: var(--_accent-900);
+  --accent-rgb: var(--_accent-rgb);
 }
 
-/* Emerald */ .theme-emerald { --_accent-50:#ecfdf5; --_accent-100:#d1fae5; --_accent-200:#a7f3d0; --_accent-300:#6ee7b7; --_accent-400:#34d399; --_accent-500:#10b981; --_accent-600:#059669; --_accent-700:#047857; --_accent-800:#065f46; --_accent-900:#064e3b; --_accent-on:#ffffff; }
-/* Violet  */ .theme-violet  { --_accent-50:#f5f3ff; --_accent-100:#ede9fe; --_accent-200:#ddd6fe; --_accent-300:#c4b5fd; --_accent-400:#a78bfa; --_accent-500:#8b5cf6; --_accent-600:#7c3aed; --_accent-700:#6d28d9; --_accent-800:#5b21b6; --_accent-900:#4c1d95; --_accent-on:#ffffff; }
-/* Amber   */ .theme-amber   { --_accent-50:#fffbeb; --_accent-100:#fef3c7; --_accent-200:#fde68a; --_accent-300:#fcd34d; --_accent-400:#fbbf24; --_accent-500:#f59e0b; --_accent-600:#d97706; --_accent-700:#b45309; --_accent-800:#92400e; --_accent-900:#78350f; --_accent-on:#111827; }
-/* Rose    */ .theme-rose    { --_accent-50:#fff1f2; --_accent-100:#ffe4e6; --_accent-200:#fecdd3; --_accent-300:#fda4af; --_accent-400:#fb7185; --_accent-500:#f43f5e; --_accent-600:#e11d48; --_accent-700:#be123c; --_accent-800:#9f1239; --_accent-900:#881337; --_accent-on:#ffffff; }
-/* Slate   */ .theme-slate   { --_accent-50:#f8fafc; --_accent-100:#f1f5f9; --_accent-200:#e2e8f0; --_accent-300:#cbd5e1; --_accent-400:#94a3b8; --_accent-500:#64748b; --_accent-600:#475569; --_accent-700:#334155; --_accent-800:#1e293b; --_accent-900:#0f172a; --_accent-on:#ffffff; }
-/* Teal    */ .theme-teal    { --_accent-50:#f0fdfa; --_accent-100:#ccfbf1; --_accent-200:#99f6e4; --_accent-300:#5eead4; --_accent-400:#2dd4bf; --_accent-500:#14b8a6; --_accent-600:#0d9488; --_accent-700:#0f766e; --_accent-800:#115e59; --_accent-900:#134e4a; --_accent-on:#ffffff; }
-/* Indigo  */ .theme-indigo  { --_accent-50:#eef2ff; --_accent-100:#e0e7ff; --_accent-200:#c7d2fe; --_accent-300:#a5b4fc; --_accent-400:#818cf8; --_accent-500:#6366f1; --_accent-600:#4f46e5; --_accent-700:#4338ca; --_accent-800:#3730a3; --_accent-900:#312e81; --_accent-on:#ffffff; }
-/* Sky     */ .theme-sky     { --_accent-50:#f0f9ff; --_accent-100:#e0f2fe; --_accent-200:#bae6fd; --_accent-300:#7dd3fc; --_accent-400:#38bdf8; --_accent-500:#0ea5e9; --_accent-600:#0284c7; --_accent-700:#0369a1; --_accent-800:#075985; --_accent-900:#0c4a6e; --_accent-on:#ffffff; }
+/* Emerald */ .theme-emerald { --_accent-50:#ecfdf5; --_accent-100:#d1fae5; --_accent-200:#a7f3d0; --_accent-300:#6ee7b7; --_accent-400:#34d399; --_accent-500:#10b981; --_accent-600:#059669; --_accent-700:#047857; --_accent-800:#065f46; --_accent-900:#064e3b; --_accent-rgb:5,150,105; --_accent-on:#ffffff; }
+/* Violet  */ .theme-violet  { --_accent-50:#f5f3ff; --_accent-100:#ede9fe; --_accent-200:#ddd6fe; --_accent-300:#c4b5fd; --_accent-400:#a78bfa; --_accent-500:#8b5cf6; --_accent-600:#7c3aed; --_accent-700:#6d28d9; --_accent-800:#5b21b6; --_accent-900:#4c1d95; --_accent-rgb:124,58,237; --_accent-on:#ffffff; }
+/* Amber   */ .theme-amber   { --_accent-50:#fffbeb; --_accent-100:#fef3c7; --_accent-200:#fde68a; --_accent-300:#fcd34d; --_accent-400:#fbbf24; --_accent-500:#f59e0b; --_accent-600:#d97706; --_accent-700:#b45309; --_accent-800:#92400e; --_accent-900:#78350f; --_accent-rgb:217,119,6; --_accent-on:#111827; }
+/* Rose    */ .theme-rose    { --_accent-50:#fff1f2; --_accent-100:#ffe4e6; --_accent-200:#fecdd3; --_accent-300:#fda4af; --_accent-400:#fb7185; --_accent-500:#f43f5e; --_accent-600:#e11d48; --_accent-700:#be123c; --_accent-800:#9f1239; --_accent-900:#881337; --_accent-rgb:225,29,72; --_accent-on:#ffffff; }
+/* Slate   */ .theme-slate   { --_accent-50:#f8fafc; --_accent-100:#f1f5f9; --_accent-200:#e2e8f0; --_accent-300:#cbd5e1; --_accent-400:#94a3b8; --_accent-500:#64748b; --_accent-600:#475569; --_accent-700:#334155; --_accent-800:#1e293b; --_accent-900:#0f172a; --_accent-rgb:71,85,105; --_accent-on:#ffffff; }
+/* Teal    */ .theme-teal    { --_accent-50:#f0fdfa; --_accent-100:#ccfbf1; --_accent-200:#99f6e4; --_accent-300:#5eead4; --_accent-400:#2dd4bf; --_accent-500:#14b8a6; --_accent-600:#0d9488; --_accent-700:#0f766e; --_accent-800:#115e59; --_accent-900:#134e4a; --_accent-rgb:13,148,136; --_accent-on:#ffffff; }
+/* Indigo  */ .theme-indigo  { --_accent-50:#eef2ff; --_accent-100:#e0e7ff; --_accent-200:#c7d2fe; --_accent-300:#a5b4fc; --_accent-400:#818cf8; --_accent-500:#6366f1; --_accent-600:#4f46e5; --_accent-700:#4338ca; --_accent-800:#3730a3; --_accent-900:#312e81; --_accent-rgb:79,70,229; --_accent-on:#ffffff; }
+/* Sky     */ .theme-sky     { --_accent-50:#f0f9ff; --_accent-100:#e0f2fe; --_accent-200:#bae6fd; --_accent-300:#7dd3fc; --_accent-400:#38bdf8; --_accent-500:#0ea5e9; --_accent-600:#0284c7; --_accent-700:#0369a1; --_accent-800:#075985; --_accent-900:#0c4a6e; --_accent-rgb:2,132,199; --_accent-on:#ffffff; }
 
 /* ------------------------------------------------------------
    Accent-aware UI bits

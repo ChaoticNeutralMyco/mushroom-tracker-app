@@ -36,7 +36,7 @@ export default function OnboardingModal({ visible, onClose }) {
         <button
           onClick={handleClose}
           disabled={saving}
-          className="w-full bg-blue-600 hover:bg-blue-700 text-white py-2 rounded-md font-semibold transition"
+          className="w-full btn-accent py-2 rounded-md font-semibold transition"
         >
           {saving ? "Saving..." : "Let's Get Started!"}
         </button>

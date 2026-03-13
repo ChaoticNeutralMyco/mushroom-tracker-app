@@ -100,7 +100,11 @@ export async function decrementCleanPending(uid, supplyId, delta) {
       current = Number(raw);
       if (!Number.isFinite(current)) current = 0;
     } else {
-      tx.set(ref, { pending: 0, updatedAt: serverTimestamp() }, { merge: true });
+      tx.set(
+        ref,
+        { pending: 0, updatedAt: serverTimestamp() },
+        { merge: true }
+      );
     }
 
     const next = Math.max(0, current - delta);
@@ -114,14 +118,37 @@ const norm = (v) => String(v || "").trim().toLowerCase();
 
 function isReusableType(type) {
   const t = norm(type);
-  return t === "container" || t === "containers" || t === "tool" || t === "tools";
+  return (
+    t === "container" ||
+    t === "containers" ||
+    t === "tool" ||
+    t === "tools"
+  );
 }
 function isCountUnit(unit) {
   const u = norm(unit);
   return [
-    "count","pc","pcs","piece","pieces","each","ea","unit","units",
-    "item","items","jar","jars","dish","dishes","plate","plates",
-    "tray","trays","tub","tubs"
+    "count",
+    "pc",
+    "pcs",
+    "piece",
+    "pieces",
+    "each",
+    "ea",
+    "unit",
+    "units",
+    "item",
+    "items",
+    "jar",
+    "jars",
+    "dish",
+    "dishes",
+    "plate",
+    "plates",
+    "tray",
+    "trays",
+    "tub",
+    "tubs",
   ].includes(u);
 }
 // Tolerant name check so slight metadata drift doesn't block enqueues
@@ -130,8 +157,13 @@ function looksLikeReusableByName(name) {
   return /(jar|dish|plate|tray|tub|bottle|flask)/i.test(s);
 }
 
-function toInt(v, d = 0) { const n = Number(v); return Number.isFinite(n) ? n : d; }
-function batchCountOf(g) { return toInt(g?.batchCount ?? g?.batch ?? g?.children ?? 1, 1) || 1; }
+function toInt(v, d = 0) {
+  const n = Number(v);
+  return Number.isFinite(n) ? n : d;
+}
+function batchCountOf(g) {
+  return toInt(g?.batchCount ?? g?.batch ?? g?.children ?? 1, 1) || 1;
+}
 
 // Unified archived predicate: prefer growFilters.isArchivedish, fallback to a strict check
 function isArchivedEligible(g) {
@@ -142,7 +174,9 @@ function isArchivedEligible(g) {
   return (
     g?.archived === true ||
     g?.isArchived === true ||
-    !!g?.archivedAt || !!g?.archived_on || !!g?.archivedOn ||
+    !!g?.archivedAt ||
+    !!g?.archived_on ||
+    !!g?.archivedOn ||
     status === "archived" ||
     g?.inArchive === true
   );
@@ -152,7 +186,7 @@ function isArchivedEligible(g) {
 
 /**
  * Enqueue COUNT-based reusable supplies for a single archived grow.
- * Stamps { cleanQueued: true } ONLY if something was enqueued.
+ * Stamps { cleanQueued: true, cleanQueuedAt: <ts> } ONLY if something was enqueued.
  */
 export async function enqueueReusablesForGrow(uid, growOrId) {
   if (!uid || !growOrId) return { enqueued: 0, stamped: false };
@@ -168,8 +202,10 @@ export async function enqueueReusablesForGrow(uid, growOrId) {
     grow = { id: snap.id, ...snap.data() };
   }
 
-  // ⛔ Authoritative gate
-  if (grow.cleanQueued === true) return { enqueued: 0, stamped: true };
+  // ⛔ Authoritative gate — only if we have a timestamp (new-style queued grow)
+  if (grow.cleanQueued === true && grow.cleanQueuedAt) {
+    return { enqueued: 0, stamped: true };
+  }
 
   if (!isArchivedEligible(grow)) return { enqueued: 0, stamped: false };
 
@@ -186,7 +222,8 @@ export async function enqueueReusablesForGrow(uid, growOrId) {
   let enqueued = 0;
 
   for (const it of items) {
-    const supplyId = it?.supplyId || it?.supplyRef || it?.supply || it?.id || it?.ref;
+    const supplyId =
+      it?.supplyId || it?.supplyRef || it?.supply || it?.id || it?.ref;
     if (!supplyId) continue;
 
     const sSnap = await getDoc(doc(db, "users", uid, "supplies", supplyId));
@@ -220,7 +257,10 @@ export async function enqueueReusablesForGrow(uid, growOrId) {
   }
 
   if (enqueued > 0) {
-    await updateDoc(doc(db, "users", uid, "grows", grow.id), { cleanQueued: true, cleanQueuedAt: serverTimestamp() });
+    await updateDoc(doc(db, "users", uid, "grows", grow.id), {
+      cleanQueued: true,
+      cleanQueuedAt: serverTimestamp(),
+    });
     return { enqueued, stamped: true };
   }
   return { enqueued, stamped: false };
@@ -229,8 +269,8 @@ export async function enqueueReusablesForGrow(uid, growOrId) {
 /**
  * Scan all grows and enqueue returns for archived grows that have not yet been enqueued.
  * - Eligibility uses growFilters.isArchivedish (same as Archive view)
- * - ⛔ Authoritative skip: if g.cleanQueued === true, do not enqueue again
- * - Stamps `cleanQueued: true` only when items were actually enqueued
+ * - ⛔ Authoritative skip: ONLY if g.cleanQueued === true AND cleanQueuedAt exists
+ * - Stamps `cleanQueued: true, cleanQueuedAt: <ts>` only when items were actually enqueued
  * - Writes a concise breakdown to console for debugging
  *
  * @returns {{ scanned:number, enqueuedCount:number, affectedGrows:number }}
@@ -240,7 +280,7 @@ export async function scanArchivesForDirty(uid, { limit = 2000 } = {}) {
 
   const growsCol = collection(db, "users", uid, "grows");
   const snap = await getDocs(growsCol);
-  const all = snap.docs.map(d => ({ id: d.id, ...d.data() })).slice(0, limit);
+  const all = snap.docs.map((d) => ({ id: d.id, ...d.data() })).slice(0, limit);
 
   let scanned = 0;
   let enqueuedCount = 0;
@@ -248,27 +288,44 @@ export async function scanArchivesForDirty(uid, { limit = 2000 } = {}) {
 
   // diagnostics
   const diag = {
-    archivedish: 0, nonArchivedish: 0,
+    archivedish: 0,
+    nonArchivedish: 0,
     skippedAlreadyQueued: 0,
-    noRecipe: 0, recipeMissing: 0,
-    skippedNotReusable: 0, skippedNotCountish: 0, qtyZero: 0,
-    enqGrows: [], enqSupplies: 0
+    noRecipe: 0,
+    recipeMissing: 0,
+    skippedNotReusable: 0,
+    skippedNotCountish: 0,
+    qtyZero: 0,
+    enqGrows: [],
+    enqSupplies: 0,
   };
 
   for (const g of all) {
     scanned++;
 
-    if (!isArchivedEligible(g)) { diag.nonArchivedish++; continue; }
+    if (!isArchivedEligible(g)) {
+      diag.nonArchivedish++;
+      continue;
+    }
     diag.archivedish++;
 
-    // ⛔ Authoritative skip
-    if (g?.cleanQueued === true) { diag.skippedAlreadyQueued++; continue; }
+    // ⛔ Authoritative skip — only for new-style queued grows with a timestamp
+    if (g?.cleanQueued === true && g?.cleanQueuedAt) {
+      diag.skippedAlreadyQueued++;
+      continue;
+    }
 
     const rId = g.recipeId || g.recipeRef || "";
-    if (!rId) { diag.noRecipe++; continue; }
+    if (!rId) {
+      diag.noRecipe++;
+      continue;
+    }
 
     const rSnap = await getDoc(doc(db, "users", uid, "recipes", rId));
-    if (!rSnap.exists()) { diag.recipeMissing++; continue; }
+    if (!rSnap.exists()) {
+      diag.recipeMissing++;
+      continue;
+    }
 
     const recipe = rSnap.data();
     const items = Array.isArray(recipe?.items) ? recipe.items : [];
@@ -290,8 +347,14 @@ export async function scanArchivesForDirty(uid, { limit = 2000 } = {}) {
       const countish =
         isCountUnit(sup?.unit) || looksLikeReusableByName(sup?.name);
 
-      if (!reusable) { diag.skippedNotReusable++; continue; }
-      if (!countish) { diag.skippedNotCountish++; continue; }
+      if (!reusable) {
+        diag.skippedNotReusable++;
+        continue;
+      }
+      if (!countish) {
+        diag.skippedNotCountish++;
+        continue;
+      }
 
       const perChild =
         toInt(it?.perChild, NaN) ??
@@ -302,7 +365,10 @@ export async function scanArchivesForDirty(uid, { limit = 2000 } = {}) {
         ? Math.max(0, Math.round(perChild * batches))
         : Math.max(0, Math.round(1 * batches));
 
-      if (qty <= 0) { diag.qtyZero++; continue; }
+      if (qty <= 0) {
+        diag.qtyZero++;
+        continue;
+      }
 
       await incrementCleanPending(uid, supplyId, qty, {
         name: sup?.name || "",
@@ -315,13 +381,18 @@ export async function scanArchivesForDirty(uid, { limit = 2000 } = {}) {
     }
 
     if (queuedSomething) {
-      await updateDoc(doc(db, "users", uid, "grows", g.id), { cleanQueued: true, cleanQueuedAt: serverTimestamp() });
+      await updateDoc(doc(db, "users", uid, "grows", g.id), {
+        cleanQueued: true,
+        cleanQueuedAt: serverTimestamp(),
+      });
       affectedGrows++;
       diag.enqGrows.push(g.id);
     }
   }
 
-  try { console.info("[clean-queue] scan breakdown:", diag); } catch {}
+  try {
+    console.info("[clean-queue] scan breakdown:", diag);
+  } catch {}
 
   return { scanned, enqueuedCount, affectedGrows };
 }
@@ -339,5 +410,6 @@ export async function resetCleanQueued(uid, growId) {
   if (!uid || !growId) return;
   await updateDoc(doc(db, "users", uid, "grows", String(growId)), {
     cleanQueued: false,
+    cleanQueuedAt: null,
   });
 }

@@ -1,40 +1,46 @@
 // src/pages/Settings.jsx
 // Restored original Settings with your preferences logic; adds Labels tab,
-// "Delete Grow Data Only", and a safer Delete All flow with backup + type-to-confirm.
-import React, { useCallback, useEffect, useState } from "react";
+// "Delete Grow Data Only", a safer Delete All flow with backup + type-to-confirm,
+// and a desktop-only "Check for updates" button in the Advanced tab.
+
+import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { auth, db } from "../firebase-config";
 import { doc, getDoc, setDoc, collection, getDocs } from "firebase/firestore";
 import { deleteAllUserData, clearAllLocalCaches, deleteGrowDataOnly } from "../lib/delete-all";
+import { useConfirm } from "../components/ui/ConfirmDialog";
 
 /** Accent palette */
 const ACCENTS = [
   { id: "emerald", label: "Emerald", hex600: "#059669" },
-  { id: "violet",  label: "Violet",  hex600: "#7c3aed" },
-  { id: "amber",   label: "Amber",   hex600: "#d97706" },
-  { id: "rose",    label: "Rose",    hex600: "#e11d48" },
-  { id: "slate",   label: "Slate",   hex600: "#475569" },
-  { id: "teal",    label: "Teal",    hex600: "#0d9488" },
-  { id: "indigo",  label: "Indigo",  hex600: "#4f46e5" },
-  { id: "sky",     label: "Sky",     hex600: "#0284c7" },
+  { id: "violet", label: "Violet", hex600: "#7c3aed" },
+  { id: "amber", label: "Amber", hex600: "#d97706" },
+  { id: "rose", label: "Rose", hex600: "#e11d48" },
+  { id: "slate", label: "Slate", hex600: "#475569" },
+  { id: "teal", label: "Teal", hex600: "#0d9488" },
+  { id: "indigo", label: "Indigo", hex600: "#4f46e5" },
+  { id: "sky", label: "Sky", hex600: "#0284c7" },
 ];
 
 const MODES = [
   { id: "system", label: "System" },
-  { id: "light",  label: "Light"  },
-  { id: "dark",   label: "Dark"   },
+  { id: "light", label: "Light" },
+  { id: "dark", label: "Dark" },
 ];
 
+const DEFAULT_ACCENT = "emerald";
+const DEFAULT_THEME_STYLE = "chaotic";
+
 const TABS = [
-  { id: "general", label: "General"  },
-  { id: "labels",  label: "Labels"   },
-  { id: "data",    label: "Data"     },
-  { id: "adv",     label: "Advanced" },
+  { id: "general", label: "General" },
+  { id: "labels", label: "Labels" },
+  { id: "data", label: "Data" },
+  { id: "adv", label: "Advanced" },
 ];
 
 const defaultPrefs = {
   mode: "system",
-  accent: "emerald",
-  themeStyle: "default", // "default" | "chaotic"
+  accent: DEFAULT_ACCENT,
+  themeStyle: DEFAULT_THEME_STYLE, // "default" | "chaotic"
   stageReminders: false,
   taskDigestTime: "09:00",
   stageMaxDays: { Inoculated: 0, Fruiting: 0 },
@@ -44,11 +50,11 @@ const defaultPrefs = {
 };
 
 // LocalStorage keys used by LabelPrint.jsx
-const LS_LABEL_TEMPLATE = "labels.template";          // "5160" | "5167"
-const LS_LABEL_CODE     = "labels.codeType";          // "qr" | "none"
-const LS_LABEL_GRID     = "labels.gridOverlay";       // "1" | "0"
-const LS_WM_ENABLED     = "labels.watermark.enabled"; // "1" | "0"
-const LS_WM_URL         = "labels.watermark.url";     // string
+const LS_LABEL_TEMPLATE = "labels.template"; // "5160" | "5167"
+const LS_LABEL_CODE = "labels.codeType"; // "qr" | "none"
+const LS_LABEL_GRID = "labels.gridOverlay"; // "1" | "0"
+const LS_WM_ENABLED = "labels.watermark.enabled"; // "1" | "0"
+const LS_WM_URL = "labels.watermark.url"; // string
 
 function applyThemeDOM(prefs) {
   const root = document.documentElement;
@@ -57,54 +63,90 @@ function applyThemeDOM(prefs) {
   const dark = prefs.mode === "dark" || (prefs.mode === "system" && isSystemDark);
   root.classList.toggle("dark", !!dark);
   [
-    "theme-emerald","theme-violet","theme-amber","theme-rose",
-    "theme-slate","theme-teal","theme-indigo","theme-sky","theme-chaotic"
+    "theme-emerald",
+    "theme-violet",
+    "theme-amber",
+    "theme-rose",
+    "theme-slate",
+    "theme-teal",
+    "theme-indigo",
+    "theme-sky",
+    "theme-chaotic",
   ].forEach((c) => root.classList.remove(c));
-  root.classList.add(`theme-${prefs.accent || "emerald"}`);
+  root.classList.add(`theme-${prefs.accent || DEFAULT_ACCENT}`);
 }
 
 function syncThemeStyle(style) {
   const enable = style === "chaotic";
   const root = document.documentElement;
   root.classList.toggle("bg-chaotic", enable);
-  try { localStorage.setItem("cn_theme_style", enable ? "chaotic" : "default"); } catch {}
+  try {
+    localStorage.setItem("cn_theme_style", enable ? "chaotic" : "default");
+  } catch {}
 }
 
 export default function Settings({
   preferences: externalPrefs,
   onSavePreferences,
-  onExportJSON,   // if provided, used for backup download
+  onExportJSON, // if provided, used for backup download
   onImportJSON,
   onClearAllData,
 }) {
   const [activeTab, setActiveTab] = useState("general");
   const [prefs, setPrefs] = useState(defaultPrefs);
   const [busy, setBusy] = useState(false);
+  const [notice, setNotice] = useState(null);
   const uid = auth.currentUser?.uid || null;
+  const confirm = useConfirm();
+
+  const noticeToneClass = useMemo(() => ({
+    success: "border border-[rgba(var(--_accent-rgb),0.35)] bg-[rgba(var(--_accent-rgb),0.10)] text-zinc-900 dark:text-zinc-100",
+    error: "border border-rose-200 dark:border-rose-900/60 bg-rose-50 dark:bg-rose-950/30 text-rose-800 dark:text-rose-200",
+    warning: "border border-amber-200 dark:border-amber-900/60 bg-amber-50 dark:bg-amber-950/30 text-amber-800 dark:text-amber-200",
+    info: "border border-zinc-200 dark:border-zinc-800 bg-zinc-50 dark:bg-zinc-900/60 text-zinc-800 dark:text-zinc-200",
+  }), []);
+
+  const pushNotice = useCallback((message, tone = "success") => {
+    setNotice({ message, tone });
+  }, []);
 
   // Delete-all confirmation modal state
   const [showDeleteAllModal, setShowDeleteAllModal] = useState(false);
   const [typedConfirm, setTypedConfirm] = useState("");
 
+  // Simple status for updater button
+  // null | "checking" | "available" | "none" | "error"
+  const [updateStatus, setUpdateStatus] = useState(null);
+
   // ---- Labels state (kept in this file; read by LabelPrint via LS) ----
   const [labelTemplate, setLabelTemplate] = useState(() => {
-    try { return localStorage.getItem(LS_LABEL_TEMPLATE) || "5160"; } catch {}
+    try {
+      return localStorage.getItem(LS_LABEL_TEMPLATE) || "5160";
+    } catch {}
     return "5160";
   });
   const [labelCode, setLabelCode] = useState(() => {
-    try { return localStorage.getItem(LS_LABEL_CODE) || "qr"; } catch {}
+    try {
+      return localStorage.getItem(LS_LABEL_CODE) || "qr";
+    } catch {}
     return "qr";
   });
   const [labelGrid, setLabelGrid] = useState(() => {
-    try { return localStorage.getItem(LS_LABEL_GRID) === "1"; } catch {}
+    try {
+      return localStorage.getItem(LS_LABEL_GRID) === "1";
+    } catch {}
     return false;
   });
   const [wmEnabled, setWmEnabled] = useState(() => {
-    try { return localStorage.getItem(LS_WM_ENABLED) !== "0"; } catch {}
+    try {
+      return localStorage.getItem(LS_WM_ENABLED) !== "0";
+    } catch {}
     return true;
   });
   const [wmUrl, setWmUrl] = useState(() => {
-    try { return localStorage.getItem(LS_WM_URL) || ""; } catch {}
+    try {
+      return localStorage.getItem(LS_WM_URL) || "";
+    } catch {}
     return "";
   });
 
@@ -150,21 +192,47 @@ export default function Settings({
         syncThemeStyle(next.themeStyle);
       }
     })();
-    return () => { isMounted = false; };
+    return () => {
+      isMounted = false;
+    };
   }, [uid, externalPrefs]);
 
   // ---- Persist Labels to localStorage immediately on change ----
-  useEffect(() => { try { localStorage.setItem(LS_LABEL_TEMPLATE, labelTemplate); } catch {} }, [labelTemplate]);
-  useEffect(() => { try { localStorage.setItem(LS_LABEL_CODE, labelCode); } catch {} }, [labelCode]);
-  useEffect(() => { try { localStorage.setItem(LS_LABEL_GRID, labelGrid ? "1" : "0"); } catch {} }, [labelGrid]);
-  useEffect(() => { try { localStorage.setItem(LS_WM_ENABLED, wmEnabled ? "1" : "0"); } catch {} }, [wmEnabled]);
-  useEffect(() => { try { localStorage.setItem(LS_WM_URL, wmUrl || ""); } catch {} }, [wmUrl]);
+  useEffect(() => {
+    try {
+      localStorage.setItem(LS_LABEL_TEMPLATE, labelTemplate);
+    } catch {}
+  }, [labelTemplate]);
+  useEffect(() => {
+    try {
+      localStorage.setItem(LS_LABEL_CODE, labelCode);
+    } catch {}
+  }, [labelCode]);
+  useEffect(() => {
+    try {
+      localStorage.setItem(LS_LABEL_GRID, labelGrid ? "1" : "0");
+    } catch {}
+  }, [labelGrid]);
+  useEffect(() => {
+    try {
+      localStorage.setItem(LS_WM_ENABLED, wmEnabled ? "1" : "0");
+    } catch {}
+  }, [wmEnabled]);
+  useEffect(() => {
+    try {
+      localStorage.setItem(LS_WM_URL, wmUrl || "");
+    } catch {}
+  }, [wmUrl]);
 
   // ---- Save core prefs (theme, units, etc.) ----
   const savePrefs = useCallback(
     async (next) => {
       setPrefs(next);
-      try { localStorage.setItem("preferences", JSON.stringify(next)); } catch {}
+      try {
+        localStorage.setItem("preferences", JSON.stringify(next));
+        localStorage.setItem("cn_last_accent", next.accent || DEFAULT_ACCENT);
+        localStorage.setItem("cn_theme_style", next.themeStyle === "default" ? "default" : DEFAULT_THEME_STYLE);
+      } catch {}
       if (onSavePreferences) {
         onSavePreferences(next);
       } else {
@@ -176,11 +244,13 @@ export default function Settings({
     [onSavePreferences, uid]
   );
 
-  const setMode   = (modeId)   => savePrefs({ ...prefs, mode: modeId });
+  const setMode = (modeId) => savePrefs({ ...prefs, mode: modeId });
   const setAccent = (accentId) => {
     const exists = ACCENTS.some((a) => a.id === accentId);
     const id = exists ? accentId : "emerald";
-    try { localStorage.setItem("cn_last_accent", id); } catch {}
+    try {
+      localStorage.setItem("cn_last_accent", id);
+    } catch {}
     savePrefs({ ...prefs, accent: id });
   };
   const setThemeStyle = (styleId) => {
@@ -198,8 +268,8 @@ export default function Settings({
   };
 
   // Units
-  const setTempUnit   = (u) => savePrefs({ ...prefs, temperatureUnit: u === "C" ? "C" : "F" });
-  const setAutoConvert= (en) => savePrefs({ ...prefs, autoConvertEnvNotes: !!en });
+  const setTempUnit = (u) => savePrefs({ ...prefs, temperatureUnit: u === "C" ? "C" : "F" });
+  const setAutoConvert = (en) => savePrefs({ ...prefs, autoConvertEnvNotes: !!en });
 
   // Reminders
   const setRemindersEnabled = (en) => savePrefs({ ...prefs, stageReminders: !!en });
@@ -208,11 +278,17 @@ export default function Settings({
     const n = Math.max(0, Number(days) || 0);
     savePrefs({ ...prefs, stageMaxDays: { ...(prefs.stageMaxDays || {}), [stage]: n } });
   };
-  const clearFired = () => { try { localStorage.removeItem("remindersFired_v1"); } catch {} };
+  const clearFired = () => {
+    try {
+      localStorage.removeItem("remindersFired_v1");
+    } catch {}
+  };
   const sendTest = () => {
-    window.dispatchEvent(new CustomEvent("cn-test-reminder", {
-      detail: { title: "CNM — test reminder", body: "If you can see this, reminders can display on this device." },
-    }));
+    window.dispatchEvent(
+      new CustomEvent("cn-test-reminder", {
+        detail: { title: "CNM — test reminder", body: "If you can see this, reminders can display on this device." },
+      })
+    );
   };
   const setGuideEnabled = (enabled) => savePrefs({ ...prefs, guideEnabled: !!enabled });
 
@@ -221,18 +297,30 @@ export default function Settings({
     if (!uid) throw new Error("Not signed in.");
     const data = {};
     const subs = [
-      "grows","recipes","supplies","tasks","timeline","analytics","events",
-      "notes","images","labels","strains","audit","logs","settings"
+      "grows",
+      "recipes",
+      "supplies",
+      "tasks",
+      "timeline",
+      "analytics",
+      "events",
+      "notes",
+      "images",
+      "labels",
+      "strains",
+      "audit",
+      "logs",
+      "settings",
     ];
     for (const sub of subs) {
       const snap = await getDocs(collection(db, "users", uid, sub));
-      data[sub] = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+      data[sub] = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
     }
     const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = `myco-backup-${new Date().toISOString().slice(0,10)}.json`;
+    a.download = `myco-backup-${new Date().toISOString().slice(0, 10)}.json`;
     a.click();
     URL.revokeObjectURL(url);
   }, [uid]);
@@ -242,29 +330,39 @@ export default function Settings({
     setBusy(true);
     try {
       await clearAllLocalCaches();
-      alert("Local cache cleared. You can refresh the page.");
+      pushNotice("Local cache cleared. You can refresh the page.", "success");
     } catch (e) {
       console.error(e);
-      try { localStorage.clear(); } catch {}
-      alert("Local cache clearing hit an error; best-effort fallback applied.");
+      try {
+        localStorage.clear();
+      } catch {}
+      pushNotice("Local cache clearing hit an error; a best-effort fallback was applied.", "warning");
     } finally {
       setBusy(false);
     }
   }
 
   async function handleDeleteGrowOnly() {
-    if (!uid) return alert("You must be signed in.");
-    const ok = window.confirm(
-      "Delete ONLY grow data (grows, tasks, timeline, analytics, events, notes, images)? Recipes & supplies will remain."
-    );
+    if (!uid) {
+      pushNotice("You must be signed in.", "warning");
+      return;
+    }
+    const ok = await confirm({
+      title: "Delete grow data only?",
+      message:
+        "Delete ONLY grow data (grows, tasks, timeline, analytics, events, notes, images)? Recipes and supplies will remain.",
+      confirmLabel: "Delete grow data",
+      cancelLabel: "Cancel",
+      tone: "danger",
+    });
     if (!ok) return;
     setBusy(true);
     try {
       const res = await deleteGrowDataOnly();
-      alert(`Grow data deleted. Firestore docs removed: ${res.deleted}`);
+      pushNotice(`Grow data deleted. Firestore docs removed: ${res.deleted}`, "success");
     } catch (e) {
       console.error(e);
-      alert("Failed to delete grow data.");
+      pushNotice("Failed to delete grow data.", "error");
     } finally {
       setBusy(false);
     }
@@ -282,14 +380,13 @@ export default function Settings({
     setBusy(true);
     try {
       const result = await deleteAllUserData();
-      alert(
-        `Deleted your data.\nFirestore docs removed: ${result.deleted}\nStorage purge attempted: ${
-          result.deletedFiles ? "yes" : "skipped/disabled"
-        }\n\nRefresh the page to start clean.`
+      pushNotice(
+        `Deleted your data. Firestore docs removed: ${result.deleted}. Storage purge attempted: ${result.deletedFiles ? "yes" : "skipped/disabled"}. Refresh the page to start clean.`,
+        "success"
       );
     } catch (e) {
       console.error(e);
-      alert("Failed to delete all data. Are you signed in?");
+      pushNotice("Failed to delete all data. Are you signed in?", "error");
     } finally {
       setBusy(false);
       setShowDeleteAllModal(false);
@@ -297,11 +394,48 @@ export default function Settings({
     }
   }
 
+  // Desktop-only: check for updates via Tauri updater plugin (no-op in web builds)
+  const handleCheckForUpdates = async () => {
+    try {
+      // Guard: only run in Tauri desktop
+      const tauri = typeof window !== "undefined" ? window.__TAURI__ : null;
+      if (!tauri || !tauri.core || typeof tauri.core.invoke !== "function") {
+        pushNotice("Check for updates is only available in the installed desktop app.", "info");
+        return;
+      }
+
+      setUpdateStatus("checking");
+
+      // Call the updater plugin command.
+      // This mirrors the @tauri-apps/plugin-updater `check()` behavior.
+      const result = await tauri.core.invoke("plugin:updater|check");
+
+      console.log("Updater check result:", result);
+
+      // Try to support different shapes defensively
+      const available =
+        (result && typeof result === "object" && "available" in result && !!result.available) ||
+        (result && typeof result === "object" && result.response && result.response.available);
+
+      if (available) {
+        setUpdateStatus("available");
+        pushNotice("An update is available. The desktop updater will follow your configured behavior.", "success");
+      } else {
+        setUpdateStatus("none");
+        pushNotice("You are already on the latest desktop version.", "info");
+      }
+    } catch (err) {
+      console.error("Update check failed:", err);
+      setUpdateStatus("error");
+      pushNotice("Couldn't check for updates. Make sure you're online and that updater is configured.", "error");
+    }
+  };
+
   // Derived for reminders UI
   const remindersOn = !!prefs.stageReminders;
   const digestTime = String(prefs.taskDigestTime || "09:00");
-  const daysInoc   = Number(prefs.stageMaxDays?.Inoculated || 0);
-  const daysFruit  = Number(prefs.stageMaxDays?.Fruiting || 0);
+  const daysInoc = Number(prefs.stageMaxDays?.Inoculated || 0);
+  const daysFruit = Number(prefs.stageMaxDays?.Fruiting || 0);
 
   // Save Label Defaults → mirror labels to preferences.labels in Firestore
   const saveLabelDefaults = async () => {
@@ -323,10 +457,10 @@ export default function Settings({
         const merged = { ...cur, labels };
         localStorage.setItem("preferences", JSON.stringify(merged));
       }
-      alert("Label defaults saved.");
+      pushNotice("Label defaults saved.", "success");
     } catch (e) {
       console.warn("Saving label defaults failed:", e);
-      alert("Could not save label defaults. They still persist locally on this device.");
+      pushNotice("Could not save label defaults. They still persist locally on this device.", "warning");
     }
   };
 
@@ -347,6 +481,15 @@ export default function Settings({
           </button>
         ))}
       </div>
+
+      {notice ? (
+        <div className={`mb-6 rounded-xl px-4 py-3 text-sm ${noticeToneClass[notice.tone] || noticeToneClass.info}`}>
+          <div className="flex items-start justify-between gap-3">
+            <span>{notice.message}</span>
+            <button type="button" className="chip !px-2 !py-0.5" onClick={() => setNotice(null)}>Dismiss</button>
+          </div>
+        </div>
+      ) : null}
 
       {/* GENERAL */}
       {activeTab === "general" && (
@@ -437,16 +580,26 @@ export default function Settings({
           <div>
             <h2 className="text-lg font-medium mb-3">Units</h2>
             <div className="flex flex-wrap items-center gap-2">
-              <button className={`chip ${String(prefs.temperatureUnit || "F").toUpperCase() === "F" ? "chip--active" : ""}`} onClick={() => setTempUnit("F")}>
+              <button
+                className={`chip ${String(prefs.temperatureUnit || "F").toUpperCase() === "F" ? "chip--active" : ""}`}
+                onClick={() => setTempUnit("F")}
+              >
                 Fahrenheit (°F)
               </button>
-              <button className={`chip ${String(prefs.temperatureUnit || "F").toUpperCase() === "C" ? "chip--active" : ""}`} onClick={() => setTempUnit("C")}>
+              <button
+                className={`chip ${String(prefs.temperatureUnit || "F").toUpperCase() === "C" ? "chip--active" : ""}`}
+                onClick={() => setTempUnit("C")}
+              >
                 Celsius (°C)
               </button>
             </div>
 
             <label className="mt-3 flex items-center gap-2 text-sm">
-              <input type="checkbox" checked={!!prefs.autoConvertEnvNotes} onChange={(e) => setAutoConvert(e.target.checked)} />
+              <input
+                type="checkbox"
+                checked={!!prefs.autoConvertEnvNotes}
+                onChange={(e) => setAutoConvert(e.target.checked)}
+              />
               Also store a °C copy for analytics
             </label>
             <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">
@@ -462,9 +615,21 @@ export default function Settings({
             </p>
 
             <div className="flex flex-wrap items-center gap-2 mb-3">
-              <button className={`chip ${!remindersOn ? "chip--active" : ""}`} onClick={() => setRemindersEnabled(false)}>Off</button>
-              <button className={`chip ${remindersOn ? "chip--active" : ""}`} onClick={() => setRemindersEnabled(true)}>On</button>
-              <button className="btn-outline text-xs ml-2" onClick={sendTest}>Send test notification</button>
+              <button
+                className={`chip ${!remindersOn ? "chip--active" : ""}`}
+                onClick={() => setRemindersEnabled(false)}
+              >
+                Off
+              </button>
+              <button
+                className={`chip ${remindersOn ? "chip--active" : ""}`}
+                onClick={() => setRemindersEnabled(true)}
+              >
+                On
+              </button>
+              <button className="btn-outline text-xs ml-2" onClick={sendTest}>
+                Send test notification
+              </button>
             </div>
 
             <div className="flex flex-wrap items-center gap-3 mb-3">
@@ -481,7 +646,9 @@ export default function Settings({
               <div className="flex items-center gap-2">
                 <label className="w-36 text-sm text-slate-600 dark:text-slate-300">Inoculated (days)</label>
                 <input
-                  type="number" min="0" step="1"
+                  type="number"
+                  min="0"
+                  step="1"
                   value={Number.isFinite(daysInoc) ? daysInoc : 0}
                   onChange={(e) => setStageDays("Inoculated", e.target.value)}
                   className="w-28 rounded-lg border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-900 px-3 py-2 text-sm"
@@ -490,7 +657,9 @@ export default function Settings({
               <div className="flex items-center gap-2">
                 <label className="w-36 text-sm text-slate-600 dark:text-slate-300">Fruiting (days)</label>
                 <input
-                  type="number" min="0" step="1"
+                  type="number"
+                  min="0"
+                  step="1"
                   value={Number.isFinite(daysFruit) ? daysFruit : 0}
                   onChange={(e) => setStageDays("Fruiting", e.target.value)}
                   className="w-28 rounded-lg border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-900 px-3 py-2 text-sm"
@@ -499,8 +668,12 @@ export default function Settings({
             </div>
 
             <div className="mt-3 flex flex-wrap items-center gap-2">
-              <button type="button" className="btn-outline text-xs" onClick={clearFired}>Clear fired reminders</button>
-              <span className="text-xs text-slate-500 dark:text-slate-400">(Only clears local “already notified” memory on this device)</span>
+              <button type="button" className="btn-outline text-xs" onClick={clearFired}>
+                Clear fired reminders
+              </button>
+              <span className="text-xs text-slate-500 dark:text-slate-400">
+                (Only clears local “already notified” memory on this device)
+              </span>
             </div>
           </div>
         </section>
@@ -574,7 +747,7 @@ export default function Settings({
 
           <div>
             <button
-              className="mt-2 px-3 py-2 rounded-lg bg-emerald-600 text-white hover:bg-emerald-700"
+              className="mt-2 px-3 py-2 rounded-lg btn-accent"
               onClick={saveLabelDefaults}
             >
               Save Label Defaults
@@ -587,9 +760,15 @@ export default function Settings({
       {activeTab === "data" && (
         <section role="tabpanel" aria-label="Data settings" className="space-y-6">
           <div className="flex flex-wrap gap-2">
-            <button type="button" className="btn btn-outline" onClick={onExportJSON}>Export JSON</button>
-            <button type="button" className="btn" onClick={onImportJSON}>Import JSON</button>
-            <button type="button" className="btn-accent" onClick={onExportJSON}>Backup Now</button>
+            <button type="button" className="btn btn-outline" onClick={onExportJSON}>
+              Export JSON
+            </button>
+            <button type="button" className="btn" onClick={onImportJSON}>
+              Import JSON
+            </button>
+            <button type="button" className="btn-accent" onClick={onExportJSON}>
+              Backup Now
+            </button>
           </div>
           <p className="text-sm text-slate-500 dark:text-slate-400">
             Exports and backups include grows, recipes, supplies, tasks, and preferences.
@@ -600,13 +779,50 @@ export default function Settings({
       {/* ADVANCED */}
       {activeTab === "adv" && (
         <section role="tabpanel" aria-label="Advanced settings" className="space-y-6">
+          {/* Updates block */}
+          <div className="space-y-3">
+            <h2 className="text-lg font-medium">Desktop Updates</h2>
+            <p className="text-sm text-slate-500 dark:text-slate-400">
+              Check for updates to the installed desktop app. This only works in the Tauri desktop build.
+            </p>
+            <div className="flex flex-wrap items-center gap-2">
+              <button
+                type="button"
+                className="btn"
+                onClick={handleCheckForUpdates}
+                disabled={busy || updateStatus === "checking"}
+              >
+                {updateStatus === "checking" ? "Checking…" : "Check for desktop updates"}
+              </button>
+              {updateStatus === "available" && (
+                <span className="text-xs text-emerald-600 dark:text-emerald-400">
+                  Update available — follow any prompts in the desktop app.
+                </span>
+              )}
+              {updateStatus === "none" && (
+                <span className="text-xs text-slate-500 dark:text-slate-400">
+                  You&apos;re on the latest version.
+                </span>
+              )}
+              {updateStatus === "error" && (
+                <span className="text-xs text-rose-500 dark:text-rose-400">
+                  Error checking for updates. See console for details.
+                </span>
+              )}
+            </div>
+          </div>
+
+          {/* Danger Zone (unchanged logic) */}
           <div className="space-y-3">
             <h2 className="text-lg font-medium">Danger Zone</h2>
             <div className="flex flex-wrap gap-2">
               <button
-                type="button" className="btn-outline"
+                type="button"
+                className="btn-outline"
                 onClick={() => {
-                  try { localStorage.removeItem("preferences"); } catch {}
+                  try {
+                    localStorage.removeItem("preferences");
+                  } catch {}
                   savePrefs(defaultPrefs);
                 }}
                 disabled={busy}
@@ -618,22 +834,12 @@ export default function Settings({
               </button>
 
               {/* NEW: Delete Grow Data Only */}
-              <button
-                type="button"
-                className="btn-accent"
-                onClick={handleDeleteGrowOnly}
-                disabled={busy}
-              >
+              <button type="button" className="btn-accent" onClick={handleDeleteGrowOnly} disabled={busy}>
                 Delete Grow Data Only
               </button>
 
               {/* Updated: Delete All Data opens modal */}
-              <button
-                type="button"
-                className="btn-accent"
-                onClick={handleDeleteAll}
-                disabled={busy}
-              >
+              <button type="button" className="btn-accent" onClick={handleDeleteAll} disabled={busy}>
                 Delete All Data
               </button>
             </div>
@@ -650,8 +856,8 @@ export default function Settings({
           <div className="w-full max-w-md rounded-lg bg-white p-6 shadow-lg dark:bg-zinc-900">
             <h3 className="text-lg font-semibold text-rose-600 dark:text-rose-400">Delete ALL Data</h3>
             <p className="mt-2 text-sm text-zinc-700 dark:text-zinc-300">
-              This will permanently delete <strong>all</strong> your data (grows, recipes, supplies, labels, strains, tasks, Storage files, etc.).
-              First, download a backup so you can re-import if needed.
+              This will permanently delete <strong>all</strong> your data (grows, recipes, supplies, labels, strains,
+              tasks, Storage files, etc.). First, download a backup so you can re-import if needed.
             </p>
 
             <div className="mt-4 flex gap-2">
@@ -666,7 +872,7 @@ export default function Settings({
                     }
                   } catch (e) {
                     console.error(e);
-                    alert("Backup failed. Try again.");
+                    pushNotice("Backup failed. Try again.", "error");
                   }
                 }}
               >
@@ -675,7 +881,9 @@ export default function Settings({
             </div>
 
             <div className="mt-4">
-              <label className="text-sm block mb-1">Type <span className="font-mono font-semibold">DELETE</span> to confirm</label>
+              <label className="text-sm block mb-1">
+                Type <span className="font-mono font-semibold">DELETE</span> to confirm
+              </label>
               <input
                 className="w-full rounded border border-zinc-300 bg-white px-3 py-2 text-sm dark:border-zinc-700 dark:bg-zinc-900"
                 placeholder="DELETE"

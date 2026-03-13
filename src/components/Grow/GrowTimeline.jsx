@@ -15,14 +15,52 @@ function isBulkGrow(g) {
   const t = String(g?.type || g?.growType || g?.container || "").toLowerCase();
   return t.includes("bulk") || t.includes("tub") || t.includes("monotub");
 }
+
 function allowedStagesForGrow(g) {
   return isBulkGrow(g) ? STAGES_BULK : STAGES_NON_BULK;
 }
-function numOrNull(v) { const n = Number(v); return Number.isFinite(n) ? n : null; }
-function firstNumber(values) { for (const v of values) { const n = numOrNull(v); if (n !== null) return n; } return null; }
+
+function numOrNull(v) {
+  const n = Number(v);
+  return Number.isFinite(n) ? n : null;
+}
+
+function firstNumber(values) {
+  for (const v of values) {
+    const n = numOrNull(v);
+    if (n !== null) return n;
+  }
+  return null;
+}
+
 function isConsumableType(g) {
   const t = String(g?.type || g?.growType || g?.container || "").toLowerCase();
-  return t.includes("grain") || t.includes("jar") || t.includes("lc") || t.includes("liquid") || t.includes("agar") || t.includes("plate") || t.includes("slant");
+  return (
+    t.includes("grain") ||
+    t.includes("jar") ||
+    t.includes("lc") ||
+    t.includes("liquid") ||
+    t.includes("agar") ||
+    t.includes("plate") ||
+    t.includes("slant")
+  );
+}
+
+function getConsumableRemaining(g) {
+  const total = numOrNull(g?.amountTotal);
+  const used = numOrNull(g?.amountUsed);
+  if (total !== null && total > 0) {
+    return Math.max(0, total - (used !== null ? used : 0));
+  }
+
+  const legacy = firstNumber([
+    g?.amountAvailable,
+    g?.unitsRemaining,
+    g?.volumeRemaining,
+    g?.jarsRemaining,
+  ]);
+
+  return legacy !== null ? Math.max(0, legacy) : Infinity;
 }
 
 // Timeline-visible = not archived + not contaminated + has remaining (for consumables)
@@ -30,37 +68,105 @@ function isConsumableType(g) {
 function isTimelineVisible(g) {
   if (!g) return false;
   if (isArchivedish(g)) return false;
+
   const stageLc = String(g.stage || "").toLowerCase();
   if (stageLc === "harvested") return false;
+
   const status = String(g.status || "").toLowerCase();
   if (status === "contaminated") return false;
   if (g.active === false) return false;
 
   if (isConsumableType(g)) {
-    const remaining = firstNumber([g.amountAvailable, g.unitsRemaining, g.volumeRemaining, g.jarsRemaining]) ?? Infinity;
+    const remaining = getConsumableRemaining(g);
     if (remaining <= 0) return false;
     if (g.empty || g.consumed || g.usedUp) return false;
   }
+
   return true;
 }
 
-function yyyymmdd(iso){ if(!iso) return ""; return iso.replace(/-/g,"").slice(0,8); }
-function regenerateAbbreviation(g, inocISO){
-  const date = yyyymmdd(inocISO); if(!date) return null;
+function yyyymmdd(iso) {
+  if (!iso) return "";
+  return String(iso).replace(/-/g, "").slice(0, 8);
+}
+
+function regenerateAbbreviation(g, inocISO) {
+  const date = yyyymmdd(inocISO);
+  if (!date) return null;
+
   const existing = g?.abbreviation || g?.subname || g?.code || g?.labelCode || "";
-  if (existing){
-    const parts = existing.split("-"); const last = parts[parts.length-1] || "";
-    if(/^\d{6,8}$/.test(last)){ parts[parts.length-1]=date; return parts.join("-"); }
+  if (existing) {
+    const parts = existing.split("-");
+    const last = parts[parts.length - 1] || "";
+    if (/^\d{6,8}$/.test(last)) {
+      parts[parts.length - 1] = date;
+      return parts.join("-");
+    }
     return `${existing}-${date}`;
   }
-  const strain=(g?.strain||g?.strainName||"GROW").trim();
-  const initials=strain.split(/\s+/).map(w=>w[0]).filter(Boolean).join("").toUpperCase();
-  const mid=isConsumableType(g)?"GJ":isBulkGrow(g)?"BK":"GR";
+
+  const strain = (g?.strain || g?.strainName || "GROW").trim();
+  const initials = strain
+    .split(/\s+/)
+    .map((w) => w[0])
+    .filter(Boolean)
+    .join("")
+    .toUpperCase();
+
+  const mid = isConsumableType(g) ? "GJ" : isBulkGrow(g) ? "BK" : "GR";
   return `${initials}-${mid}-${date}`;
 }
 
-function isValidISODate(s){
-  return typeof s==="string" && /^\d{4}-\d{2}-\d{2}$/.test(s);
+function isValidISODate(s) {
+  return typeof s === "string" && /^\d{4}-\d{2}-\d{2}$/.test(s);
+}
+
+function toLocalYYYYMMDD(d) {
+  try {
+    const y = d.getFullYear();
+    const m = String(d.getMonth() + 1).padStart(2, "0");
+    const day = String(d.getDate()).padStart(2, "0");
+    return `${y}-${m}-${day}`;
+  } catch {
+    return "";
+  }
+}
+
+function parseAnyDate(raw) {
+  if (!raw) return null;
+
+  if (raw && typeof raw.toDate === "function") {
+    const d = raw.toDate();
+    return Number.isNaN(d?.getTime?.()) ? null : d;
+  }
+
+  if (raw instanceof Date) {
+    return Number.isNaN(raw.getTime()) ? null : raw;
+  }
+
+  if (typeof raw === "number") {
+    let ms = raw;
+    if (ms < 100000000000) ms *= 1000;
+    const d = new Date(ms);
+    return Number.isNaN(d.getTime()) ? null : d;
+  }
+
+  const s = String(raw);
+  const d = new Date(s);
+  return Number.isNaN(d.getTime()) ? null : d;
+}
+
+function getLatestFlushLocalDate(flushes = []) {
+  let latest = null;
+
+  for (const f of Array.isArray(flushes) ? flushes : []) {
+    const raw = (f && (f.createdAt ?? f.date ?? f.when)) ?? null;
+    const d = parseAnyDate(raw);
+    if (!d) continue;
+    if (!latest || d > latest) latest = d;
+  }
+
+  return latest ? toLocalYYYYMMDD(latest) : "";
 }
 
 export default function GrowTimeline({
@@ -75,15 +181,18 @@ export default function GrowTimeline({
 }) {
   const [view, setView] = useState("active");
   const [sortFrozen, setSortFrozen] = useState(false);
-  const frozenOrderRef = useRef/** @type {string[]} */([]);
+  const frozenOrderRef = useRef([]);
   const [optimisticallyHidden, setOptimisticallyHidden] = useState(() => new Set());
 
-  const freezeSorting = useCallback((currentIds) => {
-    if (!sortFrozen) {
-      frozenOrderRef.current = currentIds.slice();
-      setSortFrozen(true);
-    }
-  }, [sortFrozen]);
+  const freezeSorting = useCallback(
+    (currentIds) => {
+      if (!sortFrozen) {
+        frozenOrderRef.current = currentIds.slice();
+        setSortFrozen(true);
+      }
+    },
+    [sortFrozen]
+  );
 
   const unfreezeSorting = useCallback(() => {
     frozenOrderRef.current = [];
@@ -92,29 +201,40 @@ export default function GrowTimeline({
 
   const filtered = useMemo(() => {
     const arr = Array.isArray(grows) ? [...grows] : [];
-    const base = (view === "active")
-      ? arr.filter(isTimelineVisible)
-      : (view === "archived")
+    const base =
+      view === "active"
+        ? arr.filter(isTimelineVisible)
+        : view === "archived"
         ? arr.filter(isArchivedish)
         : arr.filter((g) => isTimelineVisible(g) || isArchivedish(g));
-    return base.filter(g => !optimisticallyHidden.has(g.id));
+
+    return base.filter((g) => !optimisticallyHidden.has(g.id));
   }, [grows, view, optimisticallyHidden]);
 
   const items = useMemo(() => {
     const byTime = filtered.slice().sort((a, b) => getTimeForSort(b) - getTimeForSort(a));
     if (!sortFrozen || frozenOrderRef.current.length === 0) return byTime;
+
     const index = new Map(frozenOrderRef.current.map((id, i) => [id, i]));
-    const inFrozen = []; const notFrozen = [];
-    for (const g of byTime) (index.has(g.id) ? inFrozen : notFrozen).push(g);
-    inFrozen.sort((a,b)=> index.get(a.id) - index.get(b.id));
+    const inFrozen = [];
+    const notFrozen = [];
+
+    for (const g of byTime) {
+      if (index.has(g.id)) inFrozen.push(g);
+      else notFrozen.push(g);
+    }
+
+    inFrozen.sort((a, b) => index.get(a.id) - index.get(b.id));
     return inFrozen.concat(notFrozen);
   }, [filtered, sortFrozen]);
 
-  // Firestore fallbacks if parent didn’t provide handlers
   const fb = {
     addFlush: async (growId) => {
       if (onAddFlush) return onAddFlush(growId);
-      const uid = auth.currentUser?.uid; if (!uid) return;
+
+      const uid = auth.currentUser?.uid;
+      if (!uid) return;
+
       const ref = doc(db, "users", uid, "grows", growId);
       await runTransaction(db, async (tx) => {
         const snap = await tx.get(ref);
@@ -124,13 +244,18 @@ export default function GrowTimeline({
           : Array.isArray(data?.harvest?.flushes)
           ? data.harvest.flushes.slice()
           : [];
+
         arr.push({ wet: 0, dry: 0, note: "", createdAt: Date.now() });
         tx.update(ref, { flushes: arr });
       });
     },
+
     updateFlush: async (growId, index, patch) => {
       if (onUpdateFlush) return onUpdateFlush(growId, index, patch);
-      const uid = auth.currentUser?.uid; if (!uid) return;
+
+      const uid = auth.currentUser?.uid;
+      if (!uid) return;
+
       const ref = doc(db, "users", uid, "grows", growId);
       await runTransaction(db, async (tx) => {
         const snap = await tx.get(ref);
@@ -140,13 +265,20 @@ export default function GrowTimeline({
           : Array.isArray(data?.harvest?.flushes)
           ? data.harvest.flushes.slice()
           : [];
-        if (!arr[index]) arr[index] = { wet: 0, dry: 0, note: "", createdAt: Date.now() };
+
+        if (!arr[index]) {
+          arr[index] = { wet: 0, dry: 0, note: "", createdAt: Date.now() };
+        }
+
         arr[index] = { ...arr[index], ...patch };
         tx.update(ref, { flushes: arr });
       });
     },
+
     deleteFlush: async (growId, index) => {
-      const uid = auth.currentUser?.uid; if (!uid) return;
+      const uid = auth.currentUser?.uid;
+      if (!uid) return;
+
       const ref = doc(db, "users", uid, "grows", growId);
       await runTransaction(db, async (tx) => {
         const snap = await tx.get(ref);
@@ -156,54 +288,47 @@ export default function GrowTimeline({
           : Array.isArray(data?.harvest?.flushes)
           ? data.harvest.flushes.slice()
           : [];
+
         if (index >= 0 && index < arr.length) {
           arr.splice(index, 1);
           tx.update(ref, { flushes: arr });
         }
       });
     },
-    finishHarvest: async (growId, _ignoredUserISO) => {
-      // Optimistically hide from Active list
-      setOptimisticallyHidden(prev => { const next = new Set(prev); next.add(growId); return next; });
+
+    finishHarvest: async (growId, userISODate) => {
+      setOptimisticallyHidden((prev) => {
+        const next = new Set(prev);
+        next.add(growId);
+        return next;
+      });
+
       if (onFinishHarvest) return onFinishHarvest(growId);
-      const uid = auth.currentUser?.uid; if (!uid) return;
+
+      const uid = auth.currentUser?.uid;
+      if (!uid) return;
 
       const ref = doc(db, "users", uid, "grows", growId);
 
-      // 🔧 Surgical fix: derive stageDates.Harvested from the LATEST flush date (YYYY-MM-DD)
-      // and write harvestedAt as serverTimestamp().
-      let harvestedLocal = null;
-      const toLocalYYYYMMDD = (d) => {
+      let harvestedLocal = isValidISODate(userISODate) ? userISODate : "";
+      if (!harvestedLocal) {
         try {
-          const y = d.getFullYear();
-          const m = String(d.getMonth() + 1).padStart(2, "0");
-          const day = String(d.getDate()).padStart(2, "0");
-          return `${y}-${m}-${day}`;
-        } catch { return ""; }
-      };
+          await runTransaction(db, async (tx) => {
+            const snap = await tx.get(ref);
+            const data = snap.data() || {};
+            const arr = Array.isArray(data.flushes)
+              ? data.flushes
+              : Array.isArray(data?.harvest?.flushes)
+              ? data.harvest.flushes
+              : [];
 
-      try {
-        await runTransaction(db, async (tx) => {
-          const snap = await tx.get(ref);
-          const data = snap.data() || {};
-          const arr = Array.isArray(data.flushes)
-            ? data.flushes
-            : Array.isArray(data?.harvest?.flushes)
-            ? data.harvest.flushes
-            : [];
-          let latest = null;
-          for (const f of arr) {
-            const raw = (f && (f.createdAt ?? f.date ?? f.when)) ?? null;
-            if (!raw) continue;
-            let d;
-            if (typeof raw === "number") d = new Date(raw < 100000000000 ? raw * 1000 : raw);
-            else if (raw && typeof raw.toDate === "function") d = raw.toDate();
-            else d = new Date(String(raw));
-            if (!isNaN(d)) { if (!latest || d > latest) latest = d; }
-          }
-          if (latest) harvestedLocal = toLocalYYYYMMDD(latest);
-        });
-      } catch {}
+            const latest = getLatestFlushLocalDate(arr);
+            if (latest) harvestedLocal = latest;
+          });
+        } catch {
+          // no-op
+        }
+      }
 
       const patch = {
         stage: "Harvested",
@@ -213,10 +338,18 @@ export default function GrowTimeline({
         harvestedAt: serverTimestamp(),
         updatedAt: serverTimestamp(),
       };
-      if (harvestedLocal) patch["stageDates.Harvested"] = harvestedLocal;
+
+      if (harvestedLocal) {
+        patch["stageDates.Harvested"] = harvestedLocal;
+      }
 
       await updateDoc(ref, patch);
-      try { await enqueueReusablesForGrow(uid, growId); } catch {}
+
+      try {
+        await enqueueReusablesForGrow(uid, growId);
+      } catch {
+        // non-fatal
+      }
     },
   };
 
@@ -236,10 +369,11 @@ export default function GrowTimeline({
           onAdvanceStageWithDate={onAdvanceStageWithDate}
           onUpdateAbbreviation={onUpdateAbbreviation}
           fb={fb}
-          onFreezeSorting={() => freezeSorting(items.map(i=>i.id))}
+          onFreezeSorting={() => freezeSorting(items.map((i) => i.id))}
           onUnfreezeSorting={unfreezeSorting}
         />
       ))}
+
       {items.length === 0 && (
         <div className="text-sm opacity-70">
           {view === "active" ? "No active grows right now." : "Nothing to show."}
@@ -250,18 +384,31 @@ export default function GrowTimeline({
 }
 
 function Segment({ value, setValue }) {
-  const base = "px-3 py-1.5 rounded-full text-xs border";
-  const onCls = "bg-emerald-600 text-white border-transparent";
-  const off = "bg-zinc-100 dark:bg-zinc-800 border-zinc-300 dark:border-zinc-700";
+  const base = "chip text-xs";
+  const onCls = "chip--active";
+  const off = "";
+
   return (
     <div className="inline-flex gap-1">
-      <button className={`${base} ${value === "active" ? onCls : off}`} onClick={() => setValue("active")} type="button">
+      <button
+        className={`${base} ${value === "active" ? onCls : off}`}
+        onClick={() => setValue("active")}
+        type="button"
+      >
         Active
       </button>
-      <button className={`${base} ${value === "archived" ? onCls : off}`} onClick={() => setValue("archived")} type="button">
+      <button
+        className={`${base} ${value === "archived" ? onCls : off}`}
+        onClick={() => setValue("archived")}
+        type="button"
+      >
         Archived
       </button>
-      <button className={`${base} ${value === "all" ? onCls : off}`} onClick={() => setValue("all")} type="button">
+      <button
+        className={`${base} ${value === "all" ? onCls : off}`}
+        onClick={() => setValue("all")}
+        type="button"
+      >
         All
       </button>
     </div>
@@ -269,7 +416,7 @@ function Segment({ value, setValue }) {
 }
 
 function clampStage(allowed, current) {
-  const order = STAGES_BULK; // global ordering
+  const order = STAGES_BULK;
   const idxAll = order.indexOf(current);
   if (idxAll < 0) return allowed[0];
   const clampedIdx = Math.min(idxAll, allowed.length - 1);
@@ -296,7 +443,6 @@ function GrowRow({
 
   const ALLOWED = allowedStagesForGrow(grow);
   const stageRaw = grow.stage || ALLOWED[0];
-  theStage: { /* clamp to allowed to keep UI coherent */ }
   const stage = ALLOWED.includes(stageRaw) ? stageRaw : clampStage(ALLOWED, stageRaw);
   const stageIdx = ALLOWED.indexOf(stage);
   const isHarvesting = stage === "Harvesting";
@@ -304,6 +450,7 @@ function GrowRow({
   const advanceStage = () => {
     if (archived) return;
     if (stageIdx < 0 || stageIdx === ALLOWED.length - 1) return;
+
     const next = ALLOWED[stageIdx + 1];
     if (next === "Harvested") {
       fb.finishHarvest(grow.id);
@@ -318,6 +465,7 @@ function GrowRow({
 
   const commitStageDate = (s, iso) => {
     if (archived) return;
+
     const v = iso || "";
     onUpdateStageDate?.(grow.id, s, v);
 
@@ -330,16 +478,19 @@ function GrowRow({
       const newIdx = ALLOWED.indexOf(s);
       if (newIdx > stageIdx) {
         if (s === "Harvested") {
-          if (onAdvanceStageWithDate) onAdvanceStageWithDate(grow.id, s, v);
-          fb.finishHarvest(grow.id, v);
-        } else {
-          onUpdateStage?.(grow.id, s);
-          // Re-commit exact date after the stage write to avoid any auto-stamp race
-          setTimeout(() => onUpdateStageDate?.(grow.id, s, v), 0);
+          if (typeof onAdvanceStageWithDate === "function") {
+            onAdvanceStageWithDate(grow.id, s, v);
+          } else {
+            fb.finishHarvest(grow.id, v);
+          }
+          return;
         }
+
+        onUpdateStage?.(grow.id, s);
+        setTimeout(() => onUpdateStageDate?.(grow.id, s, v), 0);
       }
     }
-  }; // fixed brace alignment
+  };
 
   const flushes =
     grow.flushes ||
@@ -352,7 +503,8 @@ function GrowRow({
     (acc, f) => {
       const wet = Number(f?.wet) || 0;
       const dry = Number(f?.dry) || 0;
-      acc.wet += wet; acc.dry += dry;
+      acc.wet += wet;
+      acc.dry += dry;
       return acc;
     },
     { wet: 0, dry: 0 }
@@ -386,8 +538,8 @@ function GrowRow({
                   key={s}
                   className={`px-2 py-1 rounded-full text-xs border ${
                     stage === s
-                      ? "bg-emerald-600 text-white border-transparent"
-                      : "bg-zinc-100 dark:bg-zinc-800 border-zinc-300 dark:border-zinc-700"
+                      ? "chip chip--active"
+                      : "chip"
                   }`}
                 >
                   {s}
@@ -408,7 +560,7 @@ function GrowRow({
             <button
               onClick={advanceStage}
               disabled={stage === ALLOWED[ALLOWED.length - 1]}
-              className="px-3 py-1.5 rounded-lg bg-emerald-600 text-white hover:bg-emerald-700 text-xs disabled:opacity-50 disabled:cursor-not-allowed"
+              className="btn btn-accent text-xs disabled:opacity-50 disabled:cursor-not-allowed"
               title={stage === ALLOWED[ALLOWED.length - 1] ? "Already at final stage" : "Advance Stage"}
             >
               Advance Stage
@@ -423,7 +575,7 @@ function GrowRow({
             label="Inoculated Date"
             value={valueOf("Inoculated")}
             disabled={archived}
-            onCommit={(v)=>commitStageDate("Inoculated", v)}
+            onCommit={(v) => commitStageDate("Inoculated", v)}
             onFreezeSorting={onFreezeSorting}
             onUnfreezeSorting={onUnfreezeSorting}
           />
@@ -433,7 +585,7 @@ function GrowRow({
             label="Colonizing Date"
             value={valueOf("Colonizing")}
             disabled={archived}
-            onCommit={(v)=>commitStageDate("Colonizing", v)}
+            onCommit={(v) => commitStageDate("Colonizing", v)}
             onFreezeSorting={onFreezeSorting}
             onUnfreezeSorting={onUnfreezeSorting}
           />
@@ -443,7 +595,7 @@ function GrowRow({
             label="Colonized Date"
             value={valueOf("Colonized")}
             disabled={archived}
-            onCommit={(v)=>commitStageDate("Colonized", v)}
+            onCommit={(v) => commitStageDate("Colonized", v)}
             onFreezeSorting={onFreezeSorting}
             onUnfreezeSorting={onUnfreezeSorting}
           />
@@ -453,7 +605,7 @@ function GrowRow({
             label="Fruiting Date"
             value={valueOf("Fruiting")}
             disabled={archived}
-            onCommit={(v)=>commitStageDate("Fruiting", v)}
+            onCommit={(v) => commitStageDate("Fruiting", v)}
             onFreezeSorting={onFreezeSorting}
             onUnfreezeSorting={onUnfreezeSorting}
           />
@@ -463,7 +615,7 @@ function GrowRow({
             label="Harvesting Date"
             value={valueOf("Harvesting")}
             disabled={archived}
-            onCommit={(v)=>commitStageDate("Harvesting", v)}
+            onCommit={(v) => commitStageDate("Harvesting", v)}
             onFreezeSorting={onFreezeSorting}
             onUnfreezeSorting={onUnfreezeSorting}
           />
@@ -473,7 +625,7 @@ function GrowRow({
             label="Harvested Date"
             value={valueOf("Harvested")}
             disabled={archived}
-            onCommit={(v)=>commitStageDate("Harvested", v)}
+            onCommit={(v) => commitStageDate("Harvested", v)}
             onFreezeSorting={onFreezeSorting}
             onUnfreezeSorting={onUnfreezeSorting}
           />
@@ -484,7 +636,9 @@ function GrowRow({
         <div className="mt-3 rounded-lg border border-zinc-300 dark:border-zinc-800 p-3">
           <div className="mb-2 flex items-center justify-between">
             <div className="font-medium">Harvest (per flush)</div>
-            <div className="text-xs opacity-70">Totals: <b>{fmtGram(totals.wet)}</b> wet · <b>{fmtGram(totals.dry)}</b> dry</div>
+            <div className="text-xs opacity-70">
+              Totals: <b>{fmtGram(totals.wet)}</b> wet · <b>{fmtGram(totals.dry)}</b> dry
+            </div>
           </div>
 
           <div className="space-y-2">
@@ -503,7 +657,9 @@ function GrowRow({
                   min={0}
                   step={0.1}
                   disabled={!isHarvesting || archived}
-                  onCommit={(n) => isHarvesting && fb.updateFlush(grow.id, idx, { dry: Number(flush?.dry)||0, wet: n })}
+                  onCommit={(n) =>
+                    isHarvesting && fb.updateFlush(grow.id, idx, { dry: Number(flush?.dry) || 0, wet: n })
+                  }
                 />
                 <FlushNumberField
                   label="Dry (g)"
@@ -511,7 +667,9 @@ function GrowRow({
                   min={0}
                   step={0.1}
                   disabled={!isHarvesting || archived}
-                  onCommit={(n) => isHarvesting && fb.updateFlush(grow.id, idx, { wet: Number(flush?.wet)||0, dry: n })}
+                  onCommit={(n) =>
+                    isHarvesting && fb.updateFlush(grow.id, idx, { wet: Number(flush?.wet) || 0, dry: n })
+                  }
                 />
                 <FlushTextField
                   label="Notes"
@@ -521,7 +679,7 @@ function GrowRow({
                 />
                 <div className="flex justify-end">
                   <button
-                    className="chip bg-red-600 text-white"
+                    className="rounded-full px-4 py-2 bg-red-600 text-white hover:bg-red-700 focus:outline-none focus:ring-2 focus:ring-red-400 disabled:opacity-60"
                     disabled={!isHarvesting || archived}
                     onClick={() => fb.deleteFlush(grow.id, idx)}
                     title="Delete this flush"
@@ -537,7 +695,7 @@ function GrowRow({
             {!archived && isHarvesting && (
               <button
                 onClick={() => fb.addFlush(grow.id)}
-                className="px-3 py-1.5 rounded-md border border-zinc-300 dark:border-zinc-700 hover:bg-zinc-100 dark:hover:bg-zinc-800 text-xs"
+                className="btn text-xs"
               >
                 + Add flush
               </button>
@@ -548,7 +706,7 @@ function GrowRow({
             {!archived && isHarvesting && (
               <button
                 onClick={() => fb.finishHarvest(grow.id)}
-                className="px-3 py-1.5 rounded-md bg-emerald-600 hover:bg-emerald-700 text-white text-xs"
+                className="btn btn-accent text-xs"
                 title="Finish harvest & archive this grow"
               >
                 Finish harvest &amp; Archive
@@ -563,8 +721,8 @@ function GrowRow({
 
 /**
  * StageDateField
- * - Local draft while focused (no writes while typing)
- * - **Commit on blur only** (stops mid-type commit → resort → “jump”)
+ * - Local draft while focused
+ * - Commit on blur only
  * - Freezes sorting on focus; unfreezes after commit/blur
  */
 function StageDateField({ label, value, onCommit, disabled, onFreezeSorting, onUnfreezeSorting }) {
@@ -582,10 +740,16 @@ function StageDateField({ label, value, onCommit, disabled, onFreezeSorting, onU
   };
 
   const handleBlur = () => {
-    if (disabled) { setFocused(false); onUnfreezeSorting?.(); return; }
+    if (disabled) {
+      setFocused(false);
+      onUnfreezeSorting?.();
+      return;
+    }
+
     if (isValidISODate(draft) && draft !== (value || "")) {
       onCommit?.(draft);
     }
+
     setFocused(false);
     onUnfreezeSorting?.();
   };
@@ -596,7 +760,7 @@ function StageDateField({ label, value, onCommit, disabled, onFreezeSorting, onU
       <div className="relative">
         <input
           type="date"
-          value={focused ? (draft || "") : (value || "")}
+          value={focused ? draft || "" : value || ""}
           onFocus={handleFocus}
           onChange={(e) => setDraft(e.target.value || "")}
           onBlur={handleBlur}
@@ -609,11 +773,6 @@ function StageDateField({ label, value, onCommit, disabled, onFreezeSorting, onU
   );
 }
 
-/**
- * FlushNumberField
- * - Local draft while typing; commit on blur/Enter
- * - Shows 0 placeholder; clears on focus if 0
- */
 function FlushNumberField({ label, value, onCommit, min = 0, step = 1, disabled = false }) {
   const [focused, setFocused] = useState(false);
   const [draft, setDraft] = useState(String(value ?? 0));
@@ -647,9 +806,15 @@ function FlushNumberField({ label, value, onCommit, min = 0, step = 1, disabled 
         onFocus={handleFocus}
         onChange={(e) => setDraft(e.target.value)}
         onKeyDown={(e) => {
-          if (e.key === "Enter") { e.currentTarget.blur(); commit(); }
+          if (e.key === "Enter") {
+            e.currentTarget.blur();
+            commit();
+          }
         }}
-        onBlur={() => { commit(); setFocused(false); }}
+        onBlur={() => {
+          commit();
+          setFocused(false);
+        }}
         disabled={disabled}
         className="w-full rounded-lg border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-900 px-3 py-2 disabled:opacity-60"
       />
@@ -657,10 +822,6 @@ function FlushNumberField({ label, value, onCommit, min = 0, step = 1, disabled 
   );
 }
 
-/**
- * FlushTextField
- * - Local draft; commit on blur/Enter
- */
 function FlushTextField({ label, value, onCommit, disabled = false }) {
   const [focused, setFocused] = useState(false);
   const [draft, setDraft] = useState(value || "");
@@ -669,18 +830,28 @@ function FlushTextField({ label, value, onCommit, disabled = false }) {
     if (!focused) setDraft(value || "");
   }, [value, focused]);
 
-  const commit = () => { if (!disabled) onCommit?.(draft || ""); };
+  const commit = () => {
+    if (!disabled) onCommit?.(draft || "");
+  };
 
   return (
     <label className="block">
       <div className="text-xs mb-1 opacity-70">{label}</div>
       <input
         type="text"
-        value={focused ? draft : (value || "")}
+        value={focused ? draft : value || ""}
         onFocus={() => setFocused(true)}
         onChange={(e) => setDraft(e.target.value)}
-        onKeyDown={(e) => { if (e.key === "Enter") { e.currentTarget.blur(); commit(); } }}
-        onBlur={() => { commit(); setFocused(false); }}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") {
+            e.currentTarget.blur();
+            commit();
+          }
+        }}
+        onBlur={() => {
+          commit();
+          setFocused(false);
+        }}
         disabled={disabled}
         className="w-full rounded-lg border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-900 px-3 py-2 disabled:opacity-60"
         placeholder="Optional"
@@ -705,84 +876,112 @@ function LabeledDate({ label, value, onChange, disabled }) {
 }
 
 function getTimeForSort(g) {
-  const s = g?.stageDates?.Harvested || g?.stageDates?.Colonized || g?.stageDates?.Inoculated || g?.createdDate || g?.createdAt;
+  const s =
+    g?.stageDates?.Harvested ||
+    g?.stageDates?.Colonized ||
+    g?.stageDates?.Inoculated ||
+    g?.createdDate ||
+    g?.createdAt;
   const d = toDate(s);
   return d ? d.getTime() : 0;
 }
 
-// Hardened: do NOT feed through UTC serialization; return YYYY-MM-DD using LOCAL parts
 function toInputDate(raw) {
   if (!raw) return "";
+
   if (typeof raw === "string") {
     const m = raw.match(/^(\d{4})-(\d{2})-(\d{2})/);
     if (m) return `${m[1]}-${m[2]}-${m[3]}`;
+
     const m2 = raw.match(/^(\d{2})\/(\d{2})\/(\d{4})$/);
     if (m2) {
-      const y = m2[3], mm = m2[1].padStart(2,"0"), dd = m2[2].padStart(2,"0");
+      const y = m2[3];
+      const mm = m2[1].padStart(2, "0");
+      const dd = m2[2].padStart(2, "0");
       return `${y}-${mm}-${dd}`;
     }
   }
+
   if (raw && typeof raw.toDate === "function") {
     const d = raw.toDate();
     const y = d.getFullYear();
-    const m = String(d.getMonth()+1).padStart(2,"0");
-    const day = String(d.getDate()).padStart(2,"0");
+    const m = String(d.getMonth() + 1).padStart(2, "0");
+    const day = String(d.getDate()).padStart(2, "0");
     return `${y}-${m}-${day}`;
   }
+
   if (raw instanceof Date) {
     const y = raw.getFullYear();
-    const m = String(raw.getMonth()+1).padStart(2,"0");
-    const day = String(raw.getDate()).padStart(2,"0");
+    const m = String(raw.getMonth() + 1).padStart(2, "0");
+    const day = String(raw.getDate()).padStart(2, "0");
     return `${y}-${m}-${day}`;
   }
+
   if (typeof raw === "number") {
     let ms = raw;
-    if (ms < 100000000000) ms = ms * 1000; // seconds → ms
+    if (ms < 100000000000) ms = ms * 1000;
     const d = new Date(ms);
     const y = d.getFullYear();
-    const m = String(d.getMonth()+1).padStart(2,"0");
-    const day = String(d.getDate()).padStart(2,"0");
+    const m = String(d.getMonth() + 1).padStart(2, "0");
+    const day = String(d.getDate()).padStart(2, "0");
     return `${y}-${m}-${day}`;
   }
+
   const d2 = new Date(String(raw));
-  if (!isNaN(d2)) {
+  if (!Number.isNaN(d2.getTime())) {
     const y = d2.getFullYear();
-    const m = String(d2.getMonth()+1).padStart(2,"0");
-    const day = String(d2.getDate()).padStart(2,"0");
+    const m = String(d2.getMonth() + 1).padStart(2, "0");
+    const day = String(d2.getDate()).padStart(2, "0");
     return `${y}-${m}-${day}`;
   }
+
   return "";
 }
 
-// Hardened: parse YYYY-MM-DD as LOCAL midnight; detect seconds vs ms
 function toDate(raw) {
   if (!raw) return null;
+
   try {
     if (raw && typeof raw.toDate === "function") return raw.toDate();
     if (raw instanceof Date) return raw;
+
     if (typeof raw === "number") {
       let ms = raw;
       if (ms < 100000000000) ms = ms * 1000;
       const d = new Date(ms);
-      return isNaN(d) ? null : d;
+      return Number.isNaN(d.getTime()) ? null : d;
     }
+
     const s = String(raw);
     const m = s.match(/^(\d{4})-(\d{2})-(\d{2})/);
     if (m) {
-      const y = parseInt(m[1],10), mm = parseInt(m[2],10), dd = parseInt(m[3],10);
-      return new Date(y, mm-1, dd); // local midnight
+      const y = parseInt(m[1], 10);
+      const mm = parseInt(m[2], 10);
+      const dd = parseInt(m[3], 10);
+      return new Date(y, mm - 1, dd);
     }
+
     const m2 = s.match(/^(\d{2})\/(\d{2})\/(\d{4})$/);
     if (m2) {
-      const mm = parseInt(m2[1],10), dd = parseInt(m2[2],10), y = parseInt(m2[3],10);
-      return new Date(y, mm-1, dd);
+      const mm = parseInt(m2[1], 10);
+      const dd = parseInt(m2[2], 10);
+      const y = parseInt(m2[3], 10);
+      return new Date(y, mm - 1, dd);
     }
+
     const d2 = new Date(s);
-    return isNaN(d2) ? null : d2;
+    return Number.isNaN(d2.getTime()) ? null : d2;
   } catch {
     return null;
   }
 }
 
-function safeNum(v) { const n = Number(v); return Number.isFinite(n) ? n : 0; }
-function fmtGram(g) { const n = Math.round((Number(g)||0)*10)/10; return `${n}g`; }
+function safeNum(v) {
+  const n = Number(v);
+  return Number.isFinite(n) ? n : 0;
+}
+
+function fmtGram(g) {
+  const n = Math.round((Number(g) || 0) * 10) / 10;
+  return `${n}g`;
+}

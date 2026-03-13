@@ -1,8 +1,10 @@
+// C:\Users\vtruj\mushroom-tracker-app\android\app\build.gradle
 apply plugin: 'com.android.application'
 
 android {
     namespace "com.chaoticneutral.myco"
     compileSdk rootProject.ext.compileSdkVersion
+
     defaultConfig {
         applicationId "com.chaoticneutral.myco"
         minSdkVersion rootProject.ext.minSdkVersion
@@ -11,15 +13,32 @@ android {
         versionName "1.0"
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
         aaptOptions {
-             // Files and dirs to omit from the packaged assets dir, modified to accommodate modern web apps.
-             // Default: https://android.googlesource.com/platform/frameworks/base/+/282e181b58cf72b6ca770dc7ca5f91f135444502/tools/aapt/AaptAssets.cpp#61
+            // Files and dirs to omit from the packaged assets dir, modified to accommodate modern web apps.
+            // Default: https://android.googlesource.com/platform/frameworks/base/+/282e181b58cf72b6ca770dc7ca5f91f135444502/tools/aapt/AaptAssets.cpp#61
             ignoreAssetsPattern '!.svn:!.git:!.ds_store:!*.scc:.*:!CVS:!thumbs.db:!picasa.ini:!*~'
         }
     }
+
+    // 🔐 ADD THIS BLOCK: uses the my-release-key.jks you just generated
+    signingConfigs {
+        release {
+            // keystore file you created in this same folder (android/app)
+            storeFile file("my-release-key.jks")
+
+            // ⛔ IMPORTANT: replace these with your real passwords
+            storePassword "colorado"
+            keyAlias "my-release-key-alias"
+            keyPassword "colorado"
+        }
+    }
+
     buildTypes {
         release {
             minifyEnabled false
             proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
+
+            // ✅ Tell Gradle to use the release signing config above
+            signingConfig signingConfigs.release
         }
     }
 }

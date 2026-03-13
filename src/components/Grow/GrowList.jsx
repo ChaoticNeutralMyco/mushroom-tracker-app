@@ -1,11 +1,10 @@
 // src/components/Grow/GrowList.jsx
 
-import React, { useEffect, useMemo, useState, useCallback, useRef } from "react";
+import React, { useEffect, useMemo, useState, useCallback } from "react";
 import { Link } from "react-router-dom";
 import { db, auth } from "../../firebase-config";
 import {
   updateDoc,
-  deleteDoc,
   doc,
   serverTimestamp,
   collection,
@@ -13,27 +12,31 @@ import {
 } from "firebase/firestore";
 import { useConfirm } from "../ui/ConfirmDialog";
 import Modal from "../ui/Modal";
-import { DEFAULT_STORAGE_LOCATIONS, subscribeLocations, seedDefaultsIfEmpty, addLocation } from "../../lib/storage-locations";
+import {
+  DEFAULT_STORAGE_LOCATIONS,
+  subscribeLocations,
+  seedDefaultsIfEmpty,
+  addLocation,
+} from "../../lib/storage-locations";
 import { getCoverSrc } from "../../lib/grow-images";
 import {
   normalizeStage,
   normalizeType,
   titleOfGrow,
   bestTimeMs,
-  // use shared heuristic wherever possible
   isArchivedish,
 } from "../../lib/growFilters";
-import GrowForm from "./GrowForm"; // ⬅️ minimal addition
+import GrowForm from "./GrowForm";
 import { enqueueReusablesForGrow } from "../../lib/clean-queue";
 
 /**
  * Dashboard/Archive Grow List
  *
- * KEY GUARANTEES (minimal, surgical):
+ * KEY GUARANTEES:
  * - “Active” dataset hard-filters out archived rows via isArchivedish().
  * - Archive/unarchive and store/unstore writes are normalized.
  * - Fully-consumed (new model) auto-fixes to Archived once rendered (legacy consumables).
- * - 🔹 Cost display is normalized from recipe + supplies and written back once per grow.
+ * - Cost display is normalized from recipe + supplies for UI display only.
  */
 
 // ---------- Date formatting helpers ----------
@@ -56,13 +59,14 @@ function toDateObj(v) {
     if (typeof v === "number") return new Date(v);
     if (typeof v === "string") {
       const d = new Date(v);
-      return isNaN(d.getTime()) ? null : d;
+      return Number.isNaN(d.getTime()) ? null : d;
     }
     return null;
   } catch {
     return null;
   }
 }
+
 function fmtDateYYYYMMDD(v) {
   const d = toDateObj(v);
   if (!d) return "";
@@ -71,6 +75,7 @@ function fmtDateYYYYMMDD(v) {
   const da = String(d.getDate()).padStart(2, "0");
   return `${y}-${m}-${da}`;
 }
+
 function stageDateString(grow) {
   const cur = normalizeStage(grow?.stage || "");
   const field = STAGE_TS_FIELD[cur];
@@ -80,6 +85,25 @@ function stageDateString(grow) {
     grow?.inoc ||
     grow?.createdAt;
   return fmtDateYYYYMMDD(primary) || "—";
+}
+
+function getCreatedMs(grow) {
+  const candidates = [
+    grow?.createdAt,
+    grow?.created_on,
+    grow?.startDate,
+    grow?.start,
+    grow?.inoculationDate,
+    grow?.inoc,
+    grow?.updatedAt,
+  ];
+
+  for (const value of candidates) {
+    const d = toDateObj(value);
+    if (d) return d.getTime();
+  }
+
+  return 0;
 }
 
 // ---------- Remaining helper (handles new & legacy fields) ----------
@@ -99,12 +123,6 @@ function calcRemaining(g) {
 }
 
 // ---------- Cost normalization helpers ----------
-/**
- * Return an array of { supplyId, amount, cost? , name? } for a grow
- * Priority:
- *  1) grow.recipeItems (already expanded)
- *  2) recipeId -> recipesMap[recipeId].items
- */
 function resolveRecipeItemsForGrow(g, recipesMap) {
   if (Array.isArray(g?.recipeItems) && g.recipeItems.length) {
     return g.recipeItems;
@@ -115,30 +133,65 @@ function resolveRecipeItemsForGrow(g, recipesMap) {
   if (rec && Array.isArray(rec.items)) return rec.items;
   return null;
 }
+
 function toNumber(n, fallback = 0) {
   const v = Number(n);
   return Number.isFinite(v) ? v : fallback;
 }
+
 function computeItemsCost(items, suppliesMap) {
   if (!Array.isArray(items) || !items.length) return 0;
   let sum = 0;
   for (const it of items) {
     const sid = it?.supplyId;
     const per = toNumber(
-      // prefer live supply cost; fallback to item-level cost if present
       sid && suppliesMap.has(sid) ? suppliesMap.get(sid)?.cost : it?.cost,
       0
     );
     const amt = toNumber(it?.amount, 0);
     sum += per * amt;
   }
-  // avoid negative/NaN
   return Math.max(0, Number(sum.toFixed(2)));
+}
+
+function getRecipeYieldForGrow(g, recipesMap) {
+  if (!g) return 1;
+
+  const inlineY = toNumber(g.recipeYield, 0);
+  if (inlineY > 0) return inlineY;
+
+  const rid = g?.recipeId || g?.recipe_id || g?.recipe?.id;
+  if (!rid) return 1;
+  const rec = recipesMap.get(rid);
+  if (!rec) return 1;
+
+  const recY = toNumber(rec.yield, 0);
+  return recY > 0 ? recY : 1;
+}
+
+function buildSuppliesMap(source) {
+  const map = new Map();
+  const arr = Array.isArray(source) ? source : [];
+  for (const item of arr) {
+    if (item?.id) map.set(item.id, item);
+  }
+  return map;
+}
+
+function buildRecipesMap(source) {
+  const map = new Map();
+  const arr = Array.isArray(source) ? source : [];
+  for (const item of arr) {
+    if (item?.id) map.set(item.id, item);
+  }
+  return map;
 }
 
 export default function GrowList({
   growsActive = [],
   archivedGrows = [],
+  recipes,
+  supplies,
   setEditingGrow,
   showAddButton = false,
   onUpdateStatus,
@@ -147,21 +200,33 @@ export default function GrowList({
 }) {
   const confirm = useConfirm();
 
+  const hasRecipesProp = Array.isArray(recipes);
+  const hasSuppliesProp = Array.isArray(supplies);
+
   // User-defined storage locations + prompt
   const [storageLocations, setStorageLocations] = useState([]);
-  const [storePrompt, setStorePrompt] = useState({ open: false, ids: [], chosen: "" });
+  const [storePrompt, setStorePrompt] = useState({
+    open: false,
+    ids: [],
+    chosen: "",
+  });
 
   // Subscribe to storage locations (seed defaults)
   useEffect(() => {
     const u = auth.currentUser;
-    if (!u) return;
-    (async () => { try { await seedDefaultsIfEmpty(db, u.uid); } catch {} })();
+    if (!u) return undefined;
+
+    (async () => {
+      try {
+        await seedDefaultsIfEmpty(db, u.uid);
+      } catch {}
+    })();
+
     const unsub = subscribeLocations(db, u.uid, setStorageLocations);
     return () => unsub && unsub();
   }, []);
 
   // ---------- Filtering state ----------
-  // NEW: add "stored" dataset
   const [dataset, setDataset] = useState("active"); // "active" | "stored" | "archived"
   const [q, setQ] = useState("");
 
@@ -173,7 +238,7 @@ export default function GrowList({
     "Fruiting",
     "Harvesting",
     "Harvested",
-    "Consumed", // legacy/consumables only
+    "Consumed",
     "Contaminated",
     "Other",
   ];
@@ -189,6 +254,7 @@ export default function GrowList({
   // Persisted filters (localStorage)
   const lastKey = "growFiltersLast";
   const presetsKey = "growFiltersPresets";
+
   const restoreLast = (key, fallback) => {
     try {
       const obj = JSON.parse(localStorage.getItem(lastKey) || "{}");
@@ -197,6 +263,7 @@ export default function GrowList({
       return fallback;
     }
   };
+
   const [types, setTypes] = useState(() => restoreLast("types", []));
   const [stages, setStages] = useState(() => restoreLast("stages", []));
   const [presets, setPresets] = useState(() => {
@@ -207,15 +274,19 @@ export default function GrowList({
     }
   });
   const [selectedPreset, setSelectedPreset] = useState("");
+  const [presetModalOpen, setPresetModalOpen] = useState(false);
+  const [presetNameDraft, setPresetNameDraft] = useState("");
 
   // ---------- Sort state ----------
   const [sortMode, setSortMode] = useState(() => restoreLast("sortMode", "new"));
+
   const persistLast = (next) => {
     try {
       const prev = JSON.parse(localStorage.getItem(lastKey) || "{}");
       localStorage.setItem(lastKey, JSON.stringify({ ...prev, ...next }));
     } catch {}
   };
+
   useEffect(() => {
     persistLast({ types, stages, sortMode });
   }, [types, stages, sortMode]);
@@ -226,7 +297,8 @@ export default function GrowList({
   const toggleSel = (id) =>
     setSelected((prev) => {
       const next = new Set(prev);
-      next.has(id) ? next.delete(id) : next.add(id);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
       return next;
     });
 
@@ -235,20 +307,19 @@ export default function GrowList({
   const [localStatus, setLocalStatus] = useState({});
   const [localArchived, setLocalArchived] = useState({});
 
-  // ⬇️ Full edit modal state (non-destructive)
+  // ---------- Full edit modal ----------
   const [editingGrowFull, setEditingGrowFull] = useState(null);
 
   // ---------- Datasets from props (extra guard filtering) ----------
   const itemsActiveRaw = useMemo(() => {
     const arr = Array.isArray(growsActive) ? growsActive : [];
-    // Guard + optimistic hide: never show archived-ish OR locally-archived/harvested rows in Active input
     return arr.filter((g) => {
       const id = g.id;
       const locArchived = localArchived[id] === true;
       const locStatus = String(localStatus[id] || "").toLowerCase();
       const locStage = normalizeStage(localStage[id] || g.stage || "");
       const optimisticArchived = locArchived || locStatus === "archived";
-      const hideHarvested = locStage === "Harvested"; // Requirement F: hide finished immediately
+      const hideHarvested = locStage === "Harvested";
       return !isArchivedish(g) && !optimisticArchived && !hideHarvested;
     });
   }, [growsActive, localArchived, localStatus, localStage]);
@@ -261,17 +332,16 @@ export default function GrowList({
   const normStatus = (g) =>
     String(localStatus[g.id] ?? g.status ?? "Active").toLowerCase();
 
-  // Split active-input list into ACTIVE vs STORED
   const itemsActiveOnly = useMemo(
     () => itemsActiveRaw.filter((g) => normStatus(g) !== "stored"),
     [itemsActiveRaw, localStatus]
   );
+
   const itemsStoredOnly = useMemo(
     () => itemsActiveRaw.filter((g) => normStatus(g) === "stored"),
     [itemsActiveRaw, localStatus]
   );
 
-  // Which dataset is shown
   const items = useMemo(() => {
     if (dataset === "archived") return itemsArchived;
     if (dataset === "stored") return itemsStoredOnly;
@@ -281,18 +351,21 @@ export default function GrowList({
   // ---------- Auto-fix fully consumed grows (legacy consumables) ----------
   useEffect(() => {
     const uid = auth.currentUser?.uid;
-    if (!uid) return;
+    if (!uid) return undefined;
+
     const toFix = [];
     for (const g of items) {
       const remaining = calcRemaining(g);
       const notConsumed = normalizeStage(g.stage) !== "Consumed";
       const notArchived =
         String(g.status || "").toLowerCase() !== "archived" && !g.archived;
+
       if (remaining <= 0 && (notConsumed || notArchived) && g.id) {
         toFix.push(g);
       }
     }
-    if (!toFix.length) return;
+
+    if (!toFix.length) return undefined;
 
     (async () => {
       for (const g of toFix) {
@@ -309,7 +382,6 @@ export default function GrowList({
 
           await updateDoc(doc(db, "users", uid, "grows", g.id), patch);
 
-          // Optimistic local reflections
           setLocalStage((p) => ({ ...p, [g.id]: "Consumed" }));
           setLocalStatus((p) => ({ ...p, [g.id]: "Archived" }));
           setLocalArchived((p) => ({ ...p, [g.id]: true }));
@@ -318,127 +390,225 @@ export default function GrowList({
         }
       }
     })();
+
+    return undefined;
   }, [items]);
 
   // ---------- Supplies & Recipes (for cost computation) ----------
-  const [suppliesMap, setSuppliesMap] = useState(() => new Map()); // id -> { cost, name, quantity? ... }
-  const [recipesMap, setRecipesMap] = useState(() => new Map());   // id -> { name, items:[] }
-  const loadedOnce = useRef(false);
+  const [fetchedSuppliesMap, setFetchedSuppliesMap] = useState(() => new Map());
+  const [fetchedRecipesMap, setFetchedRecipesMap] = useState(() => new Map());
+
+  const propSuppliesMap = useMemo(() => buildSuppliesMap(supplies), [supplies]);
+  const propRecipesMap = useMemo(() => buildRecipesMap(recipes), [recipes]);
 
   useEffect(() => {
+    if (hasSuppliesProp) return undefined;
+
     const u = auth.currentUser;
-    if (!u || loadedOnce.current) return;
-    loadedOnce.current = true;
+    if (!u) {
+      setFetchedSuppliesMap(new Map());
+      return undefined;
+    }
+
+    let cancelled = false;
 
     (async () => {
       try {
-        // Supplies
         const sSnap = await getDocs(collection(db, "users", u.uid, "supplies"));
+        if (cancelled) return;
         const sMap = new Map();
         sSnap.forEach((d) => {
           const data = d.data() || {};
           sMap.set(d.id, { id: d.id, ...data });
         });
-        setSuppliesMap(sMap);
+        setFetchedSuppliesMap(sMap);
       } catch (e) {
-        console.warn("Failed to load supplies for cost calc:", e);
+        if (!cancelled) {
+          console.warn("Failed to load supplies for cost calc:", e);
+          setFetchedSuppliesMap(new Map());
+        }
       }
+    })();
 
+    return () => {
+      cancelled = true;
+    };
+  }, [hasSuppliesProp]);
+
+  useEffect(() => {
+    if (hasRecipesProp) return undefined;
+
+    const u = auth.currentUser;
+    if (!u) {
+      setFetchedRecipesMap(new Map());
+      return undefined;
+    }
+
+    let cancelled = false;
+
+    (async () => {
       try {
-        // Recipes
         const rSnap = await getDocs(collection(db, "users", u.uid, "recipes"));
+        if (cancelled) return;
         const rMap = new Map();
         rSnap.forEach((d) => {
           const data = d.data() || {};
           rMap.set(d.id, { id: d.id, ...data });
         });
-        setRecipesMap(rMap);
+        setFetchedRecipesMap(rMap);
       } catch (e) {
-        console.warn("Failed to load recipes for cost calc:", e);
+        if (!cancelled) {
+          console.warn("Failed to load recipes for cost calc:", e);
+          setFetchedRecipesMap(new Map());
+        }
       }
     })();
-  }, []);
+
+    return () => {
+      cancelled = true;
+    };
+  }, [hasRecipesProp]);
+
+  const suppliesMap = hasSuppliesProp ? propSuppliesMap : fetchedSuppliesMap;
+  const recipesMap = hasRecipesProp ? propRecipesMap : fetchedRecipesMap;
 
   // Compute per-grow normalized cost from recipe+supplies (fallback to stored grow.cost)
+  // Uses PER-SERVING cost: batch cost ÷ recipe.yield
   const computedCosts = useMemo(() => {
     const map = new Map();
     const source = [...itemsActiveOnly, ...itemsStoredOnly, ...itemsArchived];
+
     for (const g of source) {
       let cost = null;
 
-      // If grow already has a valid numeric cost, prefer displaying it,
-      // but still compute derived cost to reconcile/write-back if needed.
       const stored = Number(g?.cost);
       const hasStored = Number.isFinite(stored) && stored >= 0;
 
-      const items = resolveRecipeItemsForGrow(g, recipesMap);
-      const derived = items ? computeItemsCost(items, suppliesMap) : null;
+      const itemsArr = resolveRecipeItemsForGrow(g, recipesMap);
+      let derived = null;
 
-      // Display logic: prefer derived if available; else stored; else null
+      if (itemsArr) {
+        const batchCost = computeItemsCost(itemsArr, suppliesMap);
+        const y = getRecipeYieldForGrow(g, recipesMap);
+        const divisor = y > 0 ? y : 1;
+        derived = Math.max(0, Number(((batchCost || 0) / divisor).toFixed(2)));
+      }
+
       if (derived != null) cost = derived;
       else if (hasStored) cost = stored;
       else cost = null;
 
       map.set(g.id, cost);
     }
+
     return map;
   }, [itemsActiveOnly, itemsStoredOnly, itemsArchived, recipesMap, suppliesMap]);
 
-  // Write-back guard: ensure each grow is updated at most once
-  const costWritten = useRef(new Set());
-
-  // Reconcile: if derived cost exists and differs from stored cost, write it back once
+  // ---------- Abbreviation migration guard ----------
   useEffect(() => {
-    const u = auth.currentUser;
-    if (!u) return;
+    const uid = auth.currentUser?.uid;
+    if (!uid) return undefined;
+
+    const active = Array.isArray(growsActive) ? growsActive : [];
+    const archived = Array.isArray(archivedGrows) ? archivedGrows : [];
+    const all = [...active, ...archived];
+
+    if (!all.length) return undefined;
+
+    const byKey = new Map();
+    const baseMaxSuffix = new Map();
+
+    const parseKey = (raw) => {
+      const key = String(raw || "").trim();
+      if (!key) return { key: "", base: "", suffix: 0 };
+
+      let match = key.match(/^(.*-\d{6})-(\d+)$/);
+      if (match) {
+        return {
+          key,
+          base: match[1],
+          suffix: parseInt(match[2], 10) || 0,
+        };
+      }
+
+      if (/^.*-\d{6}$/.test(key)) {
+        return { key, base: key, suffix: 0 };
+      }
+
+      match = key.match(/^(.*?)-(\d+)$/);
+      if (match) {
+        return {
+          key,
+          base: match[1],
+          suffix: parseInt(match[2], 10) || 0,
+        };
+      }
+
+      return { key, base: key, suffix: 0 };
+    };
+
+    for (const grow of all) {
+      const rawKey =
+        grow.abbr ||
+        grow.abbreviation ||
+        grow.subName ||
+        grow.subname ||
+        "";
+
+      const { key, base, suffix } = parseKey(rawKey);
+      if (!key || !base) continue;
+
+      if (!byKey.has(key)) byKey.set(key, []);
+      byKey.get(key).push({ grow, base, key });
+
+      const suffForMax = suffix || 1;
+      const prevMax = baseMaxSuffix.get(base) || 0;
+      baseMaxSuffix.set(base, Math.max(prevMax, suffForMax));
+    }
+
+    const updates = [];
+
+    for (const [, entries] of byKey.entries()) {
+      if (entries.length <= 1) continue;
+
+      const base = entries[0].base;
+      let maxSuffix = baseMaxSuffix.get(base) || 1;
+
+      const sorted = [...entries].sort(
+        (a, b) => getCreatedMs(a.grow) - getCreatedMs(b.grow)
+      );
+
+      for (let i = 1; i < sorted.length; i += 1) {
+        maxSuffix += 1;
+        const newKey = `${base}-${maxSuffix}`;
+        if (newKey === sorted[i].key) continue;
+        const id = sorted[i].grow.id;
+        if (!id) continue;
+        updates.push({ id, newKey });
+      }
+    }
+
+    if (!updates.length) return undefined;
 
     (async () => {
-      const source = [...itemsActiveOnly, ...itemsStoredOnly, ...itemsArchived];
-      const tasks = [];
-      for (const g of source) {
-        const id = g?.id;
-        if (!id || costWritten.current.has(id)) continue;
-
-        const displayCost = computedCosts.get(id);
-        if (displayCost == null) continue;
-
-        const stored = Number(g?.cost);
-        const hasStored = Number.isFinite(stored) && stored >= 0;
-
-        // Reconcile if missing or materially different (>= $0.01 difference)
-        const differs =
-          !hasStored || Math.abs(Number(displayCost) - Number(stored)) >= 0.01;
-
-        if (differs) {
-          tasks.push(
-            updateDoc(doc(db, "users", u.uid, "grows", id), {
-              cost: Number(displayCost),
-              // optional fields to help downstream analytics
-              costReconciledAt: serverTimestamp(),
+      try {
+        await Promise.all(
+          updates.map(({ id, newKey }) =>
+            updateDoc(doc(db, "users", uid, "grows", id), {
+              abbr: newKey,
+              abbreviation: newKey,
+              subName: newKey,
               updatedAt: serverTimestamp(),
             })
-              .then(() => {
-                costWritten.current.add(id);
-              })
-              .catch((e) => {
-                // non-fatal; leave it for next render
-                console.warn("cost write-back failed for", id, e);
-              })
-          );
-        } else {
-          // mark as written so we don't re-check endlessly
-          costWritten.current.add(id);
-        }
-      }
-      if (tasks.length) {
-        try {
-          await Promise.all(tasks);
-        } catch {
-          // already logged; continue
-        }
+          )
+        );
+      } catch (err) {
+        console.error("Abbreviation migration guard failed", err);
       }
     })();
-  }, [computedCosts, itemsActiveOnly, itemsStoredOnly, itemsArchived]);
+
+    return undefined;
+  }, [growsActive, archivedGrows]);
 
   // ---------- Filtering ----------
   const filtered = useMemo(() => {
@@ -448,10 +618,18 @@ export default function GrowList({
 
     const matchQ = (g) =>
       !qq ||
-      String(g.name || g.title || "").toLowerCase().includes(qq) ||
-      String(g.strain || "").toLowerCase().includes(qq) ||
-      String(g.type || "").toLowerCase().includes(qq) ||
-      String(g.abbreviation || g.abbr || "").toLowerCase().includes(qq);
+      String(g.name || g.title || "")
+        .toLowerCase()
+        .includes(qq) ||
+      String(g.strain || "")
+        .toLowerCase()
+        .includes(qq) ||
+      String(g.type || "")
+        .toLowerCase()
+        .includes(qq) ||
+      String(g.abbreviation || g.abbr || "")
+        .toLowerCase()
+        .includes(qq);
 
     const matchType = (g) =>
       ts.size === 0 || ts.has(normalizeType(g.type || g.growType));
@@ -461,8 +639,6 @@ export default function GrowList({
 
     let out = items.filter((g) => matchQ(g) && matchType(g) && matchStage(g));
 
-    // SPECIAL: In "Active" view with Consumed chip ON,
-    // only show items that are *not finished* yet (remaining > 0).
     if (dataset === "active" && ss.has("Consumed")) {
       out = out.filter((g) => calcRemaining(g) > 0);
     }
@@ -473,29 +649,48 @@ export default function GrowList({
   // ---------- Sorting ----------
   const sorted = useMemo(() => {
     const base = filtered.slice();
+
     const cmpTitle = (a, b) =>
       titleOfGrow(a).localeCompare(titleOfGrow(b), undefined, {
         sensitivity: "base",
       }) || String(a.id || "").localeCompare(String(b.id || ""));
+
     const cmpTimeDesc = (a, b) => bestTimeMs(b) - bestTimeMs(a) || cmpTitle(a, b);
     const cmpTimeAsc = (a, b) => bestTimeMs(a) - bestTimeMs(b) || cmpTitle(a, b);
 
     if (sortMode === "az") base.sort(cmpTitle);
     else if (sortMode === "za") base.sort((a, b) => cmpTitle(b, a));
     else if (sortMode === "old") base.sort(cmpTimeAsc);
-    else base.sort(cmpTimeDesc); // "new" default
+    else base.sort(cmpTimeDesc);
 
     return base;
   }, [filtered, sortMode]);
 
   const selectedIds = useMemo(() => [...selected], [selected]);
 
+  const savePreset = useCallback((rawName) => {
+    const name = String(rawName || "").trim();
+    if (!name) return false;
+    const next = { name, types, stages };
+    setPresets((prev) => {
+      const arr = prev.filter((x) => x.name !== name);
+      const out = [...arr, next];
+      try {
+        localStorage.setItem(presetsKey, JSON.stringify(out));
+      } catch {}
+      return out;
+    });
+    setSelectedPreset(name);
+    setPresetNameDraft("");
+    setPresetModalOpen(false);
+    return true;
+  }, [types, stages]);
+
   // ---------- Firestore ops ----------
   async function applyStatus(id, nextStatus) {
     const uid = auth.currentUser?.uid;
     if (!uid) return;
 
-    // Normalize archive flags on any status change
     const lower = String(nextStatus || "").toLowerCase();
     const archive = lower === "archived";
     const patch = {
@@ -526,7 +721,6 @@ export default function GrowList({
   const applyDelete = async (id) => {
     const uid = auth.currentUser?.uid;
     if (!uid) return;
-    // Soft-delete: archive + flag as deleted (preserves analytics and consumption history)
     await updateDoc(doc(db, "users", uid, "grows", id), {
       status: "Archived",
       archived: true,
@@ -538,16 +732,22 @@ export default function GrowList({
     onDeleteGrow?.(id);
   };
 
-  // Row actions
+  // ---------- Row actions ----------
   const handleStoreToggle = async (grow) => {
     if (!grow?.id) return;
-    const isStored = String(localStatus[grow.id] || grow.status || "").toLowerCase() === "stored";
+    const isStored =
+      String(localStatus[grow.id] || grow.status || "").toLowerCase() === "stored";
+
     if (isStored) {
       if (!(await confirm("Unstore this grow?"))) return;
       await applyStatus(grow.id, "Active");
       return;
     }
-    const first = storageLocations.length ? storageLocations[0].name : DEFAULT_STORAGE_LOCATIONS[0];
+
+    const first = storageLocations.length
+      ? storageLocations[0].name
+      : DEFAULT_STORAGE_LOCATIONS[0];
+
     setStorePrompt({ open: true, ids: [grow.id], chosen: first });
   };
 
@@ -578,7 +778,9 @@ export default function GrowList({
       setLocalStage((p) => ({ ...p, [grow.id]: "Harvested" }));
       setLocalStatus((p) => ({ ...p, [grow.id]: "Archived" }));
       setLocalArchived((p) => ({ ...p, [grow.id]: true }));
-      try { await enqueueReusablesForGrow(uid, grow.id); } catch {/* non-fatal */}
+      try {
+        await enqueueReusablesForGrow(uid, grow.id);
+      } catch {}
     } else {
       await applyStage(grow.id, next);
     }
@@ -588,12 +790,10 @@ export default function GrowList({
     if (!grow?.id) return;
     const status = String(localStatus[grow.id] || grow.status || "").toLowerCase();
     const next = status === "archived" ? "Active" : "Archived";
-    if (
-      !(await confirm(
-        `${status === "archived" ? "Unarchive" : "Archive"} this grow?`
-      ))
-    )
+
+    if (!(await confirm(`${status === "archived" ? "Unarchive" : "Archive"} this grow?`))) {
       return;
+    }
 
     await applyStatus(grow.id, next);
   };
@@ -605,14 +805,6 @@ export default function GrowList({
   };
 
   // ---------- Batch actions ----------
-  const selectedGrows = useMemo(
-    () =>
-      selectedIds
-        .map((id) => filtered.find((g) => g.id === id))
-        .filter(Boolean),
-    [selectedIds, filtered]
-  );
-
   const eligibleForStagePlus = useMemo(() => {
     const out = [];
     for (const id of selectedIds) {
@@ -627,32 +819,10 @@ export default function GrowList({
     return out;
   }, [selectedIds, filtered, localStage]);
 
-  const eligibleForStore = useMemo(() => {
-    return selectedIds.filter((id) => {
-      const grow = filtered.find((g) => g.id === id);
-      if (!grow) return false;
-      const status = String(localStatus[id] || grow.status || "").toLowerCase();
-      return status !== "stored";
-    });
-  }, [selectedIds, filtered, localStatus]);
-
-  const eligibleForUnstore = useMemo(() => {
-    return selectedIds.filter((id) => {
-      const grow = filtered.find((g) => g.id === id);
-      if (!grow) return false;
-      const status = String(localStatus[id] || grow.status || "").toLowerCase();
-      return status === "stored";
-    });
-  }, [selectedIds, filtered, localStatus]);
-
   const batchStagePlus = async () => {
     if (!eligibleForStagePlus.length) return;
-    if (
-      !(await confirm(
-        `Advance stage for ${eligibleForStagePlus.length} grow(s)?`
-      ))
-    )
-      return;
+    if (!(await confirm(`Advance stage for ${eligibleForStagePlus.length} grow(s)?`))) return;
+
     await Promise.all(
       eligibleForStagePlus.map(async ({ id, next }) => {
         if (next === "Harvested") {
@@ -666,12 +836,15 @@ export default function GrowList({
             archivedAt: serverTimestamp(),
             updatedAt: serverTimestamp(),
           });
-          try { await enqueueReusablesForGrow(uid, id); } catch {}
+          try {
+            await enqueueReusablesForGrow(uid, id);
+          } catch {}
         } else {
           await applyStage(id, next);
         }
       })
     );
+
     clearSel();
   };
 
@@ -694,8 +867,13 @@ export default function GrowList({
       const status = String(localStatus[id] || row?.status || "").toLowerCase();
       return row && status !== "stored";
     });
+
     if (!ids.length) return;
-    const first = storageLocations.length ? storageLocations[0].name : DEFAULT_STORAGE_LOCATIONS[0];
+
+    const first = storageLocations.length
+      ? storageLocations[0].name
+      : DEFAULT_STORAGE_LOCATIONS[0];
+
     setStorePrompt({ open: true, ids, chosen: first });
   };
 
@@ -707,8 +885,10 @@ export default function GrowList({
         String(localStatus[id] || grow.status || "").toLowerCase() === "stored"
       );
     });
+
     if (!ids.length) return;
     if (!(await confirm(`Unstore ${ids.length} grow(s)?`))) return;
+
     await Promise.all(ids.map((id) => applyStatus(id, "Active")));
     clearSel();
   };
@@ -722,26 +902,26 @@ export default function GrowList({
       const stage = localStage[grow.id] || grow.stage || "—";
       const status = localStatus[grow.id] || grow.status || "—";
 
-      // 🔹 Use computed cost if available; else stored cost; else hide
       const computed = computedCosts.get(grow.id);
       const costNumber =
         Number.isFinite(computed) && computed >= 0
           ? computed
-          : (typeof grow.cost === "number" && !Number.isNaN(grow.cost) ? grow.cost : null);
+          : typeof grow.cost === "number" && !Number.isNaN(grow.cost)
+          ? grow.cost
+          : null;
 
       const dateTxt = stageDateString(grow);
       const title = abbr || strain;
-      const checked = selectedIds.includes(grow.id);
+      const checked = selected.has(grow.id);
 
       const curNorm = normalizeStage(stage);
       const atEnd =
-        STAGE_FLOW.indexOf(curNorm) === STAGE_FLOW.length - 1 ||
-        curNorm === "Other";
+        STAGE_FLOW.indexOf(curNorm) === STAGE_FLOW.length - 1 || curNorm === "Other";
       const canStagePlus = !atEnd;
 
       const isArchived =
-        String(localArchived[grow.id] ?? (grow.status || "")).toLowerCase() ===
-          "archived" || !!(grow.archived || false);
+        String(localArchived[grow.id] ?? (grow.status || "")).toLowerCase() === "archived" ||
+        !!(grow.archived || false);
       const isStored = String(status || "").toLowerCase() === "stored";
 
       const cover = getCoverSrc(grow);
@@ -750,7 +930,16 @@ export default function GrowList({
         <div
           className="flex items-center gap-2 px-2 py-1.5 hover:bg-zinc-50 dark:hover:bg-zinc-800/60"
           style={style}
+          data-testid="grow-row"
         >
+          <div className="sr-only">
+            <span data-testid="grow-row-title">{title || "Untitled"}</span>
+            <span data-testid="grow-row-strain">{strain}</span>
+            <span data-testid="grow-row-type">{type || "Other"}</span>
+            <span data-testid="grow-row-stage">{stage}</span>
+            <span data-testid="grow-row-status">{status}</span>
+          </div>
+
           <input
             type="checkbox"
             aria-label="Select row"
@@ -786,13 +975,12 @@ export default function GrowList({
           </div>
 
           <div className="flex items-center gap-1">
-            <Link className="chip" to={`/grow/${grow.id}`}>
+            <Link className="chip" to={`/grow/${grow.id}`} data-testid="grow-row-open">
               Open
             </Link>
             <button className="chip" onClick={() => setEditingGrow(grow)}>
               Stage/Status
             </button>
-            {/* ⬇️ Full edit opens GrowForm modal */}
             <button className="chip" onClick={() => setEditingGrowFull(grow)}>
               Edit
             </button>
@@ -800,6 +988,7 @@ export default function GrowList({
               className="chip"
               onClick={() => handleNextStage(grow)}
               disabled={!canStagePlus}
+              data-testid="grow-row-stage-plus"
             >
               Stage +
             </button>
@@ -816,7 +1005,14 @@ export default function GrowList({
         </div>
       );
     },
-    [selectedIds, localStage, localStatus, localArchived, setEditingGrow, computedCosts]
+    [
+      selected,
+      localStage,
+      localStatus,
+      localArchived,
+      setEditingGrow,
+      computedCosts,
+    ]
   );
 
   // ---------- Render ----------
@@ -824,23 +1020,31 @@ export default function GrowList({
     <div className="space-y-3">
       {/* Header */}
       <div className="flex flex-wrap items-center gap-2">
-        {/* NEW: dataset toggle group */}
         <div className="inline-flex rounded-xl border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-900 overflow-hidden">
           <button
             className={`px-3 py-1.5 ${dataset === "active" ? "accent-bg text-white" : ""}`}
-            onClick={() => { setDataset("active"); clearSel(); }}
+            onClick={() => {
+              setDataset("active");
+              clearSel();
+            }}
           >
             Active
           </button>
           <button
             className={`px-3 py-1.5 ${dataset === "stored" ? "accent-bg text-white" : ""}`}
-            onClick={() => { setDataset("stored"); clearSel(); }}
+            onClick={() => {
+              setDataset("stored");
+              clearSel();
+            }}
           >
             Stored
           </button>
           <button
             className={`px-3 py-1.5 ${dataset === "archived" ? "accent-bg text-white" : ""}`}
-            onClick={() => { setDataset("archived"); clearSel(); }}
+            onClick={() => {
+              setDataset("archived");
+              clearSel();
+            }}
           >
             Archived
           </button>
@@ -867,7 +1071,6 @@ export default function GrowList({
           <option value="za">Z → A</option>
         </select>
 
-        {/* Type filter chips */}
         <div className="flex flex-wrap items-center gap-1">
           {TYPE_OPTIONS.map((t) => {
             const active = types.includes(t);
@@ -887,7 +1090,6 @@ export default function GrowList({
           })}
         </div>
 
-        {/* Stage filter chips */}
         <div className="flex flex-wrap items-center gap-1">
           {STAGE_OPTIONS.map((t) => {
             const active = stages.includes(t);
@@ -897,9 +1099,7 @@ export default function GrowList({
                 className={`chip ${active ? "chip--active" : ""}`}
                 onClick={() =>
                   setStages((prev) =>
-                    prev.includes(t)
-                      ? prev.filter((x) => x !== t)
-                      : [...prev, t]
+                    prev.includes(t) ? prev.filter((x) => x !== t) : [...prev, t]
                   )
                 }
               >
@@ -909,7 +1109,6 @@ export default function GrowList({
           })}
         </div>
 
-        {/* Presets */}
         <div className="ml-auto flex items-center gap-2">
           <select
             className="rounded-lg border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-900 px-2 py-1.5 text-xs"
@@ -931,25 +1130,17 @@ export default function GrowList({
               </option>
             ))}
           </select>
+
           <button
             className="chip"
             onClick={() => {
-              const name = window.prompt("Preset name?");
-              if (!name) return;
-              const next = { name, types, stages };
-              setPresets((prev) => {
-                const arr = prev.filter((x) => x.name !== name);
-                const out = [...arr, next];
-                try {
-                  localStorage.setItem(presetsKey, JSON.stringify(out));
-                } catch {}
-                return out;
-              });
-              setSelectedPreset(name);
+              setPresetNameDraft(selectedPreset || "");
+              setPresetModalOpen(true);
             }}
           >
             Save preset
           </button>
+
           <button
             className="chip"
             onClick={() => {
@@ -969,7 +1160,10 @@ export default function GrowList({
         </div>
 
         {showAddButton && (
-          <button className="chip chip--active" onClick={() => setEditingGrow({})}>
+          <button
+            className="chip chip--active"
+            onClick={() => setEditingGrow({})}
+          >
             + New
           </button>
         )}
@@ -978,58 +1172,35 @@ export default function GrowList({
       {/* Batch bar */}
       {selectedIds.length > 0 && (
         <div className="flex flex-wrap items-center gap-2 p-2 rounded-xl bg-zinc-100 dark:bg-zinc-800">
-          <span className="text-sm opacity-80">
-            {selectedIds.length} selected
-          </span>
+          <span className="text-sm opacity-80">{selectedIds.length} selected</span>
+
           <button
             className="chip"
             onClick={() => setSelected(new Set(filtered.map((g) => g.id)))}
           >
             Select all
           </button>
+
           <button className="chip" onClick={clearSel}>
             Clear
           </button>
+
           <button
             className="chip"
-            onClick={() => {
-              if (!eligibleForStagePlus.length) return;
-              confirm(
-                `Advance stage for ${eligibleForStagePlus.length} grow(s)?`
-              ).then(async (ok) => {
-                if (!ok) return;
-                await Promise.all(
-                  eligibleForStagePlus.map(async ({ id, next }) => {
-                    if (next === "Harvested") {
-                      const uid = auth.currentUser?.uid;
-                      if (!uid) return;
-                      await updateDoc(doc(db, "users", uid, "grows", id), {
-                        stage: "Harvested",
-                        harvestedAt: serverTimestamp(),
-                        status: "Archived",
-                        archived: true,
-                        archivedAt: serverTimestamp(),
-                        updatedAt: serverTimestamp(),
-                      });
-                      try { await enqueueReusablesForGrow(uid, id); } catch {}
-                    } else {
-                      await applyStage(id, next);
-                    }
-                  })
-                );
-                clearSel();
-              });
-            }}
+            onClick={batchStagePlus}
             disabled={eligibleForStagePlus.length === 0}
           >
             Stage +
           </button>
+
           <button className="chip" onClick={batchArchive}>
             Archive
           </button>
+
           <button className="chip" onClick={batchUnarchive}>
             Unarchive
           </button>
+
           <button
             className="chip"
             onClick={batchStore}
@@ -1038,14 +1209,14 @@ export default function GrowList({
                 const grow = filtered.find((g) => g.id === id);
                 return (
                   grow &&
-                  String(localStatus[id] || grow.status || "").toLowerCase() !==
-                    "stored"
+                  String(localStatus[id] || grow.status || "").toLowerCase() !== "stored"
                 );
               }).length === 0
             }
           >
             Store
           </button>
+
           <button
             className="chip"
             onClick={batchUnstore}
@@ -1054,14 +1225,14 @@ export default function GrowList({
                 const grow = filtered.find((g) => g.id === id);
                 return (
                   grow &&
-                  String(localStatus[id] || grow.status || "").toLowerCase() ===
-                    "stored"
+                  String(localStatus[id] || grow.status || "").toLowerCase() === "stored"
                 );
               }).length === 0
             }
           >
             Unstore
           </button>
+
           <button
             className="chip"
             onClick={async () => {
@@ -1070,8 +1241,9 @@ export default function GrowList({
                 !(await confirm(
                   `Delete ${selectedIds.length} grow(s)? This cannot be undone.`
                 ))
-              )
+              ) {
                 return;
+              }
               await Promise.all(selectedIds.map((id) => applyDelete(id)));
               clearSel();
             }}
@@ -1088,40 +1260,56 @@ export default function GrowList({
         ))}
       </div>
 
-      {/* Full Edit Modal (uses your existing GrowForm) */}
+      {/* Full Edit Modal */}
       {editingGrowFull && (
-        <div
-          className="fixed inset-0 z-[80] bg-black/40 backdrop-blur-sm flex items-center justify-center p-4"
-          onClick={() => setEditingGrowFull(null)}
-          role="dialog"
-          aria-modal="true"
-          aria-label="Edit grow"
+        <Modal
+          open={!!editingGrowFull}
+          onClose={() => setEditingGrowFull(null)}
+          title="Edit Grow"
+          size="lg"
         >
-          <div
-            className="bg-white dark:bg-zinc-900 rounded-2xl shadow-xl max-w-3xl w-full max-h-[85vh] overflow-auto"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <div className="px-4 py-3 border-b border-zinc-200 dark:border-zinc-800 font-semibold flex items-center justify-between">
-              <span>Edit Grow</span>
-              <button
-                className="rounded-full p-2 hover:bg-zinc-100 dark:hover:bg-zinc-800"
-                onClick={() => setEditingGrowFull(null)}
-                aria-label="Close"
-              >
-                ✕
-              </button>
-            </div>
-            <div className="p-4">
-              <GrowForm
-                editingGrow={editingGrowFull}
-                onClose={() => setEditingGrowFull(null)}
-                onSaveComplete={() => setEditingGrowFull(null)}
-                grows={[...itemsActiveRaw, ...itemsArchived]}
-              />
-            </div>
+          <GrowForm
+            editingGrow={editingGrowFull}
+            onClose={() => setEditingGrowFull(null)}
+            onSaveComplete={() => setEditingGrowFull(null)}
+            grows={[...itemsActiveRaw, ...itemsArchived]}
+            recipes={Array.isArray(recipes) ? recipes : []}
+            supplies={Array.isArray(supplies) ? supplies : []}
+          />
+        </Modal>
+      )}
+
+      <Modal
+        open={presetModalOpen}
+        onClose={() => {
+          setPresetModalOpen(false);
+          setPresetNameDraft("");
+        }}
+        title="Save filter preset"
+        size="md"
+      >
+        <div className="space-y-3">
+          <div className="text-sm text-zinc-600 dark:text-zinc-400">
+            Save the current type and stage filters as a reusable preset.
+          </div>
+          <input
+            className="w-full rounded-xl border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-900 px-3 py-2"
+            placeholder="Preset name"
+            value={presetNameDraft}
+            onChange={(e) => setPresetNameDraft(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") {
+                e.preventDefault();
+                savePreset(presetNameDraft);
+              }
+            }}
+          />
+          <div className="flex justify-end gap-2">
+            <button className="btn" onClick={() => setPresetModalOpen(false)}>Cancel</button>
+            <button className="btn btn-accent" onClick={() => savePreset(presetNameDraft)}>Save preset</button>
           </div>
         </div>
-      )}
+      </Modal>
 
       {/* Store → choose location */}
       {storePrompt.open && (
@@ -1132,15 +1320,29 @@ export default function GrowList({
           size="md"
         >
           <div className="space-y-3">
-            <div className="text-sm">Choose a storage location for the selected grow{storePrompt.ids.length > 1 ? "s" : ""}:</div>
+            <div className="text-sm">
+              Choose a storage location for the selected grow
+              {storePrompt.ids.length > 1 ? "s" : ""}:
+            </div>
+
             <select
               className="chip w-full"
               value={storePrompt.chosen}
-              onChange={(e) => setStorePrompt((s) => ({ ...s, chosen: e.target.value }))}
+              onChange={(e) =>
+                setStorePrompt((s) => ({ ...s, chosen: e.target.value }))
+              }
             >
               {storageLocations.length === 0
-                ? DEFAULT_STORAGE_LOCATIONS.map((loc) => <option key={loc} value={loc}>{loc}</option>)
-                : storageLocations.map((row) => <option key={row.id} value={row.name}>{row.name}</option>)}
+                ? DEFAULT_STORAGE_LOCATIONS.map((loc) => (
+                    <option key={loc} value={loc}>
+                      {loc}
+                    </option>
+                  ))
+                : storageLocations.map((row) => (
+                    <option key={row.id} value={row.name}>
+                      {row.name}
+                    </option>
+                  ))}
             </select>
 
             <form
@@ -1157,18 +1359,34 @@ export default function GrowList({
               }}
               className="flex items-center gap-2"
             >
-              <input name="newLoc" className="chip flex-1" placeholder="Add new location…" />
-              <button type="submit" className="chip">Add</button>
+              <input
+                name="newLoc"
+                className="chip flex-1"
+                placeholder="Add new location…"
+              />
+              <button type="submit" className="chip">
+                Add
+              </button>
             </form>
 
             <div className="flex justify-end gap-2 pt-2">
-              <button className="chip" onClick={() => setStorePrompt({ open: false, ids: [], chosen: "" })}>Cancel</button>
+              <button
+                className="chip"
+                onClick={() => setStorePrompt({ open: false, ids: [], chosen: "" })}
+              >
+                Cancel
+              </button>
+
               <button
                 className="chip chip--active"
                 onClick={async () => {
                   const uid = auth.currentUser?.uid;
                   if (!uid || !storePrompt.ids.length) return;
-                  const loc = storePrompt.chosen || (storageLocations[0]?.name ?? DEFAULT_STORAGE_LOCATIONS[0]);
+
+                  const loc =
+                    (storePrompt.chosen || storageLocations[0]?.name) ??
+                    DEFAULT_STORAGE_LOCATIONS[0];
+
                   await Promise.all(
                     storePrompt.ids.map((id) =>
                       updateDoc(doc(db, "users", uid, "grows", id), {
@@ -1181,11 +1399,15 @@ export default function GrowList({
                       })
                     )
                   );
+
                   setLocalStatus((p) => {
                     const n = { ...p };
-                    storePrompt.ids.forEach((id) => (n[id] = "Stored"));
+                    storePrompt.ids.forEach((id) => {
+                      n[id] = "Stored";
+                    });
                     return n;
                   });
+
                   setStorePrompt({ open: false, ids: [], chosen: "" });
                   setSelected(new Set());
                 }}
@@ -1199,8 +1421,13 @@ export default function GrowList({
 
       {items.length === 0 && (
         <div className="text-sm text-slate-500 dark:text-slate-400 px-1 py-2">
-          No {dataset === "archived" ? "archived" : dataset === "stored" ? "stored" : "active"} grows match your
-          filters.
+          No{" "}
+          {dataset === "archived"
+            ? "archived"
+            : dataset === "stored"
+            ? "stored"
+            : "active"}{" "}
+          grows match your filters.
         </div>
       )}
     </div>

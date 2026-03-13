@@ -67,7 +67,7 @@ export default function PhotoUpload({ growId }) {
           type="file"
           accept="image/*"
           onChange={onChoose}
-          className="w-full md:w-64 rounded-md border border-gray-600 bg-transparent file:mr-3 file:rounded file:border-0 file:bg-indigo-600 file:px-3 file:py-2 file:text-white"
+          className="w-full md:w-64 rounded-md border border-gray-600 bg-transparent file:mr-3 file:rounded file:border-0 file:accent-bg file:px-3 file:py-2"
         />
 
         <input
@@ -81,7 +81,7 @@ export default function PhotoUpload({ growId }) {
         <button
           disabled={busy}
           onClick={onUpload}
-          className="rounded-md bg-indigo-600 px-4 py-2 text-white disabled:opacity-50"
+          className="rounded-md accent-bg px-4 py-2 disabled:opacity-50"
         >
           {busy ? "Uploading…" : "Upload Photo"}
         </button>
@@ -91,7 +91,7 @@ export default function PhotoUpload({ growId }) {
         <div className="text-xs text-gray-400">Selected: {file.name}</div>
       ) : null}
 
-      {err ? <div className="text-sm text-red-400">{err}</div> : null}
+      {err ? <div className="text-sm text-rose-500 dark:text-rose-300">{err}</div> : null}
     </div>
   );
 }

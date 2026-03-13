@@ -1,3 +1,4 @@
+// src/components/Tasks/TaskManager.jsx
 import React, { useMemo, useState, useEffect } from "react";
 import useTaskReminders from "../../hooks/useTaskReminders";
 import {
@@ -11,13 +12,13 @@ import {
   analytics,
 } from "../../lib/tasks-utils";
 
-// Fallback grow loading (if parent doesn't pass grows)
+// Fallback grow loading only when parent does not pass grows prop
 import { db, auth } from "../../firebase-config";
 import { collection, onSnapshot } from "firebase/firestore";
+import { onAuthStateChanged } from "firebase/auth";
 
 /** Safely determine if a grow is Active (not archived/consumed/contaminated). */
 function isActiveGrow(g) {
-  // We defensively check several common flags/fields and treat any truthy as not active.
   const archivedFlags = [
     g?.archived,
     g?.isArchived,
@@ -32,66 +33,99 @@ function isActiveGrow(g) {
   return !archivedFlags.some(Boolean);
 }
 
+function growDisplayName(g) {
+  return (
+    g?.name ||
+    g?.abbreviation ||
+    g?.abbr ||
+    g?.subName ||
+    g?.strain ||
+    g?.title ||
+    g?.id ||
+    "Unknown Grow"
+  );
+}
+
 /**
  * TaskManager – enhanced tasks
- * (features list omitted for brevity; identical functionality to previous version)
  */
-export default function TaskManager({
-  tasks = [],
-  grows = [],
-  selectedGrowId = "",
-  onCreate,
-  onUpdate,
-  onDelete,
-}) {
+export default function TaskManager(props) {
+  const {
+    tasks = [],
+    grows,
+    selectedGrowId = "",
+    onCreate,
+    onUpdate,
+    onDelete,
+  } = props;
+
+  const hasGrowsProp = Object.prototype.hasOwnProperty.call(props || {}, "grows");
+  const propGrows = Array.isArray(grows) ? grows : [];
   const MIN_INTERVAL = 1;
 
   // Reminder ticker (notifications, overdue, etc.)
   useTaskReminders({ tasks, onUpdate });
 
-  // ---------- Fallback: auto-load grows if none provided ----------
+  // ---------- Fallback grows only when grows prop is not supplied ----------
+  const [uid, setUid] = useState(() => auth?.currentUser?.uid || null);
   const [fallbackGrows, setFallbackGrows] = useState([]);
+
   useEffect(() => {
-    if (grows && grows.length) return; // parent provided grows; skip fallback
-    const uid = auth?.currentUser?.uid;
-    if (!uid) return;
+    if (hasGrowsProp) return undefined;
+
+    const unsub = onAuthStateChanged(auth, (u) => {
+      setUid(u?.uid || null);
+    });
+
+    return () => {
+      try {
+        unsub?.();
+      } catch {}
+    };
+  }, [hasGrowsProp]);
+
+  useEffect(() => {
+    if (hasGrowsProp) return undefined;
+
+    if (!uid) {
+      setFallbackGrows([]);
+      return undefined;
+    }
 
     const ref = collection(db, "users", uid, "grows");
     const unsub = onSnapshot(ref, (snap) => {
       const list = snap.docs.map((d) => {
         const g = d.data() || {};
-        const name =
-          g.abbreviation ||
-          g.abbr ||
-          g.subName ||
-          g.strain ||
-          g.name ||
-          g.title ||
-          d.id;
-        return { id: d.id, name, ...g };
+        return { id: d.id, name: growDisplayName(g) || d.id, ...g };
       });
-      // Keep original order, we only filter here; sort happens where needed.
       setFallbackGrows(list);
     });
-    return () => unsub();
-  }, [grows]);
 
-  const allGrows = grows && grows.length ? grows : fallbackGrows;
+    return () => {
+      try {
+        unsub?.();
+      } catch {}
+    };
+  }, [hasGrowsProp, uid]);
 
-  // 👇 NEW: only active grows for the "Attach to grow" selector (task creation)
+  const allGrows = hasGrowsProp ? propGrows : fallbackGrows;
+
+  // Only active grows for the "Attach to grow" selector
   const activeGrowOptions = useMemo(
     () =>
       (allGrows || [])
         .filter(isActiveGrow)
-        .map((g) => ({ id: g.id, name: g.name || g.abbreviation || g.strain || g.title || g.id }))
+        .map((g) => ({ id: g.id, name: growDisplayName(g) }))
         .sort((a, b) => (a.name || "").localeCompare(b.name || "")),
     [allGrows]
   );
 
-  // We still want a complete name map for display of existing tasks.
+  // Complete name map for display of existing tasks
   const growNameById = useMemo(() => {
     const m = {};
-    (allGrows || []).forEach((g) => (m[g.id] = g.name || g.abbreviation || g.strain || g.title || g.id));
+    (allGrows || []).forEach((g) => {
+      m[g.id] = growDisplayName(g);
+    });
     return m;
   }, [allGrows]);
 
@@ -141,19 +175,28 @@ export default function TaskManager({
 
   const filtered = useMemo(() => {
     let list = tasks.slice();
+
     if (!showCompleted) list = list.filter((t) => !t.completedAt);
     if (filter === "general") list = list.filter((t) => !t.growId);
-    if (filter === "grow" && filterGrowId) list = list.filter((t) => t.growId === filterGrowId);
-    if (filterTags.length) list = list.filter((t) => (t.tags || []).some((tg) => filterTags.includes(tg)));
+    if (filter === "grow" && filterGrowId) {
+      list = list.filter((t) => t.growId === filterGrowId);
+    }
+    if (filterTags.length) {
+      list = list.filter((t) => (t.tags || []).some((tg) => filterTags.includes(tg)));
+    }
+
     list.sort((a, b) => {
       const pa = PRIORITIES.indexOf(a.priority || "normal");
       const pb = PRIORITIES.indexOf(b.priority || "normal");
-      if (pa !== pb) return pb - pa; // high first
+      if (pa !== pb) return pb - pa;
+
       const da = a.dueAt ? new Date(a.dueAt).getTime() : Infinity;
       const db = b.dueAt ? new Date(b.dueAt).getTime() : Infinity;
       if (da !== db) return da - db;
+
       return (a.title || "").localeCompare(b.title || "");
     });
+
     return list;
   }, [tasks, showCompleted, filter, filterGrowId, filterTags]);
 
@@ -174,13 +217,12 @@ export default function TaskManager({
     const parsed = parseQuickAdd(quick);
     const now = new Date();
 
-    // Build payload from parsed + defaults
     let due = parsed.dueAt;
     if (form.growId && !parsed.dueAt && form.date) {
       due = new Date(form.date);
     }
-    // Time-of-day
     if (!due && form.date) due = new Date(form.date);
+
     if (parsed.time) {
       const hhmm = parsed.time;
       if (due) {
@@ -215,7 +257,11 @@ export default function TaskManager({
           : [],
       notes: form.notes || null,
       subtasks: form.subtasks
-        ? form.subtasks.split("\n").map((s) => s.trim()).filter(Boolean).map((t) => ({ text: t, done: false }))
+        ? form.subtasks
+            .split("\n")
+            .map((s) => s.trim())
+            .filter(Boolean)
+            .map((t) => ({ text: t, done: false }))
         : [],
       remindLead,
       complete: false,
@@ -247,7 +293,11 @@ export default function TaskManager({
       tags: form.tags ? form.tags.split(",").map((s) => s.trim()).filter(Boolean) : [],
       notes: form.notes || null,
       subtasks: form.subtasks
-        ? form.subtasks.split("\n").map((s) => s.trim()).filter(Boolean).map((t) => ({ text: t, done: false }))
+        ? form.subtasks
+            .split("\n")
+            .map((s) => s.trim())
+            .filter(Boolean)
+            .map((t) => ({ text: t, done: false }))
         : [],
       complete: false,
       createdAt: new Date().toISOString(),
@@ -313,7 +363,8 @@ export default function TaskManager({
 
   // Bulk actions
   const ids = Object.keys(selected).filter((k) => selected[k]);
-  const bulkComplete = () => ids.forEach((id) => onUpdate && onUpdate(id, { completedAt: new Date().toISOString() }));
+  const bulkComplete = () =>
+    ids.forEach((id) => onUpdate && onUpdate(id, { completedAt: new Date().toISOString() }));
   const bulkDelete = () => ids.forEach((id) => onDelete && onDelete(id));
   const bulkSnooze = (m) =>
     ids.forEach((id) => {
@@ -325,7 +376,7 @@ export default function TaskManager({
   const stats = analytics(tasks);
 
   return (
-    <div className="space-y-6">
+    <div className="max-w-7xl mx-auto rounded-2xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 p-4 md:p-6 shadow-sm space-y-6">
       {/* Header: filters + export + analytics */}
       <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
         <div className="flex flex-wrap items-center gap-2">
@@ -349,12 +400,10 @@ export default function TaskManager({
               <option value="">All grows</option>
               {(allGrows || [])
                 .slice()
-                .sort((a, b) =>
-                  (a.name || a.abbreviation || a.strain || "").localeCompare(b.name || b.abbreviation || b.strain || "")
-                )
+                .sort((a, b) => growDisplayName(a).localeCompare(growDisplayName(b)))
                 .map((g) => (
                   <option key={g.id} value={g.id}>
-                    {g.name || g.abbreviation || g.strain || g.id}
+                    {growDisplayName(g)}
                   </option>
                 ))}
             </select>
@@ -369,7 +418,6 @@ export default function TaskManager({
             Show completed
           </label>
 
-          {/* Quick tag filters */}
           {tagSet.length > 0 && (
             <div className="flex flex-wrap items-center gap-1 ml-2">
               {tagSet.map((tg) => {
@@ -382,11 +430,8 @@ export default function TaskManager({
                         active ? prev.filter((x) => x !== tg) : [...prev, tg]
                       )
                     }
-                    className={`px-2 py-1 rounded text-xs border ${
-                      active
-                        ? "bg-amber-600 text-white border-amber-600"
-                        : "bg-white dark:bg-zinc-800 text-gray-700 dark:text-gray-200 border-gray-300 dark:border-zinc-700"
-                    }`}
+                    className="chip !px-2 !py-1 text-xs"
+                    data-active={active ? "true" : undefined}
                     title={`Filter tag: ${tg}`}
                   >
                     #{tg}
@@ -404,7 +449,7 @@ export default function TaskManager({
             <span className="ml-1">{stats.avgDelayHrs}h avg delay</span>
           </div>
           <button
-            className="px-3 py-2 rounded bg-indigo-600 text-white hover:bg-indigo-700"
+            className="btn btn-accent"
             onClick={() => downloadICS(tasks)}
             title="Export .ics"
           >
@@ -417,17 +462,17 @@ export default function TaskManager({
       <form onSubmit={submitQuick} className="flex gap-2">
         <input
           className="flex-1 rounded-lg border border-gray-300 dark:border-zinc-700 bg-white dark:bg-zinc-800 text-gray-900 dark:text-white px-3 py-2"
-          placeholder={`Quick add (e.g. "Mist & fan in 3d @ 7pm every 2d !high #fruiting remind 2h")`}
+          placeholder='Quick add (e.g. "Mist & fan in 3d @ 7pm every 2d !high #fruiting remind 2h")'
           value={quick}
           onChange={(e) => setQuick(e.target.value)}
         />
-        <button className="px-4 py-2 rounded-lg bg-blue-600 text-white hover:bg-blue-700" type="submit">
+        <button className="btn btn-accent" type="submit">
           Add
         </button>
       </form>
 
       {/* Advanced form (toggle) */}
-      <button className="text-sm text-blue-600 hover:underline" onClick={() => setAdvancedOpen((v) => !v)}>
+      <button className="text-sm accent-text hover:underline" onClick={() => setAdvancedOpen((v) => !v)}>
         {advancedOpen ? "Hide advanced" : "Show advanced"}
       </button>
 
@@ -440,7 +485,6 @@ export default function TaskManager({
             onChange={(e) => setForm((f) => ({ ...f, title: e.target.value }))}
           />
 
-          {/* 👇 Attach to Active grow only */}
           <select
             className="rounded-lg border border-gray-300 dark:border-zinc-700 bg-white dark:bg-zinc-800 text-gray-900 dark:text-white px-3 py-2"
             value={form.growId}
@@ -537,7 +581,7 @@ export default function TaskManager({
             onChange={(e) => setForm((f) => ({ ...f, subtasks: e.target.value }))}
           />
 
-          <button type="submit" className="md:col-span-3 px-4 py-2 rounded-lg bg-blue-600 text-white hover:bg-blue-700">
+          <button type="submit" className="md:col-span-3 btn btn-accent justify-center">
             Add Task
           </button>
         </form>
@@ -556,16 +600,16 @@ export default function TaskManager({
         </label>
         {someChecked && (
           <div className="flex items-center gap-2">
-            <button className="px-2 py-1 rounded bg-emerald-600 text-white text-xs" onClick={bulkComplete}>
+            <button className="chip chip--active !px-2 !py-1 text-xs" onClick={bulkComplete}>
               Complete
             </button>
-            <button className="px-2 py-1 rounded bg-amber-600 text-white text-xs" onClick={() => bulkSnooze(60)}>
+            <button className="chip !px-2 !py-1 text-xs" onClick={() => bulkSnooze(60)}>
               Snooze +1h
             </button>
-            <button className="px-2 py-1 rounded bg-amber-700 text-white text-xs" onClick={() => bulkSnooze(60 * 24)}>
+            <button className="chip !px-2 !py-1 text-xs" onClick={() => bulkSnooze(60 * 24)}>
               Snooze +1d
             </button>
-            <button className="px-2 py-1 rounded bg-red-600 text-white text-xs" onClick={bulkDelete}>
+            <button className="chip !px-2 !py-1 text-xs bg-red-600 text-white hover:bg-red-700" onClick={bulkDelete}>
               Delete
             </button>
           </div>
@@ -611,6 +655,7 @@ export default function TaskManager({
                     Due: {t.dueAt ? new Date(t.dueAt).toLocaleString() : "—"}
                     {overdue && <span className="ml-2 text-red-600">Overdue</span>}
                   </div>
+
                   {!!(t.tags && t.tags.length) && (
                     <div className="mt-1 flex flex-wrap gap-1">
                       {t.tags.map((tg) => (
@@ -620,11 +665,13 @@ export default function TaskManager({
                       ))}
                     </div>
                   )}
+
                   {!!t.notes && (
                     <div className="mt-1 text-xs text-gray-600 dark:text-gray-300 whitespace-pre-wrap break-words">
                       {t.notes}
                     </div>
                   )}
+
                   {!!(t.subtasks && t.subtasks.length) && (
                     <div className="mt-2 border border-gray-200 dark:border-zinc-800 rounded p-2">
                       {t.subtasks.map((s, idx) => (
@@ -635,7 +682,9 @@ export default function TaskManager({
                             onChange={() =>
                               onUpdate &&
                               onUpdate(t.id, {
-                                subtasks: t.subtasks.map((ss, i) => (i === idx ? { ...ss, done: !ss.done } : ss)),
+                                subtasks: t.subtasks.map((ss, i) =>
+                                  i === idx ? { ...ss, done: !ss.done } : ss
+                                ),
                               })
                             }
                           />
@@ -650,24 +699,24 @@ export default function TaskManager({
               <div className="flex items-center gap-2">
                 {!!t.repeatInterval && (
                   <button
-                    className="px-2 py-1 rounded bg-emerald-600 text-white text-xs"
+                    className="chip chip--active !px-2 !py-1 text-xs"
                     onClick={() => scheduleNext(t)}
                     title="Schedule next"
                   >
                     Next
                   </button>
                 )}
-                <button className="px-2 py-1 rounded bg-amber-600 text-white text-xs" onClick={() => snooze(t, 60)} title="Snooze +1h">
+                <button className="chip !px-2 !py-1 text-xs" onClick={() => snooze(t, 60)} title="Snooze +1h">
                   +1h
                 </button>
                 <button
-                  className="px-2 py-1 rounded bg-amber-700 text-white text-xs"
+                  className="chip !px-2 !py-1 text-xs"
                   onClick={() => snooze(t, 60 * 24)}
                   title="Snooze +1d"
                 >
                   +1d
                 </button>
-                <button className="px-2 py-1 rounded bg-red-600 text-white text-xs" onClick={() => onDelete && onDelete(t.id)}>
+                <button className="chip !px-2 !py-1 text-xs bg-red-600 text-white hover:bg-red-700" onClick={() => onDelete && onDelete(t.id)}>
                   Delete
                 </button>
               </div>
@@ -675,7 +724,11 @@ export default function TaskManager({
           );
         })}
 
-        {filtered.length === 0 && <div className="p-4 text-sm text-gray-600 dark:text-gray-300 bg-white dark:bg-zinc-900">No tasks match the filters.</div>}
+        {filtered.length === 0 && (
+          <div className="p-4 text-sm text-gray-600 dark:text-gray-300 bg-white dark:bg-zinc-900">
+            No tasks match the filters.
+          </div>
+        )}
       </div>
     </div>
   );

@@ -1,0 +1,53 @@
+# -------------------------------------------------------------------
+# Chaotic Neutral Myco Tracker - Tauri Release + Sign Script
+# Run in PowerShell (normal) from any directory.
+# -------------------------------------------------------------------
+
+# 1) Go to project root
+cd "C:\Users\vtruj\mushroom-tracker-app"
+
+# 2) Kill any running desktop app so files aren't locked (safe if none exist)
+Get-Process "mushroom-tracker" -ErrorAction SilentlyContinue | Stop-Process -Force
+
+# 3) Set your release version (must match package.json, Cargo.toml, tauri.conf.json)
+$version = "1.0.4"   # <--- UPDATE THIS FOR EACH NEW RELEASE
+
+# 4) Build Tauri release (creates NSIS installer in src-tauri\target\release\bundle\nsis)
+cargo tauri build
+
+# 5) Locate the NSIS installer produced by Tauri
+$bundleDir = "src-tauri\target\release\bundle\nsis"
+$installer = Join-Path $bundleDir ("Chaotic Neutral Myco Tracker_{0}_x64-setup.exe" -f $version)
+
+if (-not (Test-Path $installer)) {
+  Write-Error "Installer not found at $installer. Check version/file name."
+  return
+}
+
+Write-Host "Installer found at: $installer"
+
+# 6) Sign the installer using your private key
+#    (you'll be prompted for the key password you just set)
+$keyPath = "$env:USERPROFILE\.tauri\mushroom-tracker.key"
+
+cargo tauri signer sign `
+  -f "$keyPath" `
+  "$installer"
+
+if ($LASTEXITCODE -ne 0) {
+  Write-Error "Signing failed. Check the error above."
+  return
+}
+
+# 7) Confirm .sig file exists
+$sigFile = "$installer.sig"
+
+if (-not (Test-Path $sigFile)) {
+  Write-Error "Signature file not found at $sigFile"
+  return
+}
+
+Write-Host "Signature file created at: $sigFile"
+
+# 8) Open the folder so you can grab the EXE + .sig for GitHub
+Start-Process (Split-Path $installer -Parent)

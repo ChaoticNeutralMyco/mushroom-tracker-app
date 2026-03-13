@@ -217,7 +217,8 @@ function eventPropGetter(event) {
 const RBC_DARK_CSS = `
 .rbc-theme .rbc-toolbar { color: #0f172a; }
 .dark .rbc-theme .rbc-toolbar { color: #e5e7eb; }
-.rbc-theme .rbc-btn-group > button { border-radius: 8px; border-color: rgba(148,163,184,.25); }
+.rbc-theme .rbc-btn-group > button { border-radius: 999px; border-color: rgba(148,163,184,.25); background: rgba(255,255,255,.92); }
+.rbc-theme .rbc-btn-group > button.rbc-active { background: var(--_accent-600); color: var(--_accent-on); border-color: var(--_accent-600); }
 .dark .rbc-theme .rbc-btn-group > button { color: #e5e7eb; background: rgba(255,255,255,.03); border-color: rgba(148,163,184,.25); }
 .rbc-theme .rbc-month-view, .rbc-theme .rbc-time-view { background: #ffffff; }
 .dark .rbc-theme .rbc-month-view, .dark .rbc-theme .rbc-time-view { background: #0b0b0c; }
@@ -225,8 +226,8 @@ const RBC_DARK_CSS = `
 .rbc-theme .rbc-timeslot-group, .rbc-theme .rbc-day-bg { border-color: rgba(148,163,184,.15); }
 .rbc-theme .rbc-event { border-radius: 8px; box-shadow: 0 1px 1px rgba(0,0,0,.08); }
 .dark .rbc-theme .rbc-off-range-bg { background: rgba(255,255,255,.03); }
-.rbc-theme .rbc-today { background: rgba(59,130,246,.08); }
-.dark .rbc-theme .rbc-today { background: rgba(59,130,246,.16); }
+.rbc-theme .rbc-today { background: rgba(var(--_accent-rgb), .10); }
+.dark .rbc-theme .rbc-today { background: rgba(var(--_accent-rgb), .18); }
 `;
 
 export default function CalendarView({ grows = [], tasks = [] }) {
@@ -259,10 +260,10 @@ export default function CalendarView({ grows = [], tasks = [] }) {
   }, [grows, tasks]);
 
   return (
-    <div className="p-6 md:p-8 bg-white dark:bg-zinc-900 text-zinc-900 dark:text-white rounded-2xl shadow space-y-6 max-w-6xl mx-auto">
+    <div className="p-6 md:p-8 bg-white dark:bg-zinc-900 text-zinc-900 dark:text-white rounded-2xl border border-zinc-200 dark:border-zinc-800 shadow-sm space-y-3 max-w-6xl mx-auto">
       {/* Scoped style for react-big-calendar dark mode polish */}
       <style dangerouslySetInnerHTML={{ __html: RBC_DARK_CSS }} />
-      <h2 className="text-xl font-semibold">Calendar</h2>
+      <div className="space-y-1"><h2 className="text-xl font-semibold">Calendar</h2><p className="text-sm text-zinc-600 dark:text-zinc-400">Grow milestones and task due dates stay in one view, with active toolbar controls matching your selected accent.</p></div>
       <div className="rbc-theme">
         <BigCalendar
           localizer={localizer}

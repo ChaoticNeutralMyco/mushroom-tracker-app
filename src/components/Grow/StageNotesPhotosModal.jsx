@@ -1,4 +1,3 @@
-src/components/Grow/StageNotesPhotosModal.jsx
 // src/components/Grow/StageNotesPhotosModal.jsx
 import React, { useMemo, useState } from "react";
 import {
@@ -187,7 +186,7 @@ export default function StageNotesPhotosModal({
           </h3>
           <div className="flex items-center gap-2">
             <button
-              className={`px-3 py-1.5 rounded-full text-sm border ${hasNext ? "bg-emerald-600 border-emerald-700" : "bg-zinc-900 border-zinc-700 opacity-60 cursor-not-allowed"}`}
+              className={`px-3 py-1.5 rounded-full text-sm border ${hasNext ? "accent-bg accent-border" : "bg-zinc-900 border-zinc-700 opacity-60 cursor-not-allowed"}`}
               onClick={hasNext ? doAdvance : undefined}
               aria-disabled={!hasNext}
               title={hasNext ? "Advance to next stage" : "No next stage"}
@@ -227,7 +226,7 @@ export default function StageNotesPhotosModal({
               key={s}
               className={`px-3 py-1.5 rounded-full text-sm border ${
                 activeStage === s
-                  ? "bg-emerald-600 text-white border-emerald-700"
+                  ? "accent-bg accent-border text-white"
                   : "bg-zinc-900 border-zinc-700 text-zinc-200"
               }`}
               onClick={() => setActiveStage(s)}
@@ -276,7 +275,7 @@ export default function StageNotesPhotosModal({
                         <button className="chip px-2 py-1" onClick={() => { setEditNoteId(n.id); setEditNoteText(n.text || ""); }}>
                           Edit
                         </button>
-                        <button className="chip px-2 py-1 bg-red-600 text-white" onClick={() => deleteNote(n)}>
+                        <button className="chip px-2 py-1 bg-red-600 text-white hover:bg-red-700" onClick={() => deleteNote(n)}>
                           Delete
                         </button>
                       </div>
@@ -297,7 +296,7 @@ export default function StageNotesPhotosModal({
                 rows={2}
               />
               <button
-                className="px-4 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-700 disabled:opacity-60"
+                className="px-4 py-2 rounded-lg accent-bg disabled:opacity-60"
                 onClick={submitNote}
                 disabled={!noteText.trim()}
               >
@@ -327,7 +326,7 @@ export default function StageNotesPhotosModal({
                     {!isCover && (
                       <button
                         onClick={() => setCoverFromPhoto(p)}
-                        className="absolute right-2 top-2 rounded-md bg-indigo-600/90 px-2 py-1 text-[11px] text-white hover:bg-indigo-600 focus:outline-none focus:ring-2 focus:ring-indigo-400"
+                        className="absolute right-2 top-2 rounded-md accent-bg px-2 py-1 text-[11px] focus:outline-none focus:ring-2 focus:ring-[rgba(var(--_accent-rgb),0.55)]"
                         title="Set as cover photo"
                       >
                         Set Cover
@@ -366,7 +365,7 @@ export default function StageNotesPhotosModal({
                 onChange={(e) => setCaption(e.target.value)}
               />
               <button
-                className="px-4 py-2 rounded-lg bg-blue-600 hover:bg-blue-700 disabled:opacity-60"
+                className="px-4 py-2 rounded-lg accent-bg disabled:opacity-60"
                 onClick={submitPhoto}
                 disabled={!file}
               >

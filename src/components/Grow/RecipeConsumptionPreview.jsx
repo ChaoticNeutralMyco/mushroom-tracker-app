@@ -113,8 +113,8 @@ export default function RecipeConsumptionPreview({
 
   if (!recipeId) return null;
   return (
-    <div className="rounded-lg border border-zinc-700/60 bg-zinc-900/40 p-3">
-      <div className="text-sm font-medium mb-2">Recipe Consumption Preview — <span className="opacity-80">{recipeName}</span></div>
+    <div className="rounded-2xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 p-4">
+      <div className="text-sm font-medium mb-2">Recipe Consumption Preview — <span className="accent-text">{recipeName}</span></div>
       <div className="text-xs opacity-75 mb-2">Scale: {scaleExplain}</div>
       {rows.length === 0 ? (
         <div className="text-xs opacity-70">No consumable items in this recipe.</div>
@@ -136,12 +136,12 @@ export default function RecipeConsumptionPreview({
                 const stockForNeedUnit = stockSameUnit ? r.inStock : (Number(convert(r.inStock, r.stockUnit, r.unit)) || 0);
                 const shortage = Math.max(0, r.need - stockForNeedUnit);
                 return (
-                  <tr key={r.supplyId} className="border-t border-zinc-800/60">
+                  <tr key={r.supplyId} className="border-t border-zinc-200 dark:border-zinc-800">
                     <td className="py-1 pr-2">{r.name}</td>
                     <td className="py-1 pr-2">{formatAmount(r.perBatch)} {r.unit}</td>
                     <td className="py-1 pr-2">{formatAmount(r.need)} {r.unit}</td>
                     <td className="py-1 pr-2">{formatAmount(stockForNeedUnit)} {r.unit}</td>
-                    <td className={"py-1 pr-2 " + (shortage > 0 ? "text-amber-300" : "opacity-70")}>
+                    <td className={"py-1 pr-2 " + (shortage > 0 ? "text-amber-600 dark:text-amber-300" : "opacity-70")}>
                       {shortage > 0 ? `${formatAmount(shortage)} ${r.unit}` : "OK"}
                     </td>
                   </tr>

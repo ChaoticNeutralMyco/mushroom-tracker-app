@@ -67,7 +67,7 @@ export default function QuickEdit({
           </div>
           <Link
             to="/"
-            className="px-3 py-2 rounded-lg bg-blue-600 text-white hover:bg-blue-700 text-sm"
+            className="btn btn-accent text-sm"
           >
             Go to Dashboard
           </Link>
@@ -122,7 +122,7 @@ export default function QuickEdit({
         </div>
         <Link
           to="/"
-          className="px-3 py-1.5 rounded-lg bg-zinc-800 text-white hover:bg-zinc-700 text-sm"
+          className="btn text-sm"
         >
           Back to app
         </Link>
@@ -166,13 +166,13 @@ export default function QuickEdit({
         <div className="flex items-end gap-2">
           <button
             onClick={saveStage}
-            className="px-3 py-2 rounded-lg bg-emerald-600 text-white hover:bg-emerald-700 text-sm"
+            className="btn btn-accent text-sm"
           >
             Save Stage
           </button>
           <button
             onClick={saveStatus}
-            className="px-3 py-2 rounded-lg bg-blue-600 text-white hover:bg-blue-700 text-sm"
+            className="btn btn-accent text-sm"
           >
             Save Status
           </button>
@@ -185,11 +185,8 @@ export default function QuickEdit({
           <button
             key={s}
             onClick={() => setActiveTab(s)}
-            className={`px-3 py-1.5 rounded-full text-sm border ${
-              activeTab === s
-                ? "bg-emerald-600 text-white border-emerald-700"
-                : "bg-white dark:bg-zinc-900 border-zinc-300 dark:border-zinc-700"
-            }`}
+            className="chip"
+            data-active={activeTab === s ? "true" : undefined}
           >
             {s}
           </button>
@@ -228,7 +225,7 @@ export default function QuickEdit({
               rows={2}
             />
             <button
-              className="px-4 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white disabled:opacity-60"
+              className="btn btn-accent disabled:opacity-60"
               onClick={addNote}
               disabled={!noteText.trim()}
             >
@@ -284,7 +281,7 @@ export default function QuickEdit({
               onChange={(e) => setCaption(e.target.value)}
             />
             <button
-              className="px-4 py-2 rounded-lg bg-blue-600 hover:bg-blue-700 text-white disabled:opacity-60"
+              className="btn btn-accent disabled:opacity-60"
               onClick={uploadPhoto}
               disabled={!file}
             >
