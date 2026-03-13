@@ -1,3 +1,4 @@
+// vite.config.js
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 
@@ -17,7 +18,7 @@ export default defineConfig(async () => {
     build: {
       target: "es2020",
       sourcemap: false,
-      minify: "terser",                 // safer than esbuild for vendor/circular cases
+      minify: "esbuild", // avoids requiring terser in Vercel/web builds
       chunkSizeWarningLimit: 1500,
       // Let Rollup decide chunking; removing manualChunks/splitVendorChunk avoids bad init order
       commonjsOptions: { transformMixedEsModules: true },
