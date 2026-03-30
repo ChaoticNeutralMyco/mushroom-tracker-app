@@ -1,7 +1,7 @@
 # src-tauri/Cargo.toml
 [package]
 name = "mushroom-tracker"
-version = "1.0.4"
+version = "1.0.5"
 description = "Chaotic Neutral Mycology — Desktop"
 authors = ["You"]
 edition = "2021"
