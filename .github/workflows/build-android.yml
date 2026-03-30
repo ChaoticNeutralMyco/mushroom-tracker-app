@@ -13,6 +13,9 @@ jobs:
     env:
       NODE_OPTIONS: --max-old-space-size=4096
       CI: "1"
+      ANDROID_KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_B64 }}
+      ANDROID_KEYSTORE_ALIAS: ${{ secrets.ANDROID_KEYSTORE_ALIAS }}
+      ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
 
     steps:
       - name: Checkout
@@ -67,38 +70,39 @@ jobs:
 
       - name: Collect outputs
         id: collect
+        shell: bash
         run: |
           rel_apk=$(ls -1 android/app/build/outputs/apk/release/*-release*.apk 2>/dev/null | head -n1 || true)
           dbg_apk=$(ls -1 android/app/build/outputs/apk/debug/*-debug*.apk 2>/dev/null | head -n1 || true)
           aab=$(ls -1 android/app/build/outputs/bundle/release/*.aab 2>/dev/null | head -n1 || true)
-          echo "rel_apk=$rel_apk" >> $GITHUB_OUTPUT
-          echo "dbg_apk=$dbg_apk" >> $GITHUB_OUTPUT
-          echo "aab=$aab" >> $GITHUB_OUTPUT
+          echo "rel_apk=$rel_apk" >> "$GITHUB_OUTPUT"
+          echo "dbg_apk=$dbg_apk" >> "$GITHUB_OUTPUT"
+          echo "aab=$aab" >> "$GITHUB_OUTPUT"
 
       - name: Decode keystore
-        if: ${{ secrets.ANDROID_KEYSTORE_B64 && secrets.ANDROID_KEYSTORE_ALIAS && secrets.ANDROID_KEYSTORE_PASSWORD }}
+        if: ${{ env.ANDROID_KEYSTORE_B64 != '' && env.ANDROID_KEYSTORE_ALIAS != '' && env.ANDROID_KEYSTORE_PASSWORD != '' }}
         run: |
           mkdir -p android-keystore
-          echo "${{ secrets.ANDROID_KEYSTORE_B64 }}" | base64 -d > android-keystore/release.keystore
+          echo "$ANDROID_KEYSTORE_B64" | base64 -d > android-keystore/release.keystore
 
       - name: Sign release APK
-        if: ${{ steps.collect.outputs.rel_apk && secrets.ANDROID_KEYSTORE_B64 && secrets.ANDROID_KEYSTORE_ALIAS && secrets.ANDROID_KEYSTORE_PASSWORD }}
+        if: ${{ steps.collect.outputs.rel_apk != '' && env.ANDROID_KEYSTORE_B64 != '' && env.ANDROID_KEYSTORE_ALIAS != '' && env.ANDROID_KEYSTORE_PASSWORD != '' }}
         run: |
           apksigner sign --ks android-keystore/release.keystore \
-            --ks-key-alias "${{ secrets.ANDROID_KEYSTORE_ALIAS }}" \
-            --ks-pass pass:"${{ secrets.ANDROID_KEYSTORE_PASSWORD }}" \
+            --ks-key-alias "$ANDROID_KEYSTORE_ALIAS" \
+            --ks-pass pass:"$ANDROID_KEYSTORE_PASSWORD" \
             --out app-release-signed.apk \
             "${{ steps.collect.outputs.rel_apk }}"
           apksigner verify --print-certs app-release-signed.apk
 
       - name: Sign release AAB
-        if: ${{ steps.collect.outputs.aab && secrets.ANDROID_KEYSTORE_B64 && secrets.ANDROID_KEYSTORE_ALIAS && secrets.ANDROID_KEYSTORE_PASSWORD }}
+        if: ${{ steps.collect.outputs.aab != '' && env.ANDROID_KEYSTORE_B64 != '' && env.ANDROID_KEYSTORE_ALIAS != '' && env.ANDROID_KEYSTORE_PASSWORD != '' }}
         run: |
           jarsigner -keystore android-keystore/release.keystore \
-            -storepass "${{ secrets.ANDROID_KEYSTORE_PASSWORD }}" \
-            -keypass "${{ secrets.ANDROID_KEYSTORE_PASSWORD }}" \
+            -storepass "$ANDROID_KEYSTORE_PASSWORD" \
+            -keypass "$ANDROID_KEYSTORE_PASSWORD" \
             "${{ steps.collect.outputs.aab }}" \
-            "${{ secrets.ANDROID_KEYSTORE_ALIAS }}"
+            "$ANDROID_KEYSTORE_ALIAS"
 
       - name: Upload Android artifacts
         uses: actions/upload-artifact@v4
