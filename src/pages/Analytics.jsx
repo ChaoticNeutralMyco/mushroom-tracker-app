@@ -182,6 +182,37 @@ function getRecipeYieldForGrow(g, recipeById) {
   return y > 0 ? y : 1;
 }
 
+function computeStoredLabConsumablesCost(g, supplyCostById) {
+  const inline = Number(g?.labConsumablesCost);
+  if (Number.isFinite(inline)) return Math.max(0, Number(inline.toFixed(2)));
+
+  const rows = Array.isArray(g?.labConsumablesUsed) ? g.labConsumablesUsed : [];
+  if (!rows.length) return 0;
+
+  let total = 0;
+  for (const row of rows) {
+    const directTotal = Number(row?.totalCost ?? row?.totalCostPerGrow ?? row?.costTotal);
+    if (Number.isFinite(directTotal)) {
+      total += directTotal;
+      continue;
+    }
+
+    const amount = toNumber(row?.amount ?? row?.amountPerGrow ?? row?.qty, 0);
+    const directUnitCost = Number(row?.unitCost ?? row?.unitPrice ?? row?.costPerUnit);
+    if (Number.isFinite(directUnitCost)) {
+      total += directUnitCost * amount;
+      continue;
+    }
+
+    const liveUnitCost =
+      row?.supplyId && supplyCostById.has(row.supplyId)
+        ? toNumber(supplyCostById.get(row.supplyId), 0)
+        : 0;
+    total += liveUnitCost * amount;
+  }
+
+  return Math.max(0, Number(total.toFixed(2)));
+}
 
 
 /* ---------- post-process helpers ---------- */
@@ -430,7 +461,12 @@ export default function Analytics({
       }
 
       const stored = toNumber(g?.cost, null);
-      const cost = derived != null ? derived : stored != null ? stored : 0;
+      const labConsumablesCost = computeStoredLabConsumablesCost(g, supplyCostById);
+      const cost = derived != null
+        ? Number((derived + labConsumablesCost).toFixed(2))
+        : stored != null
+        ? stored
+        : labConsumablesCost;
 
       map.set(g.id, cost);
     }

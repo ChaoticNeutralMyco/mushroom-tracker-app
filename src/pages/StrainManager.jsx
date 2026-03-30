@@ -1,6 +1,6 @@
 // src/pages/StrainManager.jsx
 // Strain Manager + Library/Storage: auto-archive zero-qty items and hide archived ones from the list.
-import React, { useEffect, useMemo, useState, useCallback } from "react";
+import React, { useEffect, useMemo, useState, useCallback, useRef } from "react";
 import Modal from "../components/ui/Modal";
 import {
   collection,
@@ -44,6 +44,7 @@ import GrowForm from "../components/Grow/GrowForm";
 import { useConfirm } from "../components/ui/ConfirmDialog";
 import { sortAlpha, alpha } from "../lib/sort";
 import StrainCard from "../components/strains/StrainCard";
+import StrainCardFrontBuilder from "../components/strains/StrainCardFrontBuilder";
 import {
   DEFAULT_STORAGE_LOCATIONS,
   subscribeLocations,
@@ -53,6 +54,14 @@ import {
   deleteLocation,
   moveLocation,
 } from "../lib/storage-locations";
+import {
+  BUILDER_FRONT_TEMPLATES,
+  BUILDER_MUSHROOM_ARTS,
+  DEFAULT_CARD_FOOTER,
+  STRAIN_CARD_SUMMARY_MAX_LENGTH,
+  clampStrainCardSummaryText,
+  buildDefaultStrainCardDesign,
+} from "../lib/strain-cards";
 
 /* ---------- helpers ---------- */
 const norm = (s) => String(s || "").trim().toLowerCase();
@@ -76,6 +85,39 @@ const fmtDate = (v) => {
   const d = asDate(v);
   return d ? d.toLocaleDateString() : "—";
 };
+
+function growRemainingAmount(g = {}) {
+  const total = Number(g?.amountTotal);
+  const used = Number(g?.amountUsed);
+  if (Number.isFinite(total) && total > 0) {
+    return Math.max(0, total - (Number.isFinite(used) ? used : 0));
+  }
+  const legacy = Number(g?.amountAvailable);
+  return Number.isFinite(legacy) ? Math.max(0, legacy) : 0;
+}
+
+function formatLibraryQty(item = {}) {
+  const qty = Number(item?.qty || 0);
+  const unit = item?.unit || "count";
+  const type = String(item?.type || "");
+  const syringeCount = Number(item?.syringeCount || 0);
+  const mlPerSyringe = Number(item?.mlPerSyringe || 0);
+
+  if (type === "LC Syringe" && syringeCount > 0) {
+    const countLabel = `${syringeCount} syringe${syringeCount === 1 ? "" : "s"}`;
+    if (unit === "ml" && qty > 0) {
+      const mlLabel =
+        mlPerSyringe > 0
+          ? `${qty} ml total · ${mlPerSyringe} ml each`
+          : `${qty} ml total`;
+      return `${countLabel} · ${mlLabel}`;
+    }
+    return countLabel;
+  }
+
+  return `${qty} ${unit}`;
+}
+
 const getYields = (g) => {
   const list = Array.isArray(g?.flushes)
     ? g.flushes
@@ -258,10 +300,11 @@ const ORIGINS = [
 
 function inferOriginFromLibrary(kind = "") {
   const s = String(kind).toLowerCase();
+  if (s.includes("lc syringe") || (s.includes("syringe") && s.includes("lc"))) return "LC Syringe";
   if (s.includes("syringe")) return "MSS (Spore Syringe)";
   if (s.includes("swab")) return "Spore Swab";
   if (s.includes("print")) return "Spore Print";
-  if (s === "LC" || s.includes("liquid")) return "LC Syringe";
+  if (s === "lc" || s.includes("liquid")) return "LC Syringe";
   return null;
 }
 
@@ -279,7 +322,7 @@ function getGrowParentIdsForGraph(g, growsById) {
 
   if (Array.isArray(g?.parentContributions)) {
     for (const contrib of g.parentContributions) {
-      const pid = contrib?.parentId || contrib?.ParentId; // tolerate casing
+      const pid = contrib?.parentId || contrib?.ParentId;
       if (!pid) continue;
       if (!growsById.has(pid)) continue;
       if (!ids.includes(pid)) ids.push(pid);
@@ -353,6 +396,165 @@ function layoutForest(trees) {
 
 /* ---------- local cache for strain name suggestions ---------- */
 const LS_STRAIN_NAMES = "cnm_strain_names";
+const EMPTY_CARD_BUILDER = {
+  enabled: true,
+  title: "",
+  code: "",
+  speciesLine: "",
+  summary: "",
+  footer: DEFAULT_CARD_FOOTER,
+  frontTemplate: "dark",
+  mushroomArtKey: "cube-4",
+  artMode: "preset",
+  frontArtUrl: "",
+};
+
+function buildTradeSyringeDraft(location = DEFAULT_STORAGE_LOCATIONS[0]) {
+  return {
+    sourceGrowId: "",
+    syringeCount: 1,
+    mlPerSyringe: 10,
+    location: location || DEFAULT_STORAGE_LOCATIONS[0],
+    acquired: new Date().toISOString().slice(0, 10),
+    notes: "",
+    syringeSupplyId: "",
+  };
+}
+
+function getLibraryItemAvailableMl(item = {}) {
+  const qty = Number(item?.qty || 0);
+  return Number.isFinite(qty) ? Math.max(0, qty) : 0;
+}
+
+function buildCardBuilderSeed(seed = {}) {
+  const normalized = buildDefaultStrainCardDesign(seed);
+  const builderSeed = seed?.cardBuilder || seed || {};
+  const artOffsetX = Number(builderSeed?.artOffsetX);
+  const artOffsetY = Number(builderSeed?.artOffsetY);
+  const artScale = Number(builderSeed?.artScale);
+
+  return {
+    ...EMPTY_CARD_BUILDER,
+    ...normalized,
+    artOffsetX: Number.isFinite(artOffsetX) ? artOffsetX : 0,
+    artOffsetY: Number.isFinite(artOffsetY) ? artOffsetY : 0,
+    artScale: Number.isFinite(artScale) ? artScale : 1,
+  };
+}
+
+const STRAIN_NAME_NORMALIZATION_ALIASES = new Map([
+  ["lions mane", "lion s mane"],
+  ["lions mayne", "lion s mane"],
+  ["lion mane", "lion s mane"],
+  ["lion mayne", "lion s mane"],
+  ["lion s mayne", "lion s mane"],
+  ["albino penis envy revert", "aper"],
+  ["golden techer", "golden teacher"],
+  ["golden teach", "golden teacher"],
+]);
+
+function normalizeStrainNameForLookup(value = "") {
+  let normalized = String(value || "")
+    .normalize("NFKD")
+    .replace(/[̀-ͯ]/g, "")
+    .toLowerCase()
+    .replace(/[’'`]/g, " ")
+    .replace(/[_\-–—/]+/g, " ")
+    .replace(/[^a-z0-9+\s]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  if (!normalized) return "";
+  if (STRAIN_NAME_NORMALIZATION_ALIASES.has(normalized)) {
+    return STRAIN_NAME_NORMALIZATION_ALIASES.get(normalized);
+  }
+
+  normalized = normalized
+    .replace(/lions/g, "lion s")
+    .replace(/mayne/g, "mane")
+    .replace(/teachers/g, "teacher")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  return STRAIN_NAME_NORMALIZATION_ALIASES.get(normalized) || normalized;
+}
+
+function levenshteinDistance(a = "", b = "") {
+  if (a === b) return 0;
+  if (!a.length) return b.length;
+  if (!b.length) return a.length;
+
+  const rows = Array.from({ length: a.length + 1 }, () => new Array(b.length + 1).fill(0));
+  for (let i = 0; i <= a.length; i += 1) rows[i][0] = i;
+  for (let j = 0; j <= b.length; j += 1) rows[0][j] = j;
+
+  for (let i = 1; i <= a.length; i += 1) {
+    for (let j = 1; j <= b.length; j += 1) {
+      const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+      rows[i][j] = Math.min(
+        rows[i - 1][j] + 1,
+        rows[i][j - 1] + 1,
+        rows[i - 1][j - 1] + cost
+      );
+    }
+  }
+
+  return rows[a.length][b.length];
+}
+
+function findClosestStrainCardMatch(name = "", strains = [], excludeId = null) {
+  const clean = String(name || "").trim();
+  if (!clean) return null;
+
+  const target = normalizeStrainNameForLookup(clean);
+  const compactTarget = target.replace(/\s+/g, "");
+  if (!compactTarget) return null;
+
+  const candidates = (Array.isArray(strains) ? strains : [])
+    .filter((row) => row?.id !== excludeId && String(row?.name || "").trim())
+    .map((row) => {
+      const normalizedName = normalizeStrainNameForLookup(row.name);
+      return {
+        row,
+        normalizedName,
+        compactName: normalizedName.replace(/\s+/g, ""),
+      };
+    });
+
+  const exact = candidates.find(
+    (candidate) =>
+      candidate.normalizedName === target || candidate.compactName === compactTarget
+  );
+  if (exact) return exact.row;
+
+  const inclusive = candidates.find((candidate) => {
+    const diff = Math.abs(candidate.compactName.length - compactTarget.length);
+    return (
+      diff <= 2 &&
+      (candidate.compactName.includes(compactTarget) || compactTarget.includes(candidate.compactName))
+    );
+  });
+  if (inclusive) return inclusive.row;
+
+  let best = null;
+  for (const candidate of candidates) {
+    if (!candidate.compactName) continue;
+    if (candidate.compactName[0] !== compactTarget[0]) continue;
+
+    const distance = levenshteinDistance(compactTarget, candidate.compactName);
+    const maxLen = Math.max(compactTarget.length, candidate.compactName.length);
+    const allowedDistance = maxLen <= 6 ? 1 : maxLen <= 12 ? 2 : 3;
+
+    if (distance > allowedDistance) continue;
+
+    if (!best || distance < best.distance) {
+      best = { row: candidate.row, distance };
+    }
+  }
+
+  return best?.row || null;
+}
+
 const loadStrainNameCache = () => {
   try {
     const arr = JSON.parse(localStorage.getItem(LS_STRAIN_NAMES) || "[]");
@@ -411,15 +613,19 @@ export default function StrainManager(props) {
   );
   const [libraryItems, setLibraryItems] = useState([]);
   const [savedSpecies, setSavedSpecies] = useState([]);
+  const [supplies, setSupplies] = useState([]);
 
-  // User-defined Storage Locations
   const [storageLocations, setStorageLocations] = useState([]);
   const [manageLocOpen, setManageLocOpen] = useState(false);
+  const [tradeSyringeOpen, setTradeSyringeOpen] = useState(false);
+  const [tradeSyringe, setTradeSyringe] = useState(() =>
+    buildTradeSyringeDraft(DEFAULT_STORAGE_LOCATIONS[0])
+  );
+  const [tradeSaving, setTradeSaving] = useState(false);
+  const [tradeError, setTradeError] = useState("");
 
-  // Strain name suggestions cache (persisted)
   const [cachedStrainNames, setCachedStrainNames] = useState([]);
 
-  // Edit form
   const [form, setForm] = useState({
     name: "",
     scientificName: "",
@@ -427,40 +633,73 @@ export default function StrainManager(props) {
     genetics: "",
     notes: "",
     photoURL: "",
+    cardBuilder: buildCardBuilderSeed({}),
   });
   const [imageFile, setImageFile] = useState(null);
+  const [cardArtFile, setCardArtFile] = useState(null);
   const [editingId, setEditingId] = useState(null);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
+  const [builderOpen, setBuilderOpen] = useState(false);
+  const builderSectionRef = useRef(null);
 
-  // Modal: all grows for a strain
   const [viewStrain, setViewStrain] = useState(null);
   const [viewTab, setViewTab] = useState("grows");
 
-  // lineage view mode
-  const [lineageView, setLineageView] = useState("tree"); // "tree" | "list" | "graph"
+  const [lineageView, setLineageView] = useState("tree");
   const [selectedRootId, setSelectedRootId] = useState(null);
 
-  // photos across all grows of the selected strain
   const [strainPhotos, setStrainPhotos] = useState([]);
   const [photosLoading, setPhotosLoading] = useState(false);
 
-  // Inline “New Grow” from Library
   const [inlineGrow, setInlineGrow] = useState(null);
 
-  // Batch selection state
   const [selectedLib, setSelectedLib] = useState([]);
-  // Scanner → open a stored item “card”
   const [scanLibraryId, setScanLibraryId] = useState(null);
   const [selectedStrains, setSelectedStrains] = useState([]);
 
-  // Gallery selection + caption edit
   const [gallerySelectMode, setGallerySelectMode] = useState(false);
   const [gallerySelected, setGallerySelected] = useState(new Set());
   const gallerySelectedCount = gallerySelected.size;
 
   const [capEditId, setCapEditId] = useState(null);
   const [capEditText, setCapEditText] = useState("");
+
+  const visibleCardSummaryCount = useMemo(
+    () => clampStrainCardSummaryText(form?.cardBuilder?.summary || "").length,
+    [form?.cardBuilder?.summary]
+  );
+
+  const strainsSourceForMatching =
+    hasStrainsProp && Array.isArray(strains) ? strains : localStrains;
+
+  const scrollBuilderIntoView = useCallback(() => {
+    window.requestAnimationFrame(() => {
+      builderSectionRef.current?.scrollIntoView?.({
+        behavior: "smooth",
+        block: "start",
+      });
+    });
+  }, []);
+
+  const findMatchingStrainCard = useCallback(
+    (name, excludeId = null) =>
+      findClosestStrainCardMatch(name, strainsSourceForMatching, excludeId),
+    [strainsSourceForMatching]
+  );
+
+  const builderNameMatch = useMemo(() => {
+    const clean = String(form?.name || "").trim();
+    if (!clean) return null;
+    return findMatchingStrainCard(clean, editingId || null);
+  }, [editingId, findMatchingStrainCard, form?.name]);
+
+  const isCustomFrontArtActive =
+    form?.cardBuilder?.artMode === "full" &&
+    Boolean(cardArtFile || form?.cardBuilder?.frontArtUrl);
+  const presetArtOffsetX = Number(form?.cardBuilder?.artOffsetX ?? 0);
+  const presetArtOffsetY = Number(form?.cardBuilder?.artOffsetY ?? 0);
+  const presetArtScale = Number(form?.cardBuilder?.artScale ?? 1);
 
   /* ---------------- Data wiring ---------------- */
   useEffect(() => {
@@ -512,7 +751,6 @@ export default function StrainManager(props) {
       const rows = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
       setLibraryItems(rows);
 
-      // Auto-archive any library item at or below zero so it disappears from the active list
       rows.forEach((it) => {
         const qty = Number(it?.qty || 0);
         const archivedish =
@@ -541,6 +779,13 @@ export default function StrainManager(props) {
       }
     );
 
+    const unsubSupplies = onSnapshot(
+      collection(db, "users", uid, "supplies"),
+      (snap) => {
+        setSupplies(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
+      }
+    );
+
     (async () => {
       try {
         if (!hasStrainsProp) {
@@ -563,21 +808,23 @@ export default function StrainManager(props) {
       cancelled = true;
       unsubLib();
       unsubSpecies();
+      unsubSupplies();
     };
   }, [uid, hasStrainsProp, hasGrowsProp]);
 
-  // Default form location to first available
   const [speciesOpen, setSpeciesOpen] = useState(false);
   const DEFAULT_UNIT_BY_TYPE = {
     "Spore Swab": "count",
     "Spore Print": "count",
     "Spore Syringe": "ml",
+    "LC Syringe": "ml",
     LC: "ml",
     "Agar Plate": "ml",
     "Agar Slant": "ml",
   };
   const LIBRARY_TYPES = [
     "Spore Syringe",
+    "LC Syringe",
     "Spore Swab",
     "Spore Print",
     "LC",
@@ -600,6 +847,9 @@ export default function StrainManager(props) {
       ? storageLocations[0].name
       : DEFAULT_STORAGE_LOCATIONS[0];
     setNewItem((prev) => ({ ...prev, location: prev.location || first }));
+    setTradeSyringe((prev) =>
+      prev.location ? prev : { ...prev, location: first }
+    );
   }, [storageLocations]);
 
   /* ---------------- Species suggestions ---------------- */
@@ -648,6 +898,51 @@ export default function StrainManager(props) {
   const handleChange = (e) =>
     setForm((f) => ({ ...f, [e.target.name]: e.target.value }));
 
+  const updateCardBuilder = (key, value) =>
+    setForm((f) => ({
+      ...f,
+      cardBuilder: { ...(f.cardBuilder || EMPTY_CARD_BUILDER), [key]: value },
+    }));
+
+  const loadBuilderForStrain = useCallback(
+    (strainDoc = {}) => {
+      setForm({
+        name: strainDoc.name || "",
+        scientificName: strainDoc.scientificName || "",
+        description: strainDoc.description || "",
+        genetics: strainDoc.genetics || "",
+        notes: strainDoc.notes || "",
+        photoURL: strainDoc.photoURL || "",
+        cardBuilder: buildCardBuilderSeed(strainDoc),
+      });
+      setImageFile(null);
+      setCardArtFile(null);
+      setEditingId(strainDoc.id || null);
+      setError("");
+      setBuilderOpen(true);
+      scrollBuilderIntoView();
+    },
+    [scrollBuilderIntoView]
+  );
+
+  const openEmptyBuilder = useCallback(() => {
+    setForm({
+      name: "",
+      scientificName: "",
+      description: "",
+      genetics: "",
+      notes: "",
+      photoURL: "",
+      cardBuilder: buildCardBuilderSeed({}),
+    });
+    setImageFile(null);
+    setCardArtFile(null);
+    setEditingId(null);
+    setError("");
+    setBuilderOpen(true);
+    scrollBuilderIntoView();
+  }, [scrollBuilderIntoView]);
+
   const uploadImage = async () => {
     if (!imageFile) return form.photoURL || "";
     if (typeof onUploadStrainImage === "function") {
@@ -661,6 +956,19 @@ export default function StrainManager(props) {
     return await getDownloadURL(r);
   };
 
+  const uploadCardArt = async () => {
+    if (!cardArtFile) return form?.cardBuilder?.frontArtUrl || "";
+    if (typeof onUploadStrainImage === "function") {
+      return await onUploadStrainImage(cardArtFile);
+    }
+    const u = auth.currentUser;
+    if (!u) return form?.cardBuilder?.frontArtUrl || "";
+    const path = `users/${u.uid}/strain-cards/${Date.now()}_${cardArtFile.name}`;
+    const r = storageRef(storage, path);
+    await uploadBytes(r, cardArtFile);
+    return await getDownloadURL(r);
+  };
+
   const resetForm = () => {
     setForm({
       name: "",
@@ -669,10 +977,31 @@ export default function StrainManager(props) {
       genetics: "",
       notes: "",
       photoURL: "",
+      cardBuilder: buildCardBuilderSeed({}),
     });
     setImageFile(null);
+    setCardArtFile(null);
     setEditingId(null);
     setError("");
+    setBuilderOpen(false);
+  };
+
+  const fillCardBuilderFromForm = () => {
+    setBuilderOpen(true);
+    setForm((current) => ({
+      ...current,
+      cardBuilder: {
+        ...buildCardBuilderSeed({
+          ...current,
+          cardBuilder: {
+            ...(current.cardBuilder || EMPTY_CARD_BUILDER),
+            frontArtUrl: current?.cardBuilder?.frontArtUrl || "",
+          },
+        }),
+        enabled: current?.cardBuilder?.enabled !== false,
+      },
+    }));
+    scrollBuilderIntoView();
   };
 
   const handleSubmit = async (e) => {
@@ -680,15 +1009,42 @@ export default function StrainManager(props) {
     setError("");
     try {
       setSaving(true);
+      const cleanName = String(form.name || "").trim();
+      const cleanScientificName = String(fuzzyPickSpecies(form.scientificName) || "").trim();
+      const duplicateMatch = findMatchingStrainCard(cleanName, editingId || null);
+
+      if (duplicateMatch) {
+        setBuilderOpen(true);
+        scrollBuilderIntoView();
+        throw new Error(
+          `A similar strain card already exists for “${duplicateMatch.name}”. Use that card instead of creating a duplicate.`
+        );
+      }
+
       const photoURL = await uploadImage();
+      const frontArtUrl = await uploadCardArt();
+      const cardBuilder = {
+        ...buildCardBuilderSeed({
+          ...form,
+          name: cleanName,
+          scientificName: cleanScientificName,
+          photoURL,
+          cardBuilder: {
+            ...(form.cardBuilder || EMPTY_CARD_BUILDER),
+            frontArtUrl: frontArtUrl || form?.cardBuilder?.frontArtUrl || "",
+          },
+        }),
+        enabled: form?.cardBuilder?.enabled !== false,
+      };
 
       const data = {
-        name: form.name.trim(),
-        scientificName: form.scientificName.trim(),
+        name: cleanName,
+        scientificName: cleanScientificName,
         description: form.description || "",
         genetics: form.genetics || "",
         notes: form.notes || "",
         photoURL,
+        cardBuilder,
       };
       if (!data.name) throw new Error("Strain name is required.");
 
@@ -706,8 +1062,26 @@ export default function StrainManager(props) {
             updatedAt: serverTimestamp(),
           });
         }
-        await ensureSpeciesSaved(data.scientificName);
+      } else {
+        const u = auth.currentUser;
+        if (!u) throw new Error("You must be signed in to save a strain.");
+        const createdAt = new Date().toISOString();
+        const createdPayload = {
+          ...data,
+          createdAt,
+          updatedAt: createdAt,
+        };
+        const createdRef = await addDoc(collection(db, "users", u.uid, "strains"), {
+          ...data,
+          createdAt: serverTimestamp(),
+          updatedAt: serverTimestamp(),
+        });
+        if (!hasStrainsProp) {
+          setLocalStrains((prev) => [...prev, { id: createdRef.id, ...createdPayload }]);
+        }
+        addNameToCache(data.name);
       }
+      await ensureSpeciesSaved(data.scientificName);
       resetForm();
     } catch (err) {
       console.error(err);
@@ -718,19 +1092,7 @@ export default function StrainManager(props) {
   };
 
   const handleEdit = (s) => {
-    setForm({
-      name: s.name || "",
-      scientificName: s.scientificName || "",
-      description: s.description || "",
-      genetics: s.genetics || "",
-      notes: s.notes || "",
-      photoURL: s.photoURL || "",
-    });
-    setImageFile(null);
-    setEditingId(s.id);
-    try {
-      window.scrollTo({ top: 0, behavior: "smooth" });
-    } catch {}
+    loadBuilderForStrain(s);
   };
 
   const handleDelete = async (id) => {
@@ -749,7 +1111,7 @@ export default function StrainManager(props) {
   };
 
   /* ---------------- Library ---------------- */
-  const [speciesOpenState, setSpeciesOpenState] = useState(false); // for the dropdown list
+  const [speciesOpenState, setSpeciesOpenState] = useState(false);
 
   const activeLibraryItems = useMemo(() => {
     const arr = Array.isArray(libraryItems) ? libraryItems : [];
@@ -779,19 +1141,65 @@ export default function StrainManager(props) {
 
   const ensureStrainExists = async (name, scientificName) => {
     const clean = String(name || "").trim();
-    if (!clean) return;
+    if (!clean) {
+      return {
+        strain: null,
+        matched: false,
+        created: false,
+        canonicalName: "",
+      };
+    }
+
+    const matched = findMatchingStrainCard(clean);
+    if (matched) {
+      return {
+        strain: matched,
+        matched: true,
+        created: false,
+        canonicalName: matched.name || clean,
+      };
+    }
+
     const u = auth.currentUser;
-    if (!u) return;
-    const col = collection(db, "users", u.uid, "strains");
-    const qRef = query(col, where("name", "==", clean));
-    const snap = await getDocs(qRef);
-    if (!snap.empty) return;
-    await addDoc(col, {
+    if (!u) {
+      return {
+        strain: null,
+        matched: false,
+        created: false,
+        canonicalName: clean,
+      };
+    }
+
+    const createdAt = new Date().toISOString();
+    const createdStrain = {
       name: clean,
       scientificName: String(scientificName || "").trim(),
-      createdAt: new Date().toISOString(),
+      createdAt,
+      updatedAt: createdAt,
       source: "library",
+      cardBuilder: buildCardBuilderSeed({
+        name: clean,
+        scientificName: String(scientificName || "").trim(),
+      }),
+    };
+
+    const refDoc = await addDoc(collection(db, "users", u.uid, "strains"), {
+      ...createdStrain,
+      createdAt: serverTimestamp(),
+      updatedAt: serverTimestamp(),
     });
+
+    const hydrated = { id: refDoc.id, ...createdStrain };
+    if (!hasStrainsProp) {
+      setLocalStrains((prev) => [...prev, hydrated]);
+    }
+
+    return {
+      strain: hydrated,
+      matched: false,
+      created: true,
+      canonicalName: clean,
+    };
   };
 
   const onAddLibraryItem = async (e) => {
@@ -799,17 +1207,25 @@ export default function StrainManager(props) {
     const u = auth.currentUser;
     if (!u) return;
 
+    const cleanScientificName = fuzzyPickSpecies(newItem.scientificName);
+    const ensureResult = await ensureStrainExists(newItem.strainName, cleanScientificName);
+    const canonicalStrainName = ensureResult?.canonicalName || String(newItem.strainName || "").trim();
+
     const payload = {
       ...newItem,
+      strainName: canonicalStrainName,
+      scientificName: cleanScientificName,
       qty: Number(newItem.qty || 0),
       createdAt: new Date().toISOString(),
     };
 
     await addDoc(collection(db, "users", u.uid, "library"), payload);
-    await ensureStrainExists(newItem.strainName, newItem.scientificName);
-    await ensureSpeciesSaved(newItem.scientificName);
+    await ensureSpeciesSaved(cleanScientificName);
+    addNameToCache(canonicalStrainName);
 
-    addNameToCache(newItem.strainName);
+    if (ensureResult?.created && ensureResult?.strain) {
+      loadBuilderForStrain(ensureResult.strain);
+    }
 
     setNewItem((s) => ({
       ...s,
@@ -833,7 +1249,7 @@ export default function StrainManager(props) {
     const strain = it?.strainName || "";
 
     let nextType = "Agar";
-    if (kind === "LC") nextType = "Grain Jar";
+    if (kind === "LC" || kind === "LC Syringe") nextType = "Grain Jar";
     else if (kind.includes("Agar")) nextType = "LC";
 
     const prefill = {
@@ -859,7 +1275,184 @@ export default function StrainManager(props) {
     } catch {}
   };
 
-  // If we were opened from a scanned stored-item label, open the card modal.
+  const openTradeSyringeModal = () => {
+    const firstLocation = storageLocations.length
+      ? storageLocations[0].name
+      : DEFAULT_STORAGE_LOCATIONS[0];
+    setTradeError("");
+    setTradeSyringe(buildTradeSyringeDraft(firstLocation));
+    setTradeSyringeOpen(true);
+  };
+
+  const createTradeLcSyringe = async (e) => {
+    e?.preventDefault?.();
+    const user = auth.currentUser;
+    if (!user) return;
+
+    const syringeCount = Math.max(
+      0,
+      Math.floor(Number(tradeSyringe.syringeCount || 0))
+    );
+    const mlPerSyringe = Number(tradeSyringe.mlPerSyringe || 0);
+    const totalMl = Number((syringeCount * mlPerSyringe).toFixed(2));
+    const parent = selectedTradeSource || null;
+
+    if (!parent) {
+      setTradeError("Select an LC source from Library or active grows.");
+      return;
+    }
+
+    const isGrowSource = parent.sourceKind === "grow";
+    const isLibrarySource = parent.sourceKind === "library";
+
+    if (!isGrowSource && !isLibrarySource) {
+      setTradeError("Select an LC source from Library or active grows.");
+      return;
+    }
+
+    const availableMl = Number(parent.availableMl || 0);
+
+    if (syringeCount <= 0) {
+      setTradeError("Enter how many trade syringes to make.");
+      return;
+    }
+    if (!Number.isFinite(mlPerSyringe) || mlPerSyringe <= 0) {
+      setTradeError("Enter the volume for each syringe.");
+      return;
+    }
+    if (totalMl <= 0) {
+      setTradeError("Total LC to pull must be greater than zero.");
+      return;
+    }
+    if (totalMl > availableMl + 1e-9) {
+      setTradeError(
+        `You only have ${availableMl.toFixed(2)} ml available in that LC source.`
+      );
+      return;
+    }
+
+    const selectedSupply =
+      syringeSupplyOptions.find((s) => s.id === tradeSyringe.syringeSupplyId) || null;
+    if (selectedSupply) {
+      const availableSyringes = Number(selectedSupply.quantity || 0);
+      if (availableSyringes < syringeCount) {
+        setTradeError(
+          `Selected syringe supply only has ${availableSyringes} available.`
+        );
+        return;
+      }
+    }
+
+    try {
+      setTradeSaving(true);
+      setTradeError("");
+
+      const parentName = String(parent?.strainName || parent?.strain || "").trim();
+      const scientificName = String(
+        selectedTradeStrain?.scientificName || parent?.scientificName || ""
+      ).trim();
+
+      await ensureStrainExists(parentName, scientificName);
+      await ensureSpeciesSaved(scientificName);
+      addNameToCache(parentName);
+
+      const payload = {
+        type: "LC Syringe",
+        strainName: parentName,
+        scientificName,
+        qty: totalMl,
+        unit: "ml",
+        volumeMl: totalMl,
+        syringeCount,
+        mlPerSyringe,
+        location:
+          tradeSyringe.location ||
+          (storageLocations.length
+            ? storageLocations[0].name
+            : DEFAULT_STORAGE_LOCATIONS[0]),
+        acquired: tradeSyringe.acquired || new Date().toISOString().slice(0, 10),
+        notes: tradeSyringe.notes || "",
+        sourceGrowId: isGrowSource ? parent.sourceId : null,
+        sourceLibraryId: isLibrarySource ? parent.sourceId : null,
+        sourceGrowAbbr: parent.abbreviation || parent.abbr || "",
+        sourceType: "LC",
+        sourceKind: parent.sourceKind,
+        status: "Active",
+        archived: false,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      };
+
+      const createdRef = await addDoc(collection(db, "users", user.uid, "library"), payload);
+
+      if (isGrowSource) {
+        const parentRef = doc(db, "users", user.uid, "grows", parent.sourceId);
+        const parentSnap = await getDoc(parentRef);
+        if (parentSnap.exists()) {
+          const data = parentSnap.data() || {};
+          const total = Number(data.amountTotal);
+          const used = Number(data.amountUsed);
+          if (Number.isFinite(total) && total > 0) {
+            await updateDoc(parentRef, {
+              amountUsed: Math.min(total, (Number.isFinite(used) ? used : 0) + totalMl),
+              updatedAt: serverTimestamp(),
+            });
+          } else {
+            const legacy = Number(data.amountAvailable);
+            await updateDoc(parentRef, {
+              amountAvailable: Math.max(
+                0,
+                (Number.isFinite(legacy) ? legacy : availableMl) - totalMl
+              ),
+              updatedAt: serverTimestamp(),
+            });
+          }
+        }
+      } else if (isLibrarySource) {
+        await updateDoc(doc(db, "users", user.uid, "library", parent.sourceId), {
+          qty: Math.max(0, availableMl - totalMl),
+          updatedAt: serverTimestamp(),
+        });
+      }
+
+      if (selectedSupply) {
+        const nextSupplyQty = Math.max(
+          0,
+          Number(selectedSupply.quantity || 0) - syringeCount
+        );
+        await updateDoc(doc(db, "users", user.uid, "supplies", selectedSupply.id), {
+          quantity: nextSupplyQty,
+          lastUpdatedAt: serverTimestamp(),
+        });
+
+        await addDoc(collection(db, "users", user.uid, "supply_audits"), {
+          supplyId: selectedSupply.id,
+          action: "consume",
+          amount: syringeCount,
+          note: `Trade LC syringes from ${parentName || "LC"} (${syringeCount} × ${mlPerSyringe} ml)`,
+          unitCostApplied: Number(selectedSupply.cost || 0) || 0,
+          totalCostApplied:
+            (Number(selectedSupply.cost || 0) || 0) * syringeCount,
+          unit: selectedSupply.unit || "syringe",
+          timestamp: new Date().toISOString(),
+        });
+      }
+
+      setTradeSyringeOpen(false);
+      setTradeSyringe(
+        buildTradeSyringeDraft(
+          storageLocations.length ? storageLocations[0].name : DEFAULT_STORAGE_LOCATIONS[0]
+        )
+      );
+      setScanLibraryId(createdRef.id);
+    } catch (err) {
+      console.error(err);
+      setTradeError(err?.message || "Failed to create trade LC syringe.");
+    } finally {
+      setTradeSaving(false);
+    }
+  };
+
   useEffect(() => {
     if (!openLibraryItemId) return;
     setScanLibraryId(openLibraryItemId);
@@ -880,6 +1473,89 @@ export default function StrainManager(props) {
       ? grows
       : []
     : localGrows;
+
+  const lcTradeSourceOptions = useMemo(() => {
+    const growOptions = (Array.isArray(growsSource) ? growsSource : [])
+      .filter((grow) => {
+        if (!grow || isArchivedish(grow)) return false;
+        if (normalizeType(grow?.type || grow?.growType || "") !== "LC") return false;
+        return growRemainingAmount(grow) > 0;
+      })
+      .map((grow) => ({
+        id: `grow:${grow.id}`,
+        sourceId: grow.id,
+        sourceKind: "grow",
+        abbreviation: grow.abbreviation || grow.abbr || "",
+        strain: grow.strain || "",
+        strainName: grow.strain || "",
+        scientificName: grow.scientificName || "",
+        availableMl: growRemainingAmount(grow),
+        raw: grow,
+      }));
+
+    const libraryOptions = (Array.isArray(activeLibraryItems) ? activeLibraryItems : [])
+      .filter((item) => {
+        if (!item) return false;
+        if (String(item?.type || "").trim() !== "LC") return false;
+        return getLibraryItemAvailableMl(item) > 0;
+      })
+      .map((item) => ({
+        id: `library:${item.id}`,
+        sourceId: item.id,
+        sourceKind: "library",
+        abbreviation: item.abbreviation || item.abbr || "",
+        strain: item.strainName || "",
+        strainName: item.strainName || "",
+        scientificName: item.scientificName || "",
+        availableMl: getLibraryItemAvailableMl(item),
+        raw: item,
+      }));
+
+    return [...growOptions, ...libraryOptions].sort((a, b) => {
+      const left = `${a.strainName || a.strain || ""} ${a.abbreviation || ""} ${a.sourceKind}`.trim();
+      const right = `${b.strainName || b.strain || ""} ${b.abbreviation || ""} ${b.sourceKind}`.trim();
+      return left.localeCompare(right, undefined, { sensitivity: "base" });
+    });
+  }, [activeLibraryItems, growsSource]);
+
+  const selectedTradeSource = useMemo(
+    () =>
+      lcTradeSourceOptions.find((source) => source.id === tradeSyringe.sourceGrowId) || null,
+    [lcTradeSourceOptions, tradeSyringe.sourceGrowId]
+  );
+
+  const selectedTradeStrain = useMemo(() => {
+    const parentName = String(
+      selectedTradeSource?.strainName || selectedTradeSource?.strain || ""
+    ).trim();
+    if (!parentName) return null;
+    return (
+      strainsToShow.find((row) => norm(row?.name) === norm(parentName)) ||
+      findMatchingStrainCard(parentName) ||
+      null
+    );
+  }, [findMatchingStrainCard, selectedTradeSource, strainsToShow]);
+
+  const tradeSyringeTotalMl = useMemo(() => {
+    const count = Math.max(0, Math.floor(Number(tradeSyringe.syringeCount || 0)));
+    const per = Number(tradeSyringe.mlPerSyringe || 0);
+    if (!Number.isFinite(per) || per <= 0) return 0;
+    return Number((count * per).toFixed(2));
+  }, [tradeSyringe.mlPerSyringe, tradeSyringe.syringeCount]);
+
+  const syringeSupplyOptions = useMemo(() => {
+    return (Array.isArray(supplies) ? supplies : [])
+      .filter((supply) => {
+        const unit = String(supply?.unit || "").toLowerCase();
+        const type = String(supply?.type || "").toLowerCase();
+        return unit === "syringe" || type === "lab-consumable";
+      })
+      .sort((a, b) =>
+        String(a?.name || "").localeCompare(String(b?.name || ""), undefined, {
+          sensitivity: "base",
+        })
+      );
+  }, [supplies]);
 
   const strainsSorted = useMemo(
     () => sortAlpha(strainsToShow, (s) => s?.name || ""),
@@ -963,7 +1639,7 @@ export default function StrainManager(props) {
           asDate(
             gb?.updatedAt || gb?.createdAt || gb?.stageDates?.Inoculated
           )?.getTime() || 0;
-        return ta - tb; // oldest→newest left→right
+        return ta - tb;
       });
     }
 
@@ -975,7 +1651,6 @@ export default function StrainManager(props) {
     };
   }, [growsForSelected]);
 
-  // keep a stable root selection for Tree view
   useEffect(() => {
     if (!roots.length) {
       setSelectedRootId(null);
@@ -1038,7 +1713,6 @@ export default function StrainManager(props) {
 
     if (typeof onDeleteStrain === "function") {
       for (const id of selectedStrains) {
-        // eslint-disable-next-line no-await-in-loop
         await onDeleteStrain(id);
       }
     } else {
@@ -1073,7 +1747,6 @@ export default function StrainManager(props) {
 
         let rows = [];
         for (const part of chunks) {
-          // eslint-disable-next-line no-await-in-loop
           const snap = await getDocs(
             query(
               collection(db, "users", u.uid, "photos"),
@@ -1151,7 +1824,6 @@ export default function StrainManager(props) {
     const ids = new Set(gallerySelected);
     const list = strainPhotos.filter((p) => ids.has(p.id));
     for (const p of list) {
-      // eslint-disable-next-line no-await-in-loop
       await deleteOnePhoto(p);
     }
     setStrainPhotos((curr) => curr.filter((p) => !ids.has(p.id)));
@@ -1463,7 +2135,6 @@ export default function StrainManager(props) {
       );
     }
 
-    // All grow IDs for this strain
     const allIds = growsForSelected
       .map((g) => g.id)
       .filter(Boolean)
@@ -1477,7 +2148,6 @@ export default function StrainManager(props) {
       );
     }
 
-    // Depth calculation that respects *all* parents (including parentContributions)
     const depthById = new Map();
 
     const dfsDepth = (id, stack = new Set()) => {
@@ -1488,7 +2158,6 @@ export default function StrainManager(props) {
       if (depthById.has(id)) return depthById.get(id);
 
       if (stack.has(id)) {
-        // Cycle guard – treat as root
         depthById.set(id, 0);
         return 0;
       }
@@ -1520,7 +2189,6 @@ export default function StrainManager(props) {
       if (d > maxDepth) maxDepth = d;
     });
 
-    // Group nodes by depth "layers"
     const layers = new Map();
     for (const id of allIds) {
       const depth = depthById.get(id) ?? 0;
@@ -1528,7 +2196,6 @@ export default function StrainManager(props) {
       layers.get(depth).push(id);
     }
 
-    // Sort each layer left→right by inoculation/created date
     layers.forEach((ids) => {
       ids.sort((a, b) => {
         const ga = growsById.get(a);
@@ -1554,16 +2221,14 @@ export default function StrainManager(props) {
       ...Array.from(layers.values()).map((ids) => ids.length)
     );
 
-    // Layout constants
-    const COL = 220; // horizontal spacing
-    const ROW = 150; // vertical spacing
+    const COL = 220;
+    const ROW = 150;
     const PAD_X = 80;
     const PAD_Y = 70;
 
     const width = Math.max(640, PAD_X * 2 + maxLayerWidth * COL);
     const height = Math.max(360, PAD_Y * 2 + (maxDepth + 1) * ROW);
 
-    // Concrete positions per node
     const nodeById = new Map();
     Array.from(layers.entries()).forEach(([depth, ids]) => {
       ids.forEach((id, index) => {
@@ -1573,7 +2238,6 @@ export default function StrainManager(props) {
       });
     });
 
-    // Build edges from all parents (primary + extra contributions)
     const edges = [];
     const edgeKeySet = new Set();
 
@@ -1612,8 +2276,8 @@ export default function StrainManager(props) {
       const started = g?.stageDates?.Inoculated || g?.createdAt;
       const isRoot = !getGrowParentId(g, growsById);
 
-      const left = node.x - 100; // half of card width (200px)
-      const top = node.y - 40; // pull card slightly above the connection point
+      const left = node.x - 100;
+      const top = node.y - 40;
 
       return (
         <div
@@ -1692,7 +2356,6 @@ export default function StrainManager(props) {
           style={{ width: "100%", maxHeight: "60vh" }}
         >
           <svg width={width} height={height} className="block">
-            {/* subtle background grid */}
             <defs>
               <pattern
                 id="lineageGrid"
@@ -1777,11 +2440,9 @@ export default function StrainManager(props) {
         <div className="rounded-md border border-yellow-300 dark:border-yellow-700 bg-yellow-50 dark:bg-yellow-900/40 text-yellow-900 dark:text-yellow-100 p-3 flex flex-wrap items-center gap-3">
           <CheckSquare className="w-4 h-4" />
           <span className="text-sm">
-            {selectedLib.length > 0 && <strong>{selectedLib.length}</strong>}{" "}
+            {selectedLib.length > 0 && <strong>{selectedLib.length}</strong>} {" "}
             {selectedLib.length > 0 && "library"}
-            {selectedLib.length > 0 && selectedStrains.length > 0
-              ? " & "
-              : ""}
+            {selectedLib.length > 0 && selectedStrains.length > 0 ? " & " : ""}
             {selectedStrains.length > 0 && (
               <>
                 <strong>{selectedStrains.length}</strong> strains
@@ -1814,143 +2475,34 @@ export default function StrainManager(props) {
         </div>
       )}
 
-      {editingId && (
-        <form
-          onSubmit={handleSubmit}
-          className="bg-white dark:bg-zinc-900 p-4 rounded-2xl shadow space-y-4"
-        >
-          <h2 className="text-xl font-bold">Edit Strain</h2>
-
-          {error && (
-            <div className="p-2 rounded bg-red-100 text-red-800 dark:bg-red-900/30 dark:text-red-200">
-              {error}
-            </div>
-          )}
-
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            <input
-              name="name"
-              list="strainNames"
-              placeholder="Strain Name"
-              value={form.name}
-              onChange={handleChange}
-              onBlur={() =>
-                setForm((f) => ({
-                  ...f,
-                  scientificName: fuzzyPickSpecies(f.scientificName),
-                }))
-              }
-              onKeyDown={(e) => {
-                if (e.key === "Enter") {
-                  e.preventDefault();
-                  setForm((f) => ({
-                    ...f,
-                    scientificName: fuzzyPickSpecies(f.scientificName),
-                  }));
-                }
-              }}
-              required
-              className="p-2 rounded border dark:bg-zinc-800 dark:border-zinc-700"
-              aria-label="Strain name"
-            />
-
-            <div className="relative">
-              <input
-                name="scientificName"
-                list="speciesOptions"
-                placeholder="Scientific name (e.g., Psilocybe cubensis)"
-                value={form.scientificName}
-                onChange={handleChange}
-                className="p-2 rounded border dark:bg-zinc-800 dark:border-zinc-700 w-full"
-                aria-label="Scientific name"
-              />
-              <datalist id="speciesOptions">
-                {speciesSuggestions.map((s) => (
-                  <option value={s} key={s} />
-                ))}
-              </datalist>
-            </div>
-
-            <input
-              name="genetics"
-              placeholder="Genetics (optional)"
-              value={form.genetics}
-              onChange={handleChange}
-              className="p-2 rounded border dark:bg-zinc-800 dark:border-zinc-700 md:col-span-2"
-              aria-label="Genetics"
-            />
-            <input
-              name="description"
-              placeholder="Short Description"
-              value={form.description}
-              onChange={handleChange}
-              className="p-2 rounded border dark:bg-zinc-800 dark:border-zinc-700 md:col-span-2"
-              aria-label="Short description"
-            />
-            <textarea
-              name="notes"
-              placeholder="Notes"
-              value={form.notes}
-              onChange={(e) =>
-                setForm((f) => ({ ...f, notes: e.target.value }))
-              }
-              className="p-2 rounded border dark:bg-zinc-800 dark:border-zinc-700 md:col-span-2"
-              aria-label="Notes"
-              rows={3}
-            />
-            <input
-              type="file"
-              accept="image/*"
-              onChange={(e) =>
-                setImageFile(e.target.files?.[0] || null)
-              }
-              className="md:col-span-2"
-              aria-label="Upload strain image"
-            />
-          </div>
-
-          <div className="flex gap-2">
-            <button
-              type="submit"
-              disabled={saving}
-              className="flex items-center gap-2 accent-bg text-white px-4 py-2 rounded-full hover:opacity-90 disabled:opacity-60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:ring-current"
-              aria-busy={saving ? "true" : "false"}
-            >
-              <UploadCloud className="w-4 h-4" />
-              {saving ? "Saving…" : "Update Strain"}
-            </button>
-            <button
-              type="button"
-              onClick={resetForm}
-              className="px-4 py-2 rounded-full bg-zinc-200 dark:bg-zinc-700"
-            >
-              Cancel
-            </button>
-          </div>
-        </form>
-      )}
-
-      {/* Datalists */}
       <datalist id="strainNames">
         {strainNameSuggestions.map((n) => (
           <option key={n} value={n} />
         ))}
       </datalist>
 
-      {/* Strain Library / Storage */}
       <div className="bg-white dark:bg-zinc-900 p-4 rounded-2xl shadow space-y-4">
-        <div className="flex items-center gap-2 mb-1">
-          <ScrollText className="h-5 w-5 opacity-80" />
-          <h2 className="text-xl font-bold">Strain Library / Storage</h2>
+        <div className="flex flex-wrap items-center justify-between gap-3 mb-1">
+          <div className="flex items-center gap-2">
+            <ScrollText className="h-5 w-5 opacity-80" />
+            <h2 className="text-xl font-bold">Strain Library / Storage</h2>
+          </div>
+          <button
+            type="button"
+            onClick={openTradeSyringeModal}
+            className="inline-flex items-center gap-2 px-4 py-2 rounded-full bg-zinc-100 text-zinc-900 border border-zinc-300 hover:bg-zinc-200 dark:bg-zinc-800 dark:text-zinc-100 dark:border-zinc-700 dark:hover:bg-zinc-700"
+            title="Create trade LC syringes from an active LC source"
+          >
+            <Syringe className="h-4 w-4" />
+            <span className="whitespace-nowrap">Make LC Syringe</span>
+          </button>
         </div>
 
-        {/* Add library item */}
         <form
           onSubmit={onAddLibraryItem}
           data-testid="strain-library-form"
           className="grid grid-cols-1 md:grid-cols-12 gap-2 items-center"
         >
-          {/* Type */}
           <select
             className="chip w-full md:col-span-4"
             value={newItem.type}
@@ -1971,7 +2523,6 @@ export default function StrainManager(props) {
             ))}
           </select>
 
-          {/* Strain name */}
           <input
             className="chip w-full md:col-span-4"
             placeholder="Strain name (e.g., Albino Penis Envy)"
@@ -1993,7 +2544,6 @@ export default function StrainManager(props) {
             ))}
           </datalist>
 
-          {/* Species */}
           <div className="relative md:col-span-2">
             <input
               data-testid="strain-library-species"
@@ -2006,15 +2556,6 @@ export default function StrainManager(props) {
                   scientificName: e.target.value,
                 }))
               }
-              onBlur={() => {
-                setNewItem((p) => ({
-                  ...p,
-                  scientificName: fuzzyPickSpecies(p.scientificName),
-                }));
-                window.setTimeout(() => {
-                  setSpeciesOpenState(false);
-                }, 0);
-              }}
               onKeyDown={(e) => {
                 if (e.key === "Enter") {
                   e.preventDefault();
@@ -2034,6 +2575,15 @@ export default function StrainManager(props) {
               aria-label="Species"
               title={newItem.scientificName || "Scientific name"}
               onFocus={() => setSpeciesOpenState(true)}
+              onBlur={() => {
+                setNewItem((p) => ({
+                  ...p,
+                  scientificName: fuzzyPickSpecies(p.scientificName),
+                }));
+                window.setTimeout(() => {
+                  setSpeciesOpenState(false);
+                }, 0);
+              }}
             />
             <button
               type="button"
@@ -2080,7 +2630,6 @@ export default function StrainManager(props) {
             )}
           </div>
 
-          {/* Qty */}
           <input
             type="number"
             min="0"
@@ -2095,7 +2644,6 @@ export default function StrainManager(props) {
             title="Quantity"
           />
 
-          {/* Unit */}
           <select
             className="chip w-full md:col-span-1"
             value={newItem.unit}
@@ -2109,7 +2657,6 @@ export default function StrainManager(props) {
             <option value="count">count</option>
           </select>
 
-          {/* Location */}
           <div className="flex gap-2 items-center md:col-span-5 min-w-0 flex-nowrap">
             <select
               className="chip w-full md:min-w-[320px]"
@@ -2149,7 +2696,6 @@ export default function StrainManager(props) {
             </button>
           </div>
 
-          {/* Date */}
           <input
             type="date"
             className="chip w-full md:col-span-3"
@@ -2164,7 +2710,6 @@ export default function StrainManager(props) {
             aria-label="Acquired date"
           />
 
-          {/* Submit */}
           <button
             type="submit"
             data-testid="strain-library-submit"
@@ -2175,7 +2720,6 @@ export default function StrainManager(props) {
             <span className="whitespace-nowrap">Add to Library</span>
           </button>
 
-          {/* Notes */}
           <textarea
             className="chip md:col-span-12 w-full"
             placeholder="Notes (optional)"
@@ -2188,7 +2732,6 @@ export default function StrainManager(props) {
           />
         </form>
 
-        {/* Library selection toolbar */}
         {selectedLib.length > 0 && (
           <div className="rounded-md border border-yellow-300 dark:border-yellow-700 bg-yellow-50 dark:bg-yellow-900/40 text-yellow-900 dark:text-yellow-100 p-2 text-sm flex items-center justify-between">
             <span>{selectedLib.length} selected</span>
@@ -2217,7 +2760,6 @@ export default function StrainManager(props) {
           </div>
         )}
 
-        {/* Library list */}
         <div className="rounded-xl border border-zinc-200 dark:border-zinc-800 overflow-hidden">
           <div className="bg-zinc-50 dark:bg-zinc-900/60 px-3 py-2 text-xs uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
             {libraryItemsSorted.length} items
@@ -2232,7 +2774,7 @@ export default function StrainManager(props) {
               {libraryItemsSorted.map((it) => {
                 const kind = it.type || "";
                 let KindIcon = Boxes;
-                if (kind === "Spore Syringe") KindIcon = Syringe;
+                if (kind === "Spore Syringe" || kind === "LC Syringe") KindIcon = Syringe;
                 else if (kind === "Spore Swab") KindIcon = Wand2;
                 else if (kind === "Spore Print") KindIcon = ScrollText;
                 else if (kind.includes("Agar")) KindIcon = Boxes;
@@ -2269,7 +2811,7 @@ export default function StrainManager(props) {
                           {it.scientificName
                             ? `${it.scientificName} · `
                             : ""}
-                          Qty: {it.qty ?? 0} {it.unit || "count"} ·{" "}
+                          Qty: {formatLibraryQty(it)} ·{" "}
                           {it.location || "Unknown"} · Acquired:{" "}
                           {it.acquired || "—"}
                         </div>
@@ -2308,7 +2850,6 @@ export default function StrainManager(props) {
         </div>
       </div>
 
-      {/* Scanner: Stored Item card */}
       {scanLibraryId && (
         <Modal
           open={!!scanLibraryId}
@@ -2331,7 +2872,7 @@ export default function StrainManager(props) {
 
                 <div className="text-xs opacity-80 mt-2 space-y-1">
                   <div>
-                    <strong>Qty:</strong> {scanLibraryItem.qty ?? 0} {scanLibraryItem.unit || ""}
+                    <strong>Qty:</strong> {formatLibraryQty(scanLibraryItem)}
                   </div>
                   <div>
                     <strong>Location:</strong> {scanLibraryItem.location || "—"}
@@ -2392,7 +2933,6 @@ export default function StrainManager(props) {
         </Modal>
       )}
 
-      {/* Strain cards */}
       {selectedStrains.length > 0 && (
         <div className="rounded-md border border-yellow-300 dark:border-yellow-700 bg-yellow-50 dark:bg-yellow-900/40 text-yellow-900 dark:text-yellow-100 p-2 text-sm flex items-center justify-between">
           <span>{selectedStrains.length} strain(s) selected</span>
@@ -2421,7 +2961,17 @@ export default function StrainManager(props) {
         </div>
       )}
 
-      <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-6">
+      <div className="space-y-4">
+        <div className="flex items-center justify-between gap-3">
+          <div>
+            <h2 className="text-xl font-bold">Saved Strain Cards</h2>
+            <p className="text-sm text-zinc-500 dark:text-zinc-400">
+              Strain library stays first. Saved cards stay here above the collapsed builder.
+            </p>
+          </div>
+        </div>
+
+        <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-6">
         {strainsSorted.map((s) => {
           const allG = (Array.isArray(growsSource) ? growsSource : []).filter(
             (g) => norm(g.strain) === norm(s.name)
@@ -2458,12 +3008,409 @@ export default function StrainManager(props) {
         })}
         {strainsSorted.length === 0 && (
           <div className="text-sm opacity-70">
-            No strains yet. Add a Library item to create one.
+            No strains yet. Add a Library item or open the builder below to create one.
           </div>
+        )}
+        </div>
+      </div>
+
+      <div ref={builderSectionRef} className="bg-white dark:bg-zinc-900 p-4 rounded-2xl shadow space-y-4">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <h2 className="text-xl font-bold">Strain Card Builder</h2>
+            <p className="text-sm text-zinc-500 dark:text-zinc-400">
+              Starts collapsed by default. Adding a library item for a brand new strain opens the builder automatically so you can finish that card.
+            </p>
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              onClick={() => {
+                if (builderOpen && !editingId) {
+                  setBuilderOpen(false);
+                  return;
+                }
+                openEmptyBuilder();
+              }}
+              className="px-4 py-2 rounded-full accent-bg text-white hover:opacity-90"
+            >
+              {builderOpen && !editingId ? "Collapse Builder" : "New Strain Card"}
+            </button>
+            {builderOpen && editingId ? (
+              <button
+                type="button"
+                onClick={resetForm}
+                className="px-4 py-2 rounded-full bg-zinc-200 dark:bg-zinc-700"
+              >
+                Close Builder
+              </button>
+            ) : null}
+          </div>
+        </div>
+
+        {!builderOpen ? (
+          <div className="rounded-xl border border-dashed border-zinc-300 dark:border-zinc-700 p-4 text-sm text-zinc-500 dark:text-zinc-400">
+            Builder is collapsed. Saved strain cards stay above. Add a brand new strain to the library or click <strong>New Strain Card</strong> to open it.
+          </div>
+        ) : (
+          <form onSubmit={handleSubmit} className="space-y-4">
+            {error && (
+              <div className="p-2 rounded bg-red-100 text-red-800 dark:bg-red-900/30 dark:text-red-200">
+                {error}
+              </div>
+            )}
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <input
+                name="name"
+                list="strainNames"
+                placeholder="Strain Name"
+                value={form.name}
+                onChange={handleChange}
+                onBlur={() =>
+                  setForm((f) => ({
+                    ...f,
+                    scientificName: fuzzyPickSpecies(f.scientificName),
+                  }))
+                }
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") {
+                    e.preventDefault();
+                    setForm((f) => ({
+                      ...f,
+                      scientificName: fuzzyPickSpecies(f.scientificName),
+                    }));
+                  }
+                }}
+                required
+                className="p-2 rounded border dark:bg-zinc-800 dark:border-zinc-700"
+                aria-label="Strain name"
+              />
+
+              <div className="relative">
+                <input
+                  name="scientificName"
+                  list="speciesOptions"
+                  placeholder="Scientific name (e.g., Psilocybe cubensis)"
+                  value={form.scientificName}
+                  onChange={handleChange}
+                  className="p-2 rounded border dark:bg-zinc-800 dark:border-zinc-700 w-full"
+                  aria-label="Scientific name"
+                />
+                <datalist id="speciesOptions">
+                  {speciesSuggestions.map((s) => (
+                    <option value={s} key={s} />
+                  ))}
+                </datalist>
+              </div>
+
+              {builderNameMatch ? (
+                <div className="md:col-span-2 rounded-xl border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-800 dark:border-amber-700 dark:bg-amber-950/40 dark:text-amber-200">
+                  Similar saved card found: <strong>{builderNameMatch.name}</strong>. Double check the spelling before creating another one.
+                </div>
+              ) : null}
+
+              <input
+                name="genetics"
+                placeholder="Genetics (optional)"
+                value={form.genetics}
+                onChange={handleChange}
+                className="p-2 rounded border dark:bg-zinc-800 dark:border-zinc-700 md:col-span-2"
+                aria-label="Genetics"
+              />
+              <input
+                name="description"
+                placeholder="Short Description"
+                value={form.description}
+                onChange={handleChange}
+                className="p-2 rounded border dark:bg-zinc-800 dark:border-zinc-700 md:col-span-2"
+                aria-label="Short description"
+              />
+              <textarea
+                name="notes"
+                placeholder="Notes"
+                value={form.notes}
+                onChange={(e) =>
+                  setForm((f) => ({ ...f, notes: e.target.value }))
+                }
+                className="p-2 rounded border dark:bg-zinc-800 dark:border-zinc-700 md:col-span-2"
+                aria-label="Notes"
+                rows={3}
+              />
+              <input
+                type="file"
+                accept="image/*"
+                onChange={(e) => setImageFile(e.target.files?.[0] || null)}
+                className="md:col-span-2"
+                aria-label="Upload strain image"
+              />
+
+              <div className="md:col-span-2 rounded-2xl border border-zinc-200 dark:border-zinc-800 bg-zinc-50 dark:bg-zinc-950/60 p-4 space-y-4">
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <div>
+                    <h3 className="text-lg font-semibold">Strain Card Builder</h3>
+                    <p className="text-xs text-zinc-500 dark:text-zinc-400">
+                      Uses your real CNM PNG base templates and mushroom art set so new strain cards stay aligned with the existing style.
+                    </p>
+                  </div>
+                  <label className="chip flex items-center gap-2">
+                    <input
+                      type="checkbox"
+                      checked={form?.cardBuilder?.enabled !== false}
+                      onChange={(e) => updateCardBuilder("enabled", e.target.checked)}
+                    />
+                    Enable builder front
+                  </label>
+                </div>
+
+                <div className="grid grid-cols-1 lg:grid-cols-[320px_minmax(0,1fr)] gap-4 items-start">
+                  <div className="rounded-2xl overflow-hidden border border-zinc-200 dark:border-zinc-800 bg-zinc-900 shadow-sm aspect-[2/3]">
+                    <StrainCardFrontBuilder
+                      strain={{
+                        name: form.name,
+                        scientificName: form.scientificName,
+                        description: form.description,
+                        notes: form.notes,
+                        cardBuilder: form.cardBuilder,
+                      }}
+                    />
+                  </div>
+
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                    <div className="md:col-span-2 flex flex-wrap gap-2">
+                      <button type="button" className="chip" onClick={fillCardBuilderFromForm}>
+                        Fill from strain fields
+                      </button>
+                      <button
+                        type="button"
+                        className="chip"
+                        onClick={() => {
+                          setCardArtFile(null);
+                          updateCardBuilder("frontArtUrl", "");
+                          updateCardBuilder("artMode", "preset");
+                        }}
+                      >
+                        Clear custom front art
+                      </button>
+                    </div>
+
+                    <div className="md:col-span-2 space-y-2">
+                      <label className="text-sm font-medium">Base template</label>
+                      <div className="grid grid-cols-2 gap-2">
+                        {BUILDER_FRONT_TEMPLATES.map((tpl) => {
+                          const active = (form?.cardBuilder?.frontTemplate || "dark") === tpl.key;
+                          return (
+                            <button
+                              key={tpl.key}
+                              type="button"
+                              onClick={() => updateCardBuilder("frontTemplate", tpl.key)}
+                              className={`rounded-xl border px-3 py-2 text-sm text-left ${
+                                active
+                                  ? "border-sky-500 bg-sky-500/10 text-sky-700 dark:text-sky-300"
+                                  : "border-zinc-200 dark:border-zinc-700"
+                              }`}
+                            >
+                              {tpl.label}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+
+                    <div className="md:col-span-2 space-y-2">
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <label className="text-sm font-medium">Preset mushroom art</label>
+                        {isCustomFrontArtActive ? (
+                          <span className="text-[11px] rounded-full border border-amber-300 bg-amber-50 px-2 py-1 text-amber-700 dark:border-amber-700 dark:bg-amber-950/40 dark:text-amber-200">
+                            Disabled while custom full-front art is active
+                          </span>
+                        ) : (
+                          <span className="text-[11px] text-zinc-500 dark:text-zinc-400">
+                            Manual controls apply to preset art only
+                          </span>
+                        )}
+                      </div>
+                      <select
+                        value={form?.cardBuilder?.mushroomArtKey || "cube-4"}
+                        onChange={(e) => {
+                          updateCardBuilder("mushroomArtKey", e.target.value);
+                          updateCardBuilder("artMode", "preset");
+                        }}
+                        className="p-2 rounded border dark:bg-zinc-800 dark:border-zinc-700 w-full"
+                        aria-label="Preset mushroom art"
+                      >
+                        {BUILDER_MUSHROOM_ARTS.map((art) => (
+                          <option key={art.key} value={art.key}>
+                            {art.label}
+                          </option>
+                        ))}
+                      </select>
+
+                      <div className="grid grid-cols-1 gap-3 rounded-xl border border-zinc-200 dark:border-zinc-800 bg-white/70 dark:bg-zinc-900/60 p-3">
+                        <div className="space-y-1">
+                          <div className="flex items-center justify-between gap-3 text-xs text-zinc-500 dark:text-zinc-400">
+                            <span>Horizontal art offset</span>
+                            <span>{presetArtOffsetX}px</span>
+                          </div>
+                          <input
+                            type="range"
+                            min="-150"
+                            max="150"
+                            step="1"
+                            value={presetArtOffsetX}
+                            disabled={isCustomFrontArtActive}
+                            onChange={(e) => updateCardBuilder("artOffsetX", Number(e.target.value))}
+                            className="w-full disabled:cursor-not-allowed disabled:opacity-50"
+                            aria-label="Horizontal art offset"
+                          />
+                        </div>
+
+                        <div className="space-y-1">
+                          <div className="flex items-center justify-between gap-3 text-xs text-zinc-500 dark:text-zinc-400">
+                            <span>Vertical art offset</span>
+                            <span>{presetArtOffsetY}px</span>
+                          </div>
+                          <input
+                            type="range"
+                            min="-150"
+                            max="150"
+                            step="1"
+                            value={presetArtOffsetY}
+                            disabled={isCustomFrontArtActive}
+                            onChange={(e) => updateCardBuilder("artOffsetY", Number(e.target.value))}
+                            className="w-full disabled:cursor-not-allowed disabled:opacity-50"
+                            aria-label="Vertical art offset"
+                          />
+                        </div>
+
+                        <div className="space-y-1">
+                          <div className="flex items-center justify-between gap-3 text-xs text-zinc-500 dark:text-zinc-400">
+                            <span>Art scale</span>
+                            <span>{presetArtScale.toFixed(2)}x</span>
+                          </div>
+                          <input
+                            type="range"
+                            min="0.5"
+                            max="1.75"
+                            step="0.01"
+                            value={presetArtScale}
+                            disabled={isCustomFrontArtActive}
+                            onChange={(e) => updateCardBuilder("artScale", Number(e.target.value))}
+                            className="w-full disabled:cursor-not-allowed disabled:opacity-50"
+                            aria-label="Art scale"
+                          />
+                        </div>
+
+                        <div className="flex justify-end">
+                          <button
+                            type="button"
+                            className="chip"
+                            disabled={isCustomFrontArtActive}
+                            onClick={() => {
+                              updateCardBuilder("artOffsetX", 0);
+                              updateCardBuilder("artOffsetY", 0);
+                              updateCardBuilder("artScale", 1);
+                            }}
+                          >
+                            Reset art
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+
+                    <input
+                      placeholder="Card title"
+                      value={form?.cardBuilder?.title || ""}
+                      onChange={(e) => updateCardBuilder("title", e.target.value)}
+                      className="p-2 rounded border dark:bg-zinc-800 dark:border-zinc-700"
+                      aria-label="Card title"
+                    />
+
+                    <input
+                      placeholder="Short code (e.g., GT, APER)"
+                      value={form?.cardBuilder?.code || ""}
+                      onChange={(e) => updateCardBuilder("code", e.target.value.toUpperCase())}
+                      className="p-2 rounded border dark:bg-zinc-800 dark:border-zinc-700"
+                      aria-label="Card code"
+                    />
+
+                    <input
+                      placeholder="Top species line"
+                      value={form?.cardBuilder?.speciesLine || ""}
+                      onChange={(e) => updateCardBuilder("speciesLine", e.target.value)}
+                      className="p-2 rounded border dark:bg-zinc-800 dark:border-zinc-700 md:col-span-2"
+                      aria-label="Card species line"
+                    />
+
+                    <div className="md:col-span-2 space-y-1">
+                      <textarea
+                        placeholder="Front summary text"
+                        value={form?.cardBuilder?.summary || ""}
+                        onChange={(e) =>
+                          updateCardBuilder("summary", clampStrainCardSummaryText(e.target.value))
+                        }
+                        maxLength={STRAIN_CARD_SUMMARY_MAX_LENGTH}
+                        className="p-2 rounded border dark:bg-zinc-800 dark:border-zinc-700 w-full"
+                        rows={4}
+                        aria-label="Card summary"
+                      />
+                      <div className="flex justify-end text-xs text-zinc-500 dark:text-zinc-400">
+                        {visibleCardSummaryCount}/{STRAIN_CARD_SUMMARY_MAX_LENGTH}
+                      </div>
+                    </div>
+
+                    <input
+                      placeholder="Footer text"
+                      value={form?.cardBuilder?.footer || ""}
+                      onChange={(e) => updateCardBuilder("footer", e.target.value)}
+                      className="p-2 rounded border dark:bg-zinc-800 dark:border-zinc-700 md:col-span-2"
+                      aria-label="Card footer"
+                    />
+
+                    <div className="md:col-span-2 space-y-2">
+                      <label className="text-sm font-medium">Custom full-front art override (optional)</label>
+                      <input
+                        type="file"
+                        accept="image/*"
+                        onChange={(e) => {
+                          const file = e.target.files?.[0] || null;
+                          setCardArtFile(file);
+                          if (file) updateCardBuilder("artMode", "full");
+                        }}
+                        className="block w-full text-sm"
+                        aria-label="Upload custom card front art"
+                      />
+                      {(form?.cardBuilder?.frontArtUrl || cardArtFile?.name) && (
+                        <div className="text-xs text-zinc-500 dark:text-zinc-400 break-all">
+                          {cardArtFile?.name
+                            ? `Pending upload: ${cardArtFile.name}`
+                            : `Saved art: ${form.cardBuilder.frontArtUrl}`}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div className="flex gap-2">
+              <button
+                type="submit"
+                disabled={saving}
+                className="flex items-center gap-2 accent-bg text-white px-4 py-2 rounded-full hover:opacity-90 disabled:opacity-60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:ring-current"
+                aria-busy={saving ? "true" : "false"}
+              >
+                <UploadCloud className="w-4 h-4" />
+                {saving ? "Saving…" : editingId ? "Update Strain" : "Create Strain"}
+              </button>
+              <button type="button" onClick={resetForm} className="px-4 py-2 rounded-full bg-zinc-200 dark:bg-zinc-700">
+                Cancel
+              </button>
+            </div>
+          </form>
         )}
       </div>
 
-      {/* Modal: All grows (Gallery/Lineage) for selected strain */}
       {viewStrain && (
         <div
           className="fixed inset-0 z-[60] bg-black/40 backdrop-blur-sm flex items-center justify-center p-4"
@@ -2985,7 +3932,209 @@ export default function StrainManager(props) {
         </div>
       )}
 
-      {/* Manage Storage Locations Modal */}
+
+      {tradeSyringeOpen && (
+        <Modal
+          open={tradeSyringeOpen}
+          onClose={() => {
+            if (tradeSaving) return;
+            setTradeSyringeOpen(false);
+            setTradeError("");
+          }}
+          title="Make LC Syringe"
+          size="lg"
+        >
+          <form onSubmit={createTradeLcSyringe} className="space-y-4">
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+              <div className="md:col-span-2">
+                <label className="block text-sm font-medium mb-1">Source LC</label>
+                <select
+                  className="chip w-full"
+                  value={tradeSyringe.sourceGrowId}
+                  onChange={(e) =>
+                    setTradeSyringe((prev) => ({
+                      ...prev,
+                      sourceGrowId: e.target.value,
+                    }))
+                  }
+                >
+                  <option value="">Select LC from Library or active grows</option>
+                  {lcTradeSourceOptions.map((source) => {
+                    const labelParts = [
+                      source.abbreviation || "",
+                      source.strainName || source.strain || "Unknown strain",
+                    ].filter(Boolean);
+                    return (
+                      <option key={source.id} value={source.id}>
+                        [{source.sourceKind === "library" ? "Library" : "Grow"}] {labelParts.join(" — ")} · {Number(source.availableMl || 0).toFixed(2)} ml available
+                      </option>
+                    );
+                  })}
+                </select>
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium mb-1">Trade syringes to make</label>
+                <input
+                  type="number"
+                  min="1"
+                  step="1"
+                  className="chip w-full"
+                  value={tradeSyringe.syringeCount}
+                  onChange={(e) =>
+                    setTradeSyringe((prev) => ({
+                      ...prev,
+                      syringeCount: e.target.value,
+                    }))
+                  }
+                />
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium mb-1">mL per syringe</label>
+                <input
+                  type="number"
+                  min="0.1"
+                  step="0.1"
+                  className="chip w-full"
+                  value={tradeSyringe.mlPerSyringe}
+                  onChange={(e) =>
+                    setTradeSyringe((prev) => ({
+                      ...prev,
+                      mlPerSyringe: e.target.value,
+                    }))
+                  }
+                />
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium mb-1">Storage location</label>
+                <select
+                  className="chip w-full"
+                  value={tradeSyringe.location}
+                  onChange={(e) =>
+                    setTradeSyringe((prev) => ({
+                      ...prev,
+                      location: e.target.value,
+                    }))
+                  }
+                >
+                  {(storageLocations.length
+                    ? storageLocations
+                    : DEFAULT_STORAGE_LOCATIONS.map((name) => ({ id: name, name }))
+                  ).map((row) => (
+                    <option key={row.id} value={row.name}>
+                      {row.name}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium mb-1">Acquired date</label>
+                <input
+                  type="date"
+                  className="chip w-full"
+                  value={tradeSyringe.acquired}
+                  onChange={(e) =>
+                    setTradeSyringe((prev) => ({
+                      ...prev,
+                      acquired: e.target.value,
+                    }))
+                  }
+                />
+              </div>
+
+              <div className="md:col-span-2">
+                <label className="block text-sm font-medium mb-1">
+                  Deduct syringe supply from COG (optional)
+                </label>
+                <select
+                  className="chip w-full"
+                  value={tradeSyringe.syringeSupplyId}
+                  onChange={(e) =>
+                    setTradeSyringe((prev) => ({
+                      ...prev,
+                      syringeSupplyId: e.target.value,
+                    }))
+                  }
+                >
+                  <option value="">No syringe COG deduction</option>
+                  {syringeSupplyOptions.map((supply) => (
+                    <option key={supply.id} value={supply.id}>
+                      {supply.name} · {Number(supply.quantity || 0)} {supply.unit || "syringe"} on hand
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div className="md:col-span-2">
+                <label className="block text-sm font-medium mb-1">Notes</label>
+                <textarea
+                  rows={3}
+                  className="chip w-full"
+                  value={tradeSyringe.notes}
+                  onChange={(e) =>
+                    setTradeSyringe((prev) => ({
+                      ...prev,
+                      notes: e.target.value,
+                    }))
+                  }
+                  placeholder="Optional notes for this storage item"
+                />
+              </div>
+            </div>
+
+            <div className="rounded-xl border border-zinc-200 dark:border-zinc-800 bg-zinc-50 dark:bg-zinc-900/50 p-3 text-sm">
+              <div>
+                <strong>Output:</strong> {Math.max(0, Math.floor(Number(tradeSyringe.syringeCount || 0)))} syringe
+                {Math.floor(Number(tradeSyringe.syringeCount || 0)) === 1 ? "" : "s"} · {tradeSyringeTotalMl.toFixed(2)} ml total
+              </div>
+              <div className="mt-1 text-zinc-500 dark:text-zinc-400">
+                {selectedTradeSource ? (
+                  <>
+                    Source: <strong>{selectedTradeSource.abbreviation || selectedTradeSource.strainName || selectedTradeSource.strain || "LC"}</strong> · {selectedTradeSource.sourceKind === "library" ? "Library item" : "Grow source"} ·
+                    Remaining after pull:{" "}
+                    <strong>
+                      {Math.max(0, Number(selectedTradeSource.availableMl || 0) - tradeSyringeTotalMl).toFixed(2)} ml
+                    </strong>
+                  </>
+                ) : (
+                  <>Select an LC source from Library or active grows to see the volume pull summary.</>
+                )}
+              </div>
+            </div>
+
+            {tradeError ? (
+              <div className="rounded-xl border border-red-300 bg-red-50 px-3 py-2 text-sm text-red-800 dark:border-red-700 dark:bg-red-950/40 dark:text-red-200">
+                {tradeError}
+              </div>
+            ) : null}
+
+            <div className="flex flex-wrap justify-end gap-2">
+              <button
+                type="button"
+                className="chip"
+                onClick={() => {
+                  if (tradeSaving) return;
+                  setTradeSyringeOpen(false);
+                  setTradeError("");
+                }}
+              >
+                Cancel
+              </button>
+              <button
+                type="submit"
+                disabled={tradeSaving}
+                className="chip chip--active"
+              >
+                {tradeSaving ? "Creating…" : "Create LC Syringe"}
+              </button>
+            </div>
+          </form>
+        </Modal>
+      )}
+
       {manageLocOpen && (
         <Modal
           open={manageLocOpen}
@@ -3124,7 +4273,6 @@ export default function StrainManager(props) {
         </Modal>
       )}
 
-      {/* Inline GrowForm modal */}
       {inlineGrow && (
         <div
           className="fixed inset-0 z-[70] bg-black/40 backdrop-blur-sm flex items-center justify-center p-4"

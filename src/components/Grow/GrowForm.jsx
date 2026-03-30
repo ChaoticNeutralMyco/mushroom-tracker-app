@@ -219,6 +219,39 @@ function getRecipeYield(recipe = {}) {
   return { qty, unit };
 }
 
+
+function normalizeRecipeScope(value = "") {
+  const raw = String(value || "").trim().toLowerCase();
+  if (
+    [
+      "post-production",
+      "post production",
+      "postproduction",
+      "post-process",
+      "post process",
+      "postprocessing",
+      "post processing",
+      "post-processing",
+    ].includes(raw)
+  ) {
+    return "post-production";
+  }
+  return "production";
+}
+
+function recipeUsableInGrowForm(recipe = {}) {
+  return (
+    normalizeRecipeScope(
+      recipe?.recipeScope ||
+        recipe?.scope ||
+        recipe?.recipeKind ||
+        recipe?.recipeType ||
+        recipe?.usage ||
+        ""
+    ) !== "post-production"
+  );
+}
+
 /* ---------- Stage timestamps ---------- */
 const stageTimestampField = {
   Inoculated: "inoculatedAt",
@@ -296,6 +329,270 @@ function storageAvailabilityOf(docData = {}) {
     typeLabel: docData.type || "Item",
     fieldPref: [],
   };
+}
+
+
+function normalizeSupplyType(value = "") {
+  const raw = String(value || "").trim().toLowerCase();
+  if (!raw) return "";
+
+  const compact = raw.replace(/[\s_-]+/g, "");
+
+  if (
+    new Set([
+      "labconsumable",
+      "labconsumables",
+      "consumable",
+      "consumables",
+      "prepconsumable",
+      "prepconsumables",
+    ]).has(compact)
+  ) {
+    return "lab-consumable";
+  }
+
+  if (
+    new Set([
+      "growcontainer",
+      "growcontainers",
+      "spawnbag",
+      "spawnbags",
+    ]).has(compact)
+  ) {
+    return "grow-container";
+  }
+
+  if (
+    new Set([
+      "sanitation",
+      "sanitize",
+      "sanitizer",
+      "sanitizers",
+      "cleaning",
+      "cleaner",
+      "cleaners",
+      "disinfectant",
+      "disinfectants",
+    ]).has(compact)
+  ) {
+    return "sanitation";
+  }
+
+  if (new Set(["container", "containers"]).has(compact)) return "container";
+  if (new Set(["tool", "tools"]).has(compact)) return "tool";
+  if (new Set(["labor", "labour"]).has(compact)) return "labor";
+  if (new Set(["packaging", "package", "packages"]).has(compact)) return "packaging";
+  if (new Set(["ingredient", "ingredients"]).has(compact)) return "ingredient";
+  if (new Set(["substrate", "substrates"]).has(compact)) return "substrate";
+  if (new Set(["supplement", "supplements"]).has(compact)) return "supplement";
+  if (new Set(["carrier", "carriers"]).has(compact)) return "carrier";
+
+  return raw.replace(/[\s_]+/g, "-");
+}
+
+function isCountLikeSupplyUnit(unit = "") {
+  const raw = String(unit || "").trim().toLowerCase();
+  if (!raw) return true;
+
+  return new Set([
+    "count",
+    "counts",
+    "piece",
+    "pieces",
+    "pc",
+    "pcs",
+    "item",
+    "items",
+    "unit",
+    "units",
+    "bag",
+    "bags",
+    "jar",
+    "jars",
+    "plate",
+    "plates",
+    "dish",
+    "dishes",
+    "tub",
+    "tubs",
+    "tray",
+    "trays",
+    "bottle",
+    "bottles",
+    "syringe",
+    "syringes",
+    "needle",
+    "needles",
+    "swab",
+    "swabs",
+    "pad",
+    "pads",
+    "wipe",
+    "wipes",
+    "filter",
+    "filters",
+    "patch",
+    "patches",
+    "pair",
+    "pairs",
+    "glove",
+    "gloves",
+    "cap",
+    "caps",
+    "lid",
+    "lids",
+  ]).has(raw);
+}
+
+function roundedSupplyAmount(value, unit = "") {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed <= 0) return 0;
+  if (isCountLikeSupplyUnit(unit)) return Math.ceil(parsed);
+  return Math.max(0, Number(parsed.toFixed(4)));
+}
+
+async function consumeTrackedSupply(uid, supplyId, amount, note = "") {
+  if (!uid || !supplyId) return;
+
+  const supplyRef = doc(db, "users", uid, "supplies", supplyId);
+  const snap = await getDoc(supplyRef);
+  if (!snap.exists()) {
+    throw new Error("Tracked lab consumable no longer exists.");
+  }
+
+  const supply = snap.data() || {};
+  const unit = supply.unit || "count";
+  const safeAmount = roundedSupplyAmount(amount, unit);
+  if (safeAmount <= 0) return;
+
+  const before = Number(supply.quantity || 0);
+  if (safeAmount > before + 1e-9) {
+    const name = supply.name || "Supply";
+    throw new Error(
+      `${name} exceeds stock on hand. Need ${safeAmount} ${unit}, but only ${before} ${unit} remain.`
+    );
+  }
+
+  const after = Math.max(0, Number((before - safeAmount).toFixed(4)));
+  const unitCostApplied = Number(supply.cost || 0);
+  const totalCostApplied = Number((safeAmount * unitCostApplied).toFixed(2));
+
+  await updateDoc(supplyRef, {
+    quantity: after,
+    lastUpdatedAt: serverTimestamp(),
+  });
+
+  await addDoc(collection(db, "users", uid, "supply_audits"), {
+    supplyId,
+    action: "consume",
+    amount: safeAmount,
+    note: note || "",
+    unit,
+    unitCostApplied: Number.isFinite(unitCostApplied) ? unitCostApplied : null,
+    totalCostApplied: Number.isFinite(totalCostApplied) ? totalCostApplied : null,
+    timestamp: new Date().toISOString(),
+  });
+}
+
+
+function normalizeSavedConsumables(source = []) {
+  if (!Array.isArray(source)) return [];
+  return source
+    .map((row) => {
+      if (!row?.supplyId) return null;
+      const amountRaw =
+        row?.amountPerGrow ?? row?.amount ?? row?.deductedAmount ?? row?.qty ?? 0;
+      const totalRaw =
+        row?.totalCostPerGrow ?? row?.totalCost ?? row?.costTotal ?? row?.cost ?? null;
+      const unitCostRaw = row?.unitCost ?? row?.unitPrice ?? row?.costPerUnit ?? null;
+      const amount = Number(amountRaw);
+      const totalCost = Number(totalRaw);
+      const unitCost = Number(unitCostRaw);
+      return {
+        supplyId: row.supplyId,
+        name: row.name || row.supplyName || "Unnamed Supply",
+        type: row.type || row.supplyType || "",
+        unit: row.unit || row.supplyUnit || "count",
+        amount: Number.isFinite(amount) ? amount : 0,
+        totalCost: Number.isFinite(totalCost) ? totalCost : null,
+        unitCost: Number.isFinite(unitCost) ? unitCost : null,
+        batchAmount: Number.isFinite(Number(row?.batchAmount))
+          ? Number(row.batchAmount)
+          : null,
+        batchTotalCost: Number.isFinite(Number(row?.batchTotalCost))
+          ? Number(row.batchTotalCost)
+          : null,
+        allocationCount: Number.isFinite(Number(row?.allocationCount))
+          ? Number(row.allocationCount)
+          : null,
+      };
+    })
+    .filter(Boolean);
+}
+
+function fallbackLegacyConsumables(grow = {}, suppliesMap = new Map()) {
+  const out = [];
+  const legacyAmount = Number(grow?.syringesUsedTotal || 0);
+  if (grow?.syringeSupplyId && Number.isFinite(legacyAmount) && legacyAmount > 0) {
+    const supply = suppliesMap.get(grow.syringeSupplyId);
+    out.push({
+      supplyId: grow.syringeSupplyId,
+      name: supply?.name || "Syringe",
+      type: supply?.type || "lab-consumable",
+      unit: supply?.unit || "syringe",
+      amount: legacyAmount,
+      totalCost: Number.isFinite(Number(grow?.labConsumablesCost))
+        ? Number(grow.labConsumablesCost)
+        : null,
+      unitCost: Number.isFinite(Number(supply?.cost)) ? Number(supply.cost) : null,
+      batchAmount: null,
+      batchTotalCost: null,
+      allocationCount: null,
+    });
+  }
+  return out;
+}
+
+function getSavedConsumablesForGrow(grow = {}, suppliesMap = new Map()) {
+  const saved = normalizeSavedConsumables(grow?.labConsumablesUsed);
+  if (saved.length) return saved;
+  return fallbackLegacyConsumables(grow, suppliesMap);
+}
+
+function sumConsumablesCost(rows = [], suppliesMap = new Map()) {
+  return Number(
+    rows
+      .reduce((sum, row) => {
+        const amount = Number(row?.amount || 0);
+        const directTotal = Number(row?.totalCost);
+        if (Number.isFinite(directTotal)) return sum + directTotal;
+        const directUnitCost = Number(row?.unitCost);
+        if (Number.isFinite(directUnitCost)) return sum + directUnitCost * amount;
+        const liveUnitCost = Number(
+          row?.supplyId && suppliesMap.has(row.supplyId)
+            ? suppliesMap.get(row.supplyId)?.cost
+            : 0
+        );
+        return sum + (Number.isFinite(liveUnitCost) ? liveUnitCost : 0) * amount;
+      }, 0)
+      .toFixed(2)
+  );
+}
+
+function buildInitialConsumableSelections(grow = {}, suppliesMap = new Map()) {
+  const selections = {};
+  const rows = getSavedConsumablesForGrow(grow, suppliesMap);
+  rows.forEach((row) => {
+    if (!row?.supplyId) return;
+    const amount = Number.isFinite(Number(row?.batchAmount))
+      ? Number(row.batchAmount)
+      : Number(row?.amount || 0);
+    selections[row.supplyId] = {
+      enabled: true,
+      amount: Number.isFinite(amount) && amount > 0 ? String(amount) : "",
+    };
+  });
+  return selections;
 }
 
 /* ==================== COMPONENT ==================== */
@@ -436,8 +733,24 @@ export default function GrowForm(props) {
     editingGrow?.recipe || editingGrow?.recipeName || ""
   );
   const [cost, setCost] = useState(
-    Number.isFinite(Number(editingGrow?.cost)) ? Number(editingGrow.cost) : 0
+    Number.isFinite(Number(editingGrow?.recipeCost))
+      ? Number(editingGrow.recipeCost)
+      : Number.isFinite(Number(editingGrow?.cost))
+      ? Number(editingGrow.cost)
+      : 0
   );
+  const [consumableSelections, setConsumableSelections] = useState({});
+
+  useEffect(() => {
+    if (mode === "edit") {
+      setConsumableSelections(
+        buildInitialConsumableSelections(editingGrow, suppliesMap)
+      );
+      return;
+    }
+    setConsumableSelections({});
+  }, [mode, editingGrow?.id]);
+
 
   /* ---- Volumes ---- */
   const [ivalue, setIValue] = useState(
@@ -641,6 +954,11 @@ export default function GrowForm(props) {
     return src;
   }, [localRecipes, growType]);
 
+  const growUsableRecipes = useMemo(
+    () => recipesRanked.filter((recipe) => recipeUsableInGrowForm(recipe)),
+    [recipesRanked]
+  );
+
   const selectedRecipe = useMemo(
     () => (recipeId ? recipesRanked.find((r) => r.id === recipeId) : null),
     [recipesRanked, recipeId]
@@ -649,6 +967,125 @@ export default function GrowForm(props) {
     () => (selectedRecipe ? recipeMatchScore(selectedRecipe, growType) : 0),
     [selectedRecipe, growType]
   );
+  const selectedRecipeScope = useMemo(
+    () =>
+      normalizeRecipeScope(
+        selectedRecipe?.recipeScope ||
+          selectedRecipe?.scope ||
+          selectedRecipe?.recipeKind ||
+          selectedRecipe?.recipeType ||
+          selectedRecipe?.usage ||
+          ""
+      ),
+    [selectedRecipe]
+  );
+
+  const trackedConsumableOptions = useMemo(() => {
+    return [...(Array.isArray(localSupplies) ? localSupplies : [])]
+      .filter((supply) => normalizeSupplyType(supply?.type) === "lab-consumable")
+      .sort((a, b) =>
+        String(a?.name || "").localeCompare(String(b?.name || ""), undefined, {
+          sensitivity: "base",
+        })
+      );
+  }, [localSupplies]);
+
+  const enabledConsumableRows = useMemo(() => {
+    return trackedConsumableOptions
+      .filter((supply) => consumableSelections?.[supply.id]?.enabled)
+      .map((supply) => {
+        const rawAmount = consumableSelections?.[supply.id]?.amount;
+        const enteredAmount = Number(rawAmount);
+        const deductAmount = roundedSupplyAmount(
+          enteredAmount,
+          supply.unit || "count"
+        );
+        const unitCost = Number(supply?.cost || 0);
+        const totalCost = Number((deductAmount * unitCost).toFixed(2));
+        const available = Number(supply?.quantity || 0);
+        return {
+          supplyId: supply.id,
+          name: supply.name || "Unnamed Supply",
+          type: supply.type || "",
+          unit: supply.unit || "count",
+          enteredAmount,
+          deductAmount,
+          unitCost,
+          totalCost,
+          available,
+        };
+      });
+  }, [trackedConsumableOptions, consumableSelections]);
+
+  const invalidConsumableRows = useMemo(
+    () =>
+      enabledConsumableRows.filter(
+        (row) => !Number.isFinite(row.enteredAmount) || row.deductAmount <= 0
+      ),
+    [enabledConsumableRows]
+  );
+
+  const overConsumableRows = useMemo(
+    () =>
+      enabledConsumableRows.filter(
+        (row) => row.deductAmount > row.available + 1e-9
+      ),
+    [enabledConsumableRows]
+  );
+
+  const batchConsumablesCost = useMemo(
+    () =>
+      Number(
+        enabledConsumableRows
+          .reduce((sum, row) => sum + row.totalCost, 0)
+          .toFixed(2)
+      ),
+    [enabledConsumableRows]
+  );
+
+  const savedConsumableRows = useMemo(
+    () => getSavedConsumablesForGrow(editingGrow, suppliesMap),
+    [editingGrow, suppliesMap]
+  );
+
+  const savedConsumablesCost = useMemo(() => {
+    const inline = Number(editingGrow?.labConsumablesCost);
+    if (Number.isFinite(inline)) return inline;
+    return sumConsumablesCost(savedConsumableRows, suppliesMap);
+  }, [editingGrow, savedConsumableRows, suppliesMap]);
+
+  const labConsumablesCost = useMemo(() => {
+    if (mode === "create") {
+      const count = Math.max(1, Number(batchCount || 1));
+      return Number((batchConsumablesCost / count).toFixed(2));
+    }
+    return Number(savedConsumablesCost.toFixed(2));
+  }, [mode, batchCount, batchConsumablesCost, savedConsumablesCost]);
+
+  const totalCost = useMemo(
+    () =>
+      Number(
+        (Number(cost || 0) + Number(labConsumablesCost || 0)).toFixed(2)
+      ),
+    [cost, labConsumablesCost]
+  );
+
+  const perGrowAllocatedConsumables = useMemo(() => {
+    const count = Math.max(1, Number(batchCount || 1));
+    return enabledConsumableRows.map((row) => ({
+      supplyId: row.supplyId,
+      name: row.name,
+      type: row.type,
+      unit: row.unit,
+      amount: Number((row.deductAmount / count).toFixed(4)),
+      totalCost: Number((row.totalCost / count).toFixed(2)),
+      unitCost: Number(row.unitCost || 0),
+      batchAmount: row.deductAmount,
+      batchTotalCost: row.totalCost,
+      allocationCount: count,
+    }));
+  }, [enabledConsumableRows, batchCount]);
+
 
   useEffect(() => {
     if (!selectedRecipe) {
@@ -749,12 +1186,25 @@ export default function GrowForm(props) {
       if (!strain) throw new Error("Please choose a strain.");
       if (!stage) throw new Error("Please choose a stage.");
 
+      if (recipeId && selectedRecipeScope === "post-production") {
+        throw new Error(
+          "The selected recipe is marked Post Production and cannot be used in GrowForm."
+        );
+      }
+
       if (!recipeId || selectedRecipeScore === 0) {
         const t = normalizeType(growType);
         const msg = !recipeId
           ? `No recipe is selected for ${t}. Continue anyway?`
           : `The selected recipe doesn’t look like a ${t} recipe. Continue anyway?`;
-        if (!(await confirm({ message: msg, confirmLabel: "Continue", cancelLabel: "Go back" }))) return;
+        if (
+          !(await confirm({
+            message: msg,
+            confirmLabel: "Continue",
+            cancelLabel: "Go back",
+          }))
+        )
+          return;
       }
 
       let storageUsageTotal = 0;
@@ -909,8 +1359,30 @@ export default function GrowForm(props) {
         }
       }
 
+      if (mode === "create") {
+        if (invalidConsumableRows.length > 0) {
+          const names = invalidConsumableRows.map((row) => row.name).join(", ");
+          throw new Error(
+            `Enter a quantity greater than 0 for each checked lab consumable: ${names}.`
+          );
+        }
+        if (overConsumableRows.length > 0) {
+          const first = overConsumableRows[0];
+          throw new Error(
+            `${first.name} exceeds stock on hand. Need ${first.deductAmount} ${first.unit}, but only ${first.available} ${first.unit} remain.`
+          );
+        }
+      }
+
       const createdAt = created ? dateFromDateInput(created) : new Date();
-      const costNum = Number.isFinite(Number(cost)) ? Number(cost) : 0;
+      const recipeCostNum = Number.isFinite(Number(cost)) ? Number(cost) : 0;
+      const labConsumablesCostNum =
+        mode === "create"
+          ? Number(labConsumablesCost || 0)
+          : Number(savedConsumablesCost || 0);
+      const totalCostNum = Number(
+        (recipeCostNum + labConsumablesCostNum).toFixed(2)
+      );
       const isBulkNow = normalizeType(growType) === "Bulk";
 
       let parentContributions = [];
@@ -971,7 +1443,9 @@ export default function GrowForm(props) {
           status,
           recipe: recipeName || "",
           recipeId: recipeId || "",
-          cost: costNum,
+          recipeCost: recipeCostNum,
+          labConsumablesCost: labConsumablesCostNum,
+          cost: totalCostNum,
           createdAt,
           parentSource:
             effectiveParentSource === "library" ? "Library" : "Grow",
@@ -984,6 +1458,9 @@ export default function GrowForm(props) {
               ? storageDoc?.type || null
               : null,
           ...(parentContributions.length ? { parentContributions } : {}),
+          ...(perGrowAllocatedConsumables.length
+            ? { labConsumablesUsed: perGrowAllocatedConsumables }
+            : {}),
         };
 
         if (!isBulkNow) {
@@ -1096,6 +1573,34 @@ export default function GrowForm(props) {
           console.error("Recipe consumption (non-fatal):", e2);
         }
 
+        if (enabledConsumableRows.length > 0) {
+          try {
+            const user = auth.currentUser;
+            if (user) {
+              for (const row of enabledConsumableRows) {
+                await consumeTrackedSupply(
+                  user.uid,
+                  row.supplyId,
+                  row.deductAmount,
+                  `Grow-form lab consumable usage for ${count > 1 ? `${prefix} × ${count}` : prefix}`
+                );
+              }
+            }
+          } catch (supplyErr) {
+            console.error("Lab consumable deduction (non-fatal):", supplyErr);
+            await confirm.alert({
+              title: "Consumable deduction needs review",
+              message:
+                `Grows were created, but one or more lab consumables were not deducted.
+
+${
+                  supplyErr?.message || "Please adjust the COG inventory manually."
+                }`,
+              confirmLabel: "OK",
+            });
+          }
+        }
+
         if (effectiveParentSource === "library" && libId && storageMode?.ok) {
           const user = auth.currentUser;
           if (!user) throw new Error("Missing user");
@@ -1197,7 +1702,11 @@ export default function GrowForm(props) {
         status,
         recipe: recipeName || "",
         recipeId: nextRecipeId || "",
-        cost: Number.isFinite(costNum) ? costNum : 0,
+        recipeCost: Number.isFinite(recipeCostNum) ? recipeCostNum : 0,
+        labConsumablesCost: Number.isFinite(labConsumablesCostNum)
+          ? labConsumablesCostNum
+          : 0,
+        cost: Number.isFinite(totalCostNum) ? totalCostNum : 0,
         createdAt,
         updatedAt: serverTimestamp(),
       };
@@ -1803,6 +2312,176 @@ export default function GrowForm(props) {
               </>
             )}
           </section>
+
+        )}
+
+        {mode === "create" && (
+          <section className="grid sm:grid-cols-4 gap-2 mt-3">
+            <div className="sm:col-span-4 text-xs opacity-70">
+              Check any grow-form lab consumables used for this save. Quantities
+              entered below are total for the whole save
+              {Math.max(1, Number(batchCount || 1)) > 1
+                ? ` and the cost will be split across ${Math.max(
+                    1,
+                    Number(batchCount || 1)
+                  )} created grows.`
+                : "."}
+            </div>
+
+            {trackedConsumableOptions.length === 0 ? (
+              <div className="sm:col-span-4 text-xs text-amber-300">
+                No <code>lab-consumable</code> items were found in COG yet. Add
+                things like syringes, needles, prep pads, or gloves there first.
+              </div>
+            ) : (
+              trackedConsumableOptions.map((supply) => {
+                const selection = consumableSelections?.[supply.id] || {
+                  enabled: false,
+                  amount: "",
+                };
+                const enabled = !!selection.enabled;
+                const enteredAmount = Number(selection.amount || 0);
+                const deductAmount = enabled
+                  ? roundedSupplyAmount(enteredAmount, supply.unit || "count")
+                  : 0;
+                const available = Number(supply.quantity || 0);
+                const over = enabled && deductAmount > available + 1e-9;
+                const invalid =
+                  enabled &&
+                  (!Number.isFinite(enteredAmount) || deductAmount <= 0);
+
+                return (
+                  <div
+                    key={supply.id}
+                    className={`rounded-xl border p-3 ${
+                      enabled
+                        ? "border-[rgba(var(--_accent-rgb),0.45)] bg-[rgba(var(--_accent-rgb),0.08)]"
+                        : "border-slate-700/70 bg-slate-900/30"
+                    }`}
+                  >
+                    <label className="flex items-start gap-3">
+                      <input
+                        type="checkbox"
+                        checked={enabled}
+                        onChange={(e) =>
+                          setConsumableSelections((prev) => ({
+                            ...prev,
+                            [supply.id]: {
+                              enabled: e.target.checked,
+                              amount: e.target.checked
+                                ? prev?.[supply.id]?.amount || "1"
+                                : "",
+                            },
+                          }))
+                        }
+                      />
+                      <div className="min-w-0 flex-1">
+                        <div className="font-medium text-sm">
+                          {supply.name || "Unnamed Supply"}
+                        </div>
+                        <div className="text-xs opacity-70 mt-1">
+                          {supply.type || "supply"} ·{" "}
+                          {Number(supply.quantity || 0)} {supply.unit || "count"} on hand · $
+                          {Number(supply.cost || 0).toFixed(2)} /{" "}
+                          {supply.unit || "count"}
+                        </div>
+                      </div>
+                    </label>
+
+                    <div className="mt-3">
+                      <label className="label text-xs">Used for this save</label>
+                      <input
+                        type="number"
+                        min="0"
+                        step={
+                          isCountLikeSupplyUnit(supply.unit || "") ? "1" : "0.1"
+                        }
+                        className="input"
+                        value={selection.amount || ""}
+                        onChange={(e) =>
+                          setConsumableSelections((prev) => ({
+                            ...prev,
+                            [supply.id]: {
+                              enabled: true,
+                              amount: e.target.value,
+                            },
+                          }))
+                        }
+                        placeholder="0"
+                        disabled={!enabled}
+                      />
+                    </div>
+
+                    {enabled && (
+                      <div className="mt-2 text-xs opacity-80">
+                        Deducting{" "}
+                        <span className="font-semibold">{deductAmount}</span>{" "}
+                        {supply.unit || "count"} · Cost added{" "}
+                        <span className="font-semibold">
+                          ${Number(deductAmount * Number(supply.cost || 0)).toFixed(2)}
+                        </span>
+                      </div>
+                    )}
+
+                    {invalid && (
+                      <div className="mt-2 text-xs" style={{ color: "#f87171" }}>
+                        Enter a quantity greater than 0.
+                      </div>
+                    )}
+
+                    {over && (
+                      <div className="mt-2 text-xs" style={{ color: "#f87171" }}>
+                        That exceeds the current stock on hand.
+                      </div>
+                    )}
+                  </div>
+                );
+              })
+            )}
+
+            {enabledConsumableRows.length > 0 && (
+              <div className="sm:col-span-4 text-xs opacity-80">
+                Grow-form lab consumables:{" "}
+                <span className="font-semibold">
+                  ${batchConsumablesCost.toFixed(2)}
+                </span>{" "}
+                total for this save ·{" "}
+                <span className="font-semibold">
+                  ${labConsumablesCost.toFixed(2)}
+                </span>{" "}
+                per grow
+              </div>
+            )}
+          </section>
+        )}
+
+        {mode === "edit" && savedConsumableRows.length > 0 && (
+          <section className="grid sm:grid-cols-3 gap-2 mt-3">
+            <div className="sm:col-span-3 rounded-xl border border-slate-700/70 bg-slate-900/30 p-3">
+              <div className="text-sm font-medium mb-2">Saved Lab Consumables</div>
+              <div className="space-y-1 text-xs opacity-80">
+                {savedConsumableRows.map((row) => (
+                  <div key={`${row.supplyId}-${row.name}`}>
+                    {row.name} ·{" "}
+                    {Number(row.amount || 0).toFixed(
+                      isCountLikeSupplyUnit(row.unit || "") ? 0 : 2
+                    )}{" "}
+                    {row.unit || "count"} · $
+                    {Number(
+                      (Number.isFinite(Number(row.totalCost))
+                        ? Number(row.totalCost)
+                        : Number(
+                            (
+                              Number(row.unitCost || 0) *
+                              Number(row.amount || 0)
+                            ).toFixed(2)
+                          )) || 0
+                    ).toFixed(2)}
+                  </div>
+                ))}
+              </div>
+            </div>
+          </section>
         )}
 
         <section className="grid sm:grid-cols-3 gap-2 mt-3">
@@ -2013,7 +2692,7 @@ export default function GrowForm(props) {
               onChange={(e) => setRecipeId(e.target.value)}
             >
               <option value="">Optional</option>
-              {recipesRanked.map((r) => (
+              {growUsableRecipes.map((r) => (
                 <option key={r.id} value={r.id}>
                   {r.name || "Untitled Recipe"}
                 </option>
@@ -2021,7 +2700,11 @@ export default function GrowForm(props) {
             </select>
 
             {recipeId ? (
-              selectedRecipeScore >= 2 ? (
+              selectedRecipeScope === "post-production" ? (
+                <div className="text-xs mt-1 text-amber-300">
+                  ⚠ This recipe is marked Post Production and cannot be used in GrowForm.
+                </div>
+              ) : selectedRecipeScore >= 2 ? (
                 <div className="text-xs mt-1 accent-text">
                   ✓ Likely match for {normalizeType(growType)}
                 </div>
@@ -2063,10 +2746,15 @@ export default function GrowForm(props) {
               min="0"
               step="0.01"
               className="input"
-              value={Number(cost).toFixed(2)}
+              value={Number(totalCost).toFixed(2)}
               readOnly
               disabled
             />
+            <div className="text-xs mt-1 opacity-70">
+              Recipe ${Number(cost || 0).toFixed(2)} + lab consumables $
+              {Number(labConsumablesCost || 0).toFixed(2)} = total $
+              {Number(totalCost || 0).toFixed(2)}
+            </div>
           </div>
         </section>
 

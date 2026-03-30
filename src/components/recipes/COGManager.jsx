@@ -21,7 +21,6 @@ import {
   FileDown,
   Check,
   Edit3,
-  Save,
   X,
   AlertTriangle,
   Sparkles,
@@ -44,18 +43,22 @@ import {
 const SUPPLY_TYPES = [
   "substrate",
   "container",
+  "grow-container",
   "tool",
-  "supplement",
   "labor",
   "packaging",
   "ingredient",
-  "carrier",
+  "lab-consumable",
   "sanitation",
 ];
+
+const LEGACY_SUPPLY_TYPES = ["carrier", "supplement"];
 
 const UNITS = [
   "count",
   "piece",
+  "bag",
+  "syringe",
   "capsule",
   "bottle",
   "g",
@@ -75,6 +78,9 @@ const byName = (a, b) =>
 
 const DEFAULT_NEW = {
   name: "",
+  purchaseUnitCost: "",
+  purchaseUnitSize: "",
+  purchaseQuantity: "",
   cost: "",
   type: "",
   unit: "",
@@ -187,55 +193,195 @@ export default function COGManager() {
     setTimeout(() => nameRef.current?.focus?.(), 0);
   };
 
-  const computePerUnitFromTotal = (totalCostInput, qtyInput) => {
-    const total = parseFloat(totalCostInput || 0);
-    const qty = parseFloat(qtyInput || 0);
-    if (qty > 0 && Number.isFinite(total)) {
-      const per = total / qty;
-      return Number.isFinite(per) ? per : total;
+  const parseNumericInput = (value, fallback = 0) => {
+    const parsed = parseFloat(value);
+    return Number.isFinite(parsed) ? parsed : fallback;
+  };
+
+  const formatInputNumber = (value) => {
+    const numeric = Number(value);
+    return Number.isFinite(numeric) ? String(numeric) : "";
+  };
+
+  const derivePurchaseModel = (values) => {
+    const enteredCost = parseNumericInput(values?.purchaseUnitCost ?? values?.cost, 0);
+    const enteredSize = parseFloat(values?.purchaseUnitSize);
+    const enteredQty = parseFloat(values?.purchaseQuantity ?? values?.quantity);
+
+    const hasPackageSize = Number.isFinite(enteredSize) && enteredSize > 0;
+    const enteredCount =
+      Number.isFinite(enteredQty) && enteredQty > 0 ? enteredQty : 0;
+
+    if (hasPackageSize) {
+      const lockedUnitCost = enteredCost / enteredSize;
+      return {
+        mode: "packaged",
+        purchaseUnitCost: enteredCost,
+        purchaseUnitSize: enteredSize,
+        purchaseQuantity: enteredCount,
+        lockedUnitCost: Number.isFinite(lockedUnitCost) ? lockedUnitCost : 0,
+        derivedQuantity: enteredSize * enteredCount,
+        purchaseTotal: enteredCost * enteredCount,
+      };
     }
-    return Number.isFinite(total) ? total : 0;
+
+    const lockedUnitCost = enteredCount > 0 ? enteredCost / enteredCount : 0;
+    return {
+      mode: "legacy-total",
+      purchaseUnitCost: enteredCost,
+      purchaseUnitSize: 0,
+      purchaseQuantity: enteredCount,
+      lockedUnitCost: Number.isFinite(lockedUnitCost) ? lockedUnitCost : 0,
+      derivedQuantity: enteredCount,
+      purchaseTotal: enteredCost,
+    };
+  };
+
+  const hydrateEditRow = (supply) => {
+    const hasStoredPackageSize = Number(supply?.purchaseUnitSize || 0) > 0;
+
+    if (hasStoredPackageSize) {
+      const storedPackageSize = Number(supply.purchaseUnitSize || 0) || 0;
+      const storedPackageQty =
+        Number(supply.purchaseQuantity || 0) ||
+        (storedPackageSize > 0
+          ? Number(supply.lastPurchaseQty || supply.quantity || 0) /
+            storedPackageSize
+          : 0);
+      const storedPackageCost =
+        Number(supply.purchaseUnitCost || 0) ||
+        (Number(supply.cost || 0) || 0) * storedPackageSize;
+
+      return {
+        ...supply,
+        purchaseUnitCost: formatInputNumber(storedPackageCost),
+        purchaseUnitSize: formatInputNumber(storedPackageSize),
+        purchaseQuantity: formatInputNumber(storedPackageQty),
+        quantity: formatInputNumber(Number(supply.quantity || 0) || 0),
+        lowStockThreshold: formatInputNumber(
+          Number(supply.lowStockThreshold || 0) || 0
+        ),
+      };
+    }
+
+    const legacyQty = Number(supply?.lastPurchaseQty || supply?.quantity || 0) || 0;
+    const legacyTotal = Number.isFinite(Number(supply?.lastPurchaseTotal))
+      ? Number(supply.lastPurchaseTotal)
+      : (Number(supply?.cost || 0) || 0) * legacyQty;
+
+    return {
+      ...supply,
+      purchaseUnitCost: formatInputNumber(legacyTotal),
+      purchaseUnitSize: "",
+      purchaseQuantity: formatInputNumber(legacyQty),
+      quantity: formatInputNumber(Number(supply.quantity || 0) || 0),
+      lowStockThreshold: formatInputNumber(
+        Number(supply.lowStockThreshold || 0) || 0
+      ),
+    };
+  };
+
+  const validateSupplyDraft = (row) => {
+    const draftName = String(row?.name || "").trim();
+    const pricing = derivePurchaseModel(row);
+
+    if (!draftName) {
+      return { ok: false, message: "Please enter a name for the supply." };
+    }
+
+    if (!String(row?.unit || "").trim()) {
+      return { ok: false, message: "Please choose the stock unit for this supply." };
+    }
+
+    if (pricing.purchaseUnitCost <= 0) {
+      return {
+        ok: false,
+        message:
+          pricing.mode === "packaged"
+            ? "Enter the cost for one purchased unit (bag, bottle, box, etc.)."
+            : "Enter the total cost for this supply.",
+      };
+    }
+
+    if (pricing.mode === "packaged" && pricing.purchaseUnitSize <= 0) {
+      return {
+        ok: false,
+        message: "Enter how much stock is inside one purchased unit.",
+      };
+    }
+
+    if (pricing.purchaseQuantity <= 0) {
+      return {
+        ok: false,
+        message:
+          pricing.mode === "packaged"
+            ? "Enter how many purchased units you bought."
+            : "Enter how much stock quantity you bought.",
+      };
+    }
+
+    if (pricing.derivedQuantity <= 0) {
+      return {
+        ok: false,
+        message: "The starting on-hand quantity must be greater than zero.",
+      };
+    }
+
+    return { ok: true, pricing };
   };
 
   const saveNew = async () => {
     const user = auth.currentUser;
     if (!user || !editRow) return;
 
-    const perUnitCost = computePerUnitFromTotal(editRow.cost, editRow.quantity);
-    const quantityNum = parseFloat(editRow.quantity || 0) || 0;
+    const validation = validateSupplyDraft(editRow);
+    if (!validation.ok) {
+      setNotice({ tone: "danger", message: validation.message });
+      return;
+    }
+
+    const { pricing } = validation;
 
     const newSupply = {
       name: String(editRow.name || "").trim(),
-      cost: perUnitCost,
+      cost: pricing.lockedUnitCost,
       type: editRow.type || "",
       unit: editRow.unit || "",
-      quantity: quantityNum,
+      quantity: pricing.derivedQuantity,
       reorderLink: editRow.reorderLink || "",
-      lowStockThreshold: parseFloat(editRow.lowStockThreshold || 0) || 0,
+      lowStockThreshold: parseNumericInput(editRow.lowStockThreshold, 0),
       inventoryResetPending: false,
-      lastPurchaseTotal: parseFloat(editRow.cost || 0) || 0,
-      lastPurchaseQty: quantityNum,
+      lastPurchaseTotal: pricing.purchaseTotal,
+      lastPurchaseQty: pricing.derivedQuantity,
       lastPriceEditedAt: serverTimestamp(),
       lastUpdatedAt: serverTimestamp(),
       createdAt: serverTimestamp(),
+      pricingInputMode: pricing.mode,
+      purchaseUnitCost:
+        pricing.mode === "packaged" ? pricing.purchaseUnitCost : null,
+      purchaseUnitSize:
+        pricing.mode === "packaged" ? pricing.purchaseUnitSize : null,
+      purchaseQuantity:
+        pricing.mode === "packaged" ? pricing.purchaseQuantity : null,
     };
-
-    if (!newSupply.name) {
-      setNotice({ tone: "danger", message: "Please enter a name for the supply." });
-      return;
-    }
 
     const ref = await addDoc(collection(db, "users", user.uid, "supplies"), newSupply);
     await logAudit(ref.id, "add", newSupply.quantity, "Initial supply added");
 
     setEditingId(null);
     setEditRow(null);
+    setNotice({
+      tone: "success",
+      message: `Saved ${newSupply.name} at ${money(newSupply.cost)} per ${newSupply.unit}.`,
+    });
   };
 
   const handleDelete = async (id, name) => {
     const user = auth.currentUser;
     if (!user) return;
-    if (!(await confirm(`Delete "${name || "Unnamed"}"? This cannot be undone.`))) return;
+    if (!(await confirm(`Delete "${name || "Unnamed"}"? This cannot be undone.`))) {
+      return;
+    }
     await deleteDoc(doc(db, "users", user.uid, "supplies", id));
     await logAudit(id, "delete", 0, `Supply deleted: ${name || id}`);
   };
@@ -329,7 +475,9 @@ export default function COGManager() {
         UnitCostApplied:
           log.unitCostApplied != null ? Number(log.unitCostApplied).toFixed(4) : "",
         TotalCostApplied:
-          log.totalCostApplied != null ? Number(log.totalCostApplied).toFixed(4) : "",
+          log.totalCostApplied != null
+            ? Number(log.totalCostApplied).toFixed(4)
+            : "",
         Note: log.note || "",
         Timestamp: log.timestamp,
       };
@@ -375,18 +523,8 @@ export default function COGManager() {
   };
 
   const startEdit = (s) => {
-    const impliedTotal =
-      (Number(s.cost || 0) || 0) *
-      (Number(s.lastPurchaseQty || s.quantity || 0) || 0);
-    const total = Number.isFinite(Number(s.lastPurchaseTotal))
-      ? Number(s.lastPurchaseTotal)
-      : impliedTotal;
-
     setEditingId(s.id);
-    setEditRow({
-      ...s,
-      cost: total,
-    });
+    setEditRow(hydrateEditRow(s));
     setTimeout(() => nameRef.current?.focus?.(), 0);
   };
 
@@ -399,29 +537,41 @@ export default function COGManager() {
     const user = auth.currentUser;
     if (!user || !editingId || !editRow) return;
 
+    const validation = validateSupplyDraft(editRow);
+    if (!validation.ok) {
+      setNotice({ tone: "danger", message: validation.message });
+      return;
+    }
+
     const currentSupply = supplies.find((s) => s.id === editingId);
     const wasBaselinePending = Boolean(currentSupply?.inventoryResetPending);
-
-    const qty = parseFloat(editRow.quantity || 0) || 0;
-    const perUnitCost = computePerUnitFromTotal(editRow.cost, qty);
+    const { pricing } = validation;
+    const onHandQuantity = parseNumericInput(editRow.quantity, 0);
 
     const payload = {
       name: String(editRow.name || "").trim(),
-      cost: perUnitCost,
-      quantity: qty,
+      cost: pricing.lockedUnitCost,
+      quantity: onHandQuantity,
       unit: editRow.unit || "",
       type: editRow.type || "",
       reorderLink: editRow.reorderLink || "",
-      lowStockThreshold: parseFloat(editRow.lowStockThreshold || 0) || 0,
-      lastPurchaseTotal: parseFloat(editRow.cost || 0) || 0,
-      lastPurchaseQty: qty,
+      lowStockThreshold: parseNumericInput(editRow.lowStockThreshold, 0),
+      lastPurchaseTotal: pricing.purchaseTotal,
+      lastPurchaseQty: pricing.derivedQuantity,
       lastPriceEditedAt: serverTimestamp(),
       lastUpdatedAt: serverTimestamp(),
+      pricingInputMode: pricing.mode,
+      purchaseUnitCost:
+        pricing.mode === "packaged" ? pricing.purchaseUnitCost : null,
+      purchaseUnitSize:
+        pricing.mode === "packaged" ? pricing.purchaseUnitSize : null,
+      purchaseQuantity:
+        pricing.mode === "packaged" ? pricing.purchaseQuantity : null,
     };
 
     if (wasBaselinePending) {
-      payload.inventoryResetPending = qty <= 0;
-      if (qty > 0) {
+      payload.inventoryResetPending = onHandQuantity <= 0;
+      if (onHandQuantity > 0) {
         payload.baselineSetAt = serverTimestamp();
       }
     }
@@ -429,11 +579,15 @@ export default function COGManager() {
     await updateDoc(doc(db, "users", user.uid, "supplies", editingId), payload);
 
     if (!wasBaselinePending) {
-      await logAudit(editingId, "edit", 0, "Inline edit (total→per-unit)");
+      await logAudit(editingId, "edit", 0, "Supply pricing metadata updated");
     }
 
     setEditingId(null);
     setEditRow(null);
+    setNotice({
+      tone: "success",
+      message: `Updated ${payload.name} at ${money(payload.cost)} per ${payload.unit}.`,
+    });
   };
 
   const emptyItems = supplies.filter(
@@ -446,7 +600,9 @@ export default function COGManager() {
     return qty > 0 && low > 0 && qty <= low;
   });
 
-  const baselineItems = supplies.filter((s) => Boolean(s?.inventoryResetPending));
+  const baselineItems = supplies.filter((s) =>
+    Boolean(s?.inventoryResetPending)
+  );
 
   const handleCleanReturn = async (supply) => {
     try {
@@ -469,12 +625,29 @@ export default function COGManager() {
         }
         return;
       }
-
       const defaultVal = String(pending);
-      const input = window.prompt(
-        `How many "${supply.name}" are cleaned and returning to inventory? (0–${pending})\n\nAny not returned will be marked destroyed/overused.`,
-        defaultVal
-      );
+      const input = await confirm.prompt({
+        title: "Clean & Return",
+        message:
+          `How many "${supply.name}" are cleaned and returning to inventory?
+
+Any not returned will be marked destroyed or overused.`,
+        inputLabel: `Returned to inventory (0-${pending})`,
+        inputType: "number",
+        defaultValue: defaultVal,
+        min: 0,
+        max: pending,
+        step: 1,
+        confirmLabel: "Apply",
+        validate: (value) => {
+          if (String(value).trim() === "") return "Enter how many items are returning to inventory.";
+          const parsed = parseInt(value, 10);
+          if (!Number.isFinite(parsed)) return "Enter a whole number.";
+          if (parsed < 0) return "Value cannot be negative.";
+          if (parsed > pending) return `You only have ${pending} pending clean.`;
+          return true;
+        },
+      });
       if (input == null) return;
       const qtyRet = Math.max(0, Math.min(pending, parseInt(input, 10) || 0));
       const destroyed = Math.max(0, pending - qtyRet);
@@ -514,7 +687,8 @@ export default function COGManager() {
     if (!user) return;
     const ok = await confirm({
       title: "Scan archived grows?",
-      message: "Scan ARCHIVED grows for returnable containers/tools and enqueue them for cleaning?",
+      message:
+        "Scan ARCHIVED grows for returnable containers/tools and enqueue them for cleaning?",
       confirmLabel: "Scan now",
     });
     if (!ok) return;
@@ -532,6 +706,15 @@ export default function COGManager() {
       .slice(-5)
       .reverse();
 
+  const activePricing = editRow ? derivePurchaseModel(editRow) : null;
+  const isEditingExisting = Boolean(editingId && editingId !== "NEW");
+
+  const availableTypeOptions = useMemo(() => {
+    const currentType = String(editRow?.type || "").trim();
+    const isLegacyCurrent = LEGACY_SUPPLY_TYPES.includes(currentType);
+    return isLegacyCurrent ? [...SUPPLY_TYPES, currentType] : SUPPLY_TYPES;
+  }, [editRow]);
+
   const stats = useMemo(() => {
     const totalSupplies = supplies.length;
     const inventoryValue = supplies.reduce((sum, s) => {
@@ -545,7 +728,7 @@ export default function COGManager() {
     ).length;
 
     const productionReadyCount = supplies.filter((s) =>
-      ["packaging", "ingredient", "carrier", "supplement", "labor"].includes(
+      ["packaging", "ingredient", "labor", "lab-consumable"].includes(
         String(s?.type || "").toLowerCase()
       )
     ).length;
@@ -571,7 +754,6 @@ export default function COGManager() {
         </p>
       </div>
 
-
       {notice && (
         <div
           className={`rounded-xl border p-3 text-sm ${
@@ -584,7 +766,11 @@ export default function COGManager() {
         >
           <div className="flex items-start justify-between gap-3">
             <span>{notice.message}</span>
-            <button type="button" className="chip !px-2 !py-0.5" onClick={() => setNotice(null)}>
+            <button
+              type="button"
+              className="chip !px-2 !py-0.5"
+              onClick={() => setNotice(null)}
+            >
               Dismiss
             </button>
           </div>
@@ -608,7 +794,7 @@ export default function COGManager() {
           icon={Factory}
           label="Production ready"
           value={String(stats.productionReadyCount)}
-          hint="Packaging, ingredients, carriers, labor"
+          hint="Packaging, ingredients, lab consumables, labor"
         />
         <StatCard
           icon={Archive}
@@ -660,7 +846,7 @@ export default function COGManager() {
       <div className="rounded-xl border border-blue-200 dark:border-blue-900/50 bg-blue-50 dark:bg-blue-950/20 p-3 text-sm text-blue-900 dark:text-blue-100">
         Use <span className="font-semibold">packaging</span>,{" "}
         <span className="font-semibold">ingredient</span>,{" "}
-        <span className="font-semibold">carrier</span>, and{" "}
+        <span className="font-semibold">lab-consumable</span>, and{" "}
         <span className="font-semibold">labor</span> supply types for post-processing formulas.
         Those supply costs can now roll through Recipes into Production batch costing and finished
         inventory pricing.
@@ -706,24 +892,35 @@ export default function COGManager() {
         </button>
       </div>
 
-      {editingId === "NEW" && (
+      {editingId && editRow && (
         <div
-          data-testid="cog-new-panel"
+          data-testid={editingId === "NEW" ? "cog-new-panel" : "cog-edit-panel"}
           className="rounded-2xl border border-zinc-200 dark:border-zinc-700 bg-zinc-50 dark:bg-zinc-800/50 p-4 space-y-4"
         >
-          <div className="flex items-center justify-between gap-3">
-            <h3 className="text-lg font-semibold">Add Supply</h3>
+          <div className="flex items-center justify-between gap-3 flex-wrap">
+            <div>
+              <h3 className="text-lg font-semibold">
+                {editingId === "NEW"
+                  ? "Add Supply"
+                  : `Edit Supply · ${editRow.name || "Unnamed"}`}
+              </h3>
+              <p className="mt-1 text-xs text-zinc-600 dark:text-zinc-400 max-w-3xl">
+                Enter purchase packaging once, and the app will lock the per-
+                {editRow.unit || "unit"} cost from that data. Leave “Size per purchased unit”
+                blank to use the older total-cost ÷ total-quantity workflow.
+              </p>
+            </div>
             <div className="flex items-center gap-2">
               <button
-                onClick={saveNew}
-                data-testid="cog-new-save"
+                onClick={editingId === "NEW" ? saveNew : saveEdit}
+                data-testid={editingId === "NEW" ? "cog-new-save" : "cog-edit-save"}
                 className="btn btn-accent"
               >
                 <Check className="w-4 h-4" /> Save
               </button>
               <button
                 onClick={cancelEdit}
-                data-testid="cog-new-cancel"
+                data-testid={editingId === "NEW" ? "cog-new-cancel" : "cog-edit-cancel"}
                 className="btn"
               >
                 <X className="w-4 h-4" /> Cancel
@@ -736,7 +933,7 @@ export default function COGManager() {
               <label className="block text-sm font-medium mb-1">Name</label>
               <input
                 ref={nameRef}
-                data-testid="cog-new-name"
+                data-testid={editingId === "NEW" ? "cog-new-name" : "cog-edit-name"}
                 className="w-full p-2 border rounded-lg dark:bg-zinc-800"
                 value={editRow?.name || ""}
                 onChange={(e) => setEditRow({ ...editRow, name: e.target.value })}
@@ -745,45 +942,115 @@ export default function COGManager() {
             </div>
 
             <div>
-              <label className="block text-sm font-medium mb-1">Total cost</label>
+              <label className="block text-sm font-medium mb-1">
+                {activePricing?.mode === "packaged"
+                  ? "Cost per purchased unit"
+                  : "Total cost or cost per purchased unit"}
+              </label>
               <input
                 type="number"
                 step="0.01"
-                data-testid="cog-new-cost"
+                data-testid={editingId === "NEW" ? "cog-new-cost" : "cog-edit-cost"}
                 className="w-full p-2 border rounded-lg dark:bg-zinc-800"
-                value={editRow?.cost ?? ""}
-                onChange={(e) => setEditRow({ ...editRow, cost: e.target.value })}
-                placeholder="Total cost"
-                title="Enter the TOTAL cost of your purchase; we'll store per-unit."
+                value={editRow?.purchaseUnitCost ?? ""}
+                onChange={(e) =>
+                  setEditRow({
+                    ...editRow,
+                    purchaseUnitCost: e.target.value,
+                  })
+                }
+                placeholder={activePricing?.mode === "packaged" ? "2.38" : "Total cost"}
               />
             </div>
 
             <div>
-              <label className="block text-sm font-medium mb-1">Quantity bought</label>
+              <label className="block text-sm font-medium mb-1">Size per purchased unit</label>
               <input
                 type="number"
                 step="0.01"
-                data-testid="cog-new-quantity"
+                data-testid={editingId === "NEW" ? "cog-new-unit-size" : "cog-edit-unit-size"}
                 className="w-full p-2 border rounded-lg dark:bg-zinc-800"
-                value={editRow?.quantity ?? ""}
-                onChange={(e) => setEditRow({ ...editRow, quantity: e.target.value })}
-                placeholder="Qty bought"
+                value={editRow?.purchaseUnitSize ?? ""}
+                onChange={(e) =>
+                  setEditRow({
+                    ...editRow,
+                    purchaseUnitSize: e.target.value,
+                  })
+                }
+                placeholder={`How many ${editRow?.unit || "stock units"} per bag/bottle/box`}
               />
             </div>
 
             <div>
-              <label className="block text-sm font-medium mb-1">Unit</label>
+              <label className="block text-sm font-medium mb-1">
+                {activePricing?.mode === "packaged" ? "How many purchased" : "Quantity bought"}
+              </label>
+              <input
+                type="number"
+                step="0.01"
+                data-testid={
+                  editingId === "NEW" ? "cog-new-quantity" : "cog-edit-purchase-quantity"
+                }
+                className="w-full p-2 border rounded-lg dark:bg-zinc-800"
+                value={editRow?.purchaseQuantity ?? ""}
+                onChange={(e) =>
+                  setEditRow({
+                    ...editRow,
+                    purchaseQuantity: e.target.value,
+                  })
+                }
+                placeholder={
+                  activePricing?.mode === "packaged"
+                    ? "How many bags/bottles/boxes"
+                    : "Total qty bought"
+                }
+              />
+            </div>
+
+            <div>
+              <label className="block text-sm font-medium mb-1">Stock unit</label>
               <select
-                data-testid="cog-new-unit"
+                data-testid={editingId === "NEW" ? "cog-new-unit" : "cog-edit-unit"}
                 className="w-full p-2 border rounded-lg dark:bg-zinc-800"
                 value={editRow?.unit || ""}
                 onChange={(e) => setEditRow({ ...editRow, unit: e.target.value })}
               >
                 <option value="">unit</option>
-                {UNITS.sort().map((u) => (
-                  <option key={u}>{u}</option>
-                ))}
+                {UNITS.slice()
+                  .sort()
+                  .map((u) => (
+                    <option key={u}>{u}</option>
+                  ))}
               </select>
+            </div>
+
+            <div>
+              <label className="block text-sm font-medium mb-1">Derived locked cost</label>
+              <div className="w-full p-2 border rounded-lg bg-white/70 dark:bg-zinc-900/60 text-sm">
+                {money(activePricing?.lockedUnitCost || 0)} / {editRow?.unit || "unit"}
+              </div>
+            </div>
+
+            <div>
+              <label className="block text-sm font-medium mb-1">
+                {isEditingExisting ? "On-hand quantity" : "Starting on-hand quantity"}
+              </label>
+              {isEditingExisting ? (
+                <input
+                  type="number"
+                  step="0.01"
+                  data-testid="cog-edit-on-hand"
+                  className="w-full p-2 border rounded-lg dark:bg-zinc-800"
+                  value={editRow?.quantity ?? ""}
+                  onChange={(e) => setEditRow({ ...editRow, quantity: e.target.value })}
+                  placeholder={`Qty currently on hand in ${editRow?.unit || "stock units"}`}
+                />
+              ) : (
+                <div className="w-full p-2 border rounded-lg bg-white/70 dark:bg-zinc-900/60 text-sm">
+                  {Number(activePricing?.derivedQuantity || 0).toLocaleString()}{" "}
+                  {editRow?.unit || ""}
+                </div>
+              )}
             </div>
 
             <div>
@@ -791,7 +1058,9 @@ export default function COGManager() {
               <input
                 type="number"
                 step="0.01"
-                data-testid="cog-new-low-threshold"
+                data-testid={
+                  editingId === "NEW" ? "cog-new-low-threshold" : "cog-edit-low-threshold"
+                }
                 className="w-full p-2 border rounded-lg dark:bg-zinc-800"
                 value={editRow?.lowStockThreshold ?? ""}
                 onChange={(e) =>
@@ -807,22 +1076,29 @@ export default function COGManager() {
             <div>
               <label className="block text-sm font-medium mb-1">Type</label>
               <select
-                data-testid="cog-new-type"
+                data-testid={editingId === "NEW" ? "cog-new-type" : "cog-edit-type"}
                 className="w-full p-2 border rounded-lg dark:bg-zinc-800"
                 value={editRow?.type || ""}
                 onChange={(e) => setEditRow({ ...editRow, type: e.target.value })}
               >
                 <option value="">type</option>
-                {SUPPLY_TYPES.sort().map((t) => (
-                  <option key={t}>{t}</option>
-                ))}
+                {availableTypeOptions
+                  .slice()
+                  .sort()
+                  .map((t) => (
+                    <option key={t} value={t}>
+                      {LEGACY_SUPPLY_TYPES.includes(t) ? `${t} (legacy)` : t}
+                    </option>
+                  ))}
               </select>
             </div>
 
-            <div className="md:col-span-2">
+            <div className="md:col-span-2 xl:col-span-3">
               <label className="block text-sm font-medium mb-1">Reorder URL</label>
               <input
-                data-testid="cog-new-reorder-link"
+                data-testid={
+                  editingId === "NEW" ? "cog-new-reorder-link" : "cog-edit-reorder-link"
+                }
                 className="w-full p-2 border rounded-lg dark:bg-zinc-800"
                 value={editRow?.reorderLink || ""}
                 onChange={(e) =>
@@ -834,6 +1110,28 @@ export default function COGManager() {
                 placeholder="Reorder URL (optional)"
               />
             </div>
+          </div>
+
+          <div className="rounded-xl border border-zinc-200 dark:border-zinc-700 bg-white/70 dark:bg-zinc-900/40 p-3 text-sm text-zinc-700 dark:text-zinc-300">
+            {activePricing?.mode === "packaged" ? (
+              <>
+                <span className="font-semibold">Pack math:</span>{" "}
+                {money(activePricing.purchaseUnitCost)} per purchased unit ×{" "}
+                {activePricing.purchaseQuantity || 0} purchased ={" "}
+                {money(activePricing.purchaseTotal)} total spend, yielding{" "}
+                {Number(activePricing.derivedQuantity || 0).toLocaleString()}{" "}
+                {editRow?.unit || "units"} on hand at{" "}
+                {money(activePricing.lockedUnitCost)} per {editRow?.unit || "unit"}.
+              </>
+            ) : (
+              <>
+                <span className="font-semibold">Legacy math:</span> total cost{" "}
+                {money(activePricing?.purchaseTotal || 0)} ÷{" "}
+                {Number(activePricing?.derivedQuantity || 0).toLocaleString()}{" "}
+                {editRow?.unit || "units"} ={" "}
+                {money(activePricing?.lockedUnitCost || 0)} per {editRow?.unit || "unit"}.
+              </>
+            )}
           </div>
         </div>
       )}
@@ -847,24 +1145,20 @@ export default function COGManager() {
               <th className="p-2 text-left">
                 Cost{" "}
                 <span className="ml-1 text-[11px] opacity-70">
-                  (per-unit, <em>locked</em>; enter <em>total</em> when adding/editing)
+                  (locked per stock unit; derived from pack cost/size when provided)
                 </span>
               </th>
               <th className="p-2 text-left">Qty</th>
               <th className="p-2 text-left">Unit</th>
               <th className="p-2 text-left">Low ≤</th>
               <th className="p-2 text-left">Type</th>
-              <th className="p-2 text-left">
-                Restock / Reset / Reorder / Edit / Delete
-              </th>
+              <th className="p-2 text-left">Restock / Reset / Reorder / Edit / Delete</th>
               <th className="p-2 text-left">Clean</th>
             </tr>
           </thead>
           <tbody>
             {supplies.map((supply) => {
-              const isEditing = editingId === supply.id;
               const isBaselinePending = Boolean(supply.inventoryResetPending);
-
               const qty = Number(supply.quantity || 0);
               const low = Number(supply.lowStockThreshold || 0);
 
@@ -898,20 +1192,34 @@ export default function COGManager() {
               const auditOpen = !!expandedAudit[supply.id];
               const last5 = lastAudits(supply.id);
 
-              const lockTip =
-                `Price lock: $${Number(supply.cost || 0).toFixed(4)} per ${supply.unit || ""}\n` +
-                (Number.isFinite(Number(supply.lastPurchaseTotal))
-                  ? `Derived from $${Number(supply.lastPurchaseTotal).toFixed(2)} / ${Number(
-                      supply.lastPurchaseQty || 0
-                    )} ${supply.unit || ""}`
-                  : "Derived from last edit") +
-                (supply.lastPriceEditedAt
-                  ? `\nEdited: ${new Date(
+              const hasPackPricing = Number(supply.purchaseUnitSize || 0) > 0;
+              const lockTip = [
+                `Price lock: $${Number(supply.cost || 0).toFixed(4)} per ${supply.unit || "unit"}`,
+                hasPackPricing
+                  ? `Pack: $${Number(supply.purchaseUnitCost || 0).toFixed(2)} each for ${Number(
+                      supply.purchaseUnitSize || 0
+                    )} ${supply.unit || "unit"}`
+                  : Number.isFinite(Number(supply.lastPurchaseTotal)) &&
+                      Number(supply.lastPurchaseQty || 0) > 0
+                    ? `Derived from $${Number(supply.lastPurchaseTotal).toFixed(2)} / ${Number(
+                        supply.lastPurchaseQty || 0
+                      )} ${supply.unit || "unit"}`
+                    : "Derived from last edit",
+                hasPackPricing
+                  ? `Last purchase: ${Number(supply.purchaseQuantity || 0)} purchased unit(s) = ${Number(
+                      supply.lastPurchaseQty || supply.quantity || 0
+                    )} ${supply.unit || "unit"}`
+                  : null,
+                supply.lastPriceEditedAt
+                  ? `Edited: ${new Date(
                       supply.lastPriceEditedAt.seconds
                         ? supply.lastPriceEditedAt.seconds * 1000
                         : Date.now()
                     ).toLocaleString()}`
-                  : "");
+                  : null,
+              ]
+                .filter(Boolean)
+                .join("\n");
 
               return (
                 <React.Fragment key={supply.id}>
@@ -937,213 +1245,101 @@ export default function COGManager() {
                       </button>
                     </td>
 
-                    <td className="p-2">
-                      {isEditing ? (
-                        <input
-                          ref={nameRef}
-                          className="w-full p-1 border rounded dark:bg-zinc-800"
-                          value={editRow?.name || ""}
-                          onChange={(e) => setEditRow({ ...editRow, name: e.target.value })}
-                        />
-                      ) : (
-                        supply.name
-                      )}
-                    </td>
+                    <td className="p-2">{supply.name}</td>
 
                     <td className="p-2">
-                      {isEditing ? (
-                        <input
-                          type="number"
-                          step="0.01"
-                          className="w-28 p-1 border rounded dark:bg-zinc-800"
-                          value={editRow?.cost ?? ""}
-                          onChange={(e) => setEditRow({ ...editRow, cost: e.target.value })}
-                          placeholder="Total cost"
-                          title="Enter TOTAL cost; we'll store per-unit."
-                        />
-                      ) : (
-                        <span className="inline-flex items-center gap-1">
-                          <span title={lockTip}>
-                            <Lock className="inline w-3.5 h-3.5 opacity-70" />
-                          </span>
-                          ${Number(supply.cost || 0).toFixed(4)} / {supply.unit || ""}
+                      <span className="inline-flex items-center gap-1">
+                        <span title={lockTip}>
+                          <Lock className="inline w-3.5 h-3.5 opacity-70" />
                         </span>
-                      )}
+                        ${Number(supply.cost || 0).toFixed(4)} / {supply.unit || ""}
+                      </span>
                     </td>
 
                     <td className="p-2">
-                      {isEditing ? (
+                      <>
+                        {qty}
+                        {statusBadge}
+                      </>
+                    </td>
+
+                    <td className="p-2">{supply.unit}</td>
+
+                    <td className="p-2">{Number(supply.lowStockThreshold || 0)}</td>
+
+                    <td className="p-2">{supply.type}</td>
+
+                    <td className="p-2">
+                      <div className="flex items-center gap-2 flex-wrap">
                         <input
                           type="number"
-                          step="0.01"
-                          className="w-24 p-1 border rounded dark:bg-zinc-800"
-                          value={editRow?.quantity ?? ""}
-                          onChange={(e) => setEditRow({ ...editRow, quantity: e.target.value })}
-                        />
-                      ) : (
-                        <>
-                          {qty}
-                          {statusBadge}
-                        </>
-                      )}
-                    </td>
-
-                    <td className="p-2">
-                      {isEditing ? (
-                        <select
-                          className="p-1 border rounded dark:bg-zinc-800"
-                          value={editRow?.unit || ""}
-                          onChange={(e) => setEditRow({ ...editRow, unit: e.target.value })}
-                        >
-                          <option value="">unit</option>
-                          {UNITS.sort().map((u) => (
-                            <option key={u}>{u}</option>
-                          ))}
-                        </select>
-                      ) : (
-                        supply.unit
-                      )}
-                    </td>
-
-                    <td className="p-2">
-                      {isEditing ? (
-                        <input
-                          type="number"
-                          step="0.01"
+                          min="0"
+                          step="0.1"
+                          placeholder={isBaselinePending ? "set" : "+"}
                           className="w-20 p-1 border rounded dark:bg-zinc-800"
-                          value={editRow?.lowStockThreshold ?? ""}
+                          value={restockAmounts[supply.id] || ""}
                           onChange={(e) =>
-                            setEditRow({
-                              ...editRow,
-                              lowStockThreshold: e.target.value,
+                            setRestockAmounts({
+                              ...restockAmounts,
+                              [supply.id]: e.target.value,
                             })
                           }
+                          title={
+                            isBaselinePending
+                              ? "First refill after reset sets the new baseline and is not audited"
+                              : "Restock amount"
+                          }
                         />
-                      ) : (
-                        Number(supply.lowStockThreshold || 0)
-                      )}
-                    </td>
-
-                    <td className="p-2">
-                      {isEditing ? (
-                        <select
-                          className="p-1 border rounded dark:bg-zinc-800"
-                          value={editRow?.type || ""}
-                          onChange={(e) => setEditRow({ ...editRow, type: e.target.value })}
+                        <button
+                          onClick={() => handleRestock(supply.id)}
+                          aria-label={`Restock ${supply.name}`}
+                          className={`hover:underline ${
+                            isBaselinePending ? "text-sky-600" : "accent-text"
+                          }`}
+                          title={
+                            isBaselinePending
+                              ? "Set fresh baseline quantity (not audited)"
+                              : "Restock"
+                          }
                         >
-                          <option value="">type</option>
-                          {SUPPLY_TYPES.sort().map((t) => (
-                            <option key={t}>{t}</option>
-                          ))}
-                        </select>
-                      ) : (
-                        supply.type
-                      )}
-                    </td>
-
-                    <td className="p-2">
-                      {isEditing ? (
-                        <>
-                          <input
-                            className="w-full p-1 border rounded dark:bg-zinc-800 mb-2"
-                            value={editRow?.reorderLink || ""}
-                            onChange={(e) =>
-                              setEditRow({
-                                ...editRow,
-                                reorderLink: e.target.value,
-                              })
-                            }
-                            placeholder="Reorder URL"
-                          />
-                          <div className="space-x-2">
-                            <button
-                              onClick={saveEdit}
-                              className="accent-text hover:underline"
-                              title="Save"
-                            >
-                              <Save className="inline w-4 h-4" /> Save
-                            </button>
-                            <button
-                              onClick={cancelEdit}
-                              className="text-zinc-400 hover:underline"
-                              title="Cancel"
-                            >
-                              <X className="inline w-4 h-4" /> Cancel
-                            </button>
-                          </div>
-                        </>
-                      ) : (
-                        <div className="flex items-center gap-2 flex-wrap">
-                          <input
-                            type="number"
-                            min="0"
-                            step="0.1"
-                            placeholder={isBaselinePending ? "set" : "+"}
-                            className="w-20 p-1 border rounded dark:bg-zinc-800"
-                            value={restockAmounts[supply.id] || ""}
-                            onChange={(e) =>
-                              setRestockAmounts({
-                                ...restockAmounts,
-                                [supply.id]: e.target.value,
-                              })
-                            }
-                            title={
-                              isBaselinePending
-                                ? "First refill after reset sets the new baseline and is not audited"
-                                : "Restock amount"
-                            }
-                          />
-                          <button
-                            onClick={() => handleRestock(supply.id)}
-                            aria-label={`Restock ${supply.name}`}
-                            className={`hover:underline ${
-                              isBaselinePending ? "text-sky-600" : "accent-text"
-                            }`}
-                            title={
-                              isBaselinePending
-                                ? "Set fresh baseline quantity (not audited)"
-                                : "Restock"
-                            }
-                          >
-                            <PlusCircle className="w-4 h-4" />
-                          </button>
-                          <button
-                            onClick={() => handleResetSupplyInventory(supply)}
-                            aria-label={`Reset inventory for ${supply.name}`}
-                            className="text-amber-600 hover:underline"
-                            title="Set quantity to zero and wait for a fresh baseline without audit"
-                          >
-                            <RotateCcw className="inline w-4 h-4" />
-                          </button>
-                          {supply.reorderLink && (
-                            <a
-                              href={supply.reorderLink}
-                              target="_blank"
-                              rel="noopener noreferrer"
-                              aria-label={`Open reorder link for ${supply.name}`}
-                              className="accent-text hover:underline"
-                              title="Open reorder link"
-                            >
-                              <ExternalLink className="inline w-4 h-4" />
-                            </a>
-                          )}
-                          <button
-                            onClick={() => startEdit(supply)}
+                          <PlusCircle className="w-4 h-4" />
+                        </button>
+                        <button
+                          onClick={() => handleResetSupplyInventory(supply)}
+                          aria-label={`Reset inventory for ${supply.name}`}
+                          className="text-amber-600 hover:underline"
+                          title="Set quantity to zero and wait for a fresh baseline without audit"
+                        >
+                          <RotateCcw className="inline w-4 h-4" />
+                        </button>
+                        {supply.reorderLink && (
+                          <a
+                            href={supply.reorderLink}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            aria-label={`Open reorder link for ${supply.name}`}
                             className="accent-text hover:underline"
-                            title="Edit"
+                            title="Open reorder link"
                           >
-                            <Edit3 className="inline w-4 h-4" />
-                          </button>
-                          <button
-                            onClick={() => handleDelete(supply.id, supply.name)}
-                            aria-label={`Delete supply ${supply.name || supply.id}`}
-                            className="text-red-500 hover:underline"
-                            title="Delete"
-                          >
-                            <Trash2 className="inline w-4 h-4" />
-                          </button>
-                        </div>
-                      )}
+                            <ExternalLink className="inline w-4 h-4" />
+                          </a>
+                        )}
+                        <button
+                          onClick={() => startEdit(supply)}
+                          className="accent-text hover:underline"
+                          title="Edit"
+                        >
+                          <Edit3 className="inline w-4 h-4" />
+                        </button>
+                        <button
+                          onClick={() => handleDelete(supply.id, supply.name)}
+                          aria-label={`Delete supply ${supply.name || supply.id}`}
+                          className="text-red-500 hover:underline"
+                          title="Delete"
+                        >
+                          <Trash2 className="inline w-4 h-4" />
+                        </button>
+                      </div>
                     </td>
 
                     <td className="p-2">

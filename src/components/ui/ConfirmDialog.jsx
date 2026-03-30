@@ -10,62 +10,78 @@ import React, {
 } from "react";
 import { createPortal } from "react-dom";
 
-/**
- * ConfirmProvider + useConfirm()
- * Unified, accessible confirm dialog to replace window.confirm.
- *
- * Usage (root):
- *   import ConfirmProvider, { ConfirmProvider as Provider } from "./components/ui/ConfirmDialog";
- *   // <ConfirmProvider>{app}</ConfirmProvider>
- */
-
 const ConfirmContext = createContext(null);
+
+function normalizeInput(raw, fallbackKind = "confirm") {
+  const base =
+    typeof raw === "string"
+      ? { message: raw }
+      : raw && typeof raw === "object"
+        ? raw
+        : {};
+
+  const inferredDanger =
+    base.tone === "danger" ||
+    /delete|permanent|remove|cannot be undone/i.test(String(base.message || ""));
+
+  const kind = base.kind || fallbackKind;
+
+  return {
+    kind,
+    title:
+      base.title ||
+      (kind === "prompt"
+        ? "Enter a value"
+        : kind === "alert"
+          ? "Notice"
+          : "Please confirm"),
+    message: String(base.message || ""),
+    confirmLabel:
+      base.confirmLabel ||
+      (kind === "alert" ? "OK" : inferredDanger ? "Delete" : "Confirm"),
+    cancelLabel: kind === "alert" ? "" : base.cancelLabel || "Cancel",
+    tone: inferredDanger ? "danger" : "default",
+    inputLabel: String(base.inputLabel || "Value"),
+    inputPlaceholder: String(base.inputPlaceholder || ""),
+    inputType: String(base.inputType || "text"),
+    defaultValue:
+      base.defaultValue === undefined || base.defaultValue === null
+        ? ""
+        : String(base.defaultValue),
+    validate: typeof base.validate === "function" ? base.validate : null,
+    min: base.min,
+    max: base.max,
+    step: base.step,
+  };
+}
 
 export function ConfirmProvider({ children }) {
   const [open, setOpen] = useState(false);
-  const [opts, setOpts] = useState({
-    title: "Please confirm",
-    message: "",
-    confirmLabel: "Confirm",
-    cancelLabel: "Cancel",
-    tone: "default", // "default" | "danger"
-  });
+  const [opts, setOpts] = useState(() => normalizeInput({}, "confirm"));
+  const [inputValue, setInputValue] = useState("");
+  const [inputError, setInputError] = useState("");
 
   const resolverRef = useRef(null);
-  const firstBtnRef = useRef(null);
-  const lastBtnRef = useRef(null);
   const panelRef = useRef(null);
+  const inputRef = useRef(null);
+  const cancelBtnRef = useRef(null);
+  const confirmBtnRef = useRef(null);
   const previouslyFocusedRef = useRef(null);
 
-  const resolveAndClose = useCallback((value) => {
+  const closeWith = useCallback((value) => {
     const resolve = resolverRef.current;
     resolverRef.current = null;
     setOpen(false);
+    setInputValue("");
+    setInputError("");
     if (typeof resolve === "function") resolve(value);
   }, []);
 
-  const onCancel = useCallback(() => resolveAndClose(false), [resolveAndClose]);
-  const onConfirm = useCallback(() => resolveAndClose(true), [resolveAndClose]);
-
-  const confirm = useCallback((input) => {
-    const raw =
-      typeof input === "string"
-        ? { message: input }
-        : input && typeof input === "object"
-        ? input
-        : {};
-    const isDanger =
-      raw.tone === "danger" ||
-      /delete|permanent|remove|cannot be undone/i.test(String(raw.message || ""));
-
-    setOpts({
-      title: raw.title || "Please confirm",
-      message: String(raw.message || ""),
-      confirmLabel: raw.confirmLabel || (isDanger ? "Delete" : "Confirm"),
-      cancelLabel: raw.cancelLabel || "Cancel",
-      tone: isDanger ? "danger" : "default",
-    });
-
+  const openRequest = useCallback((input, fallbackKind = "confirm") => {
+    const next = normalizeInput(input, fallbackKind);
+    setOpts(next);
+    setInputValue(next.defaultValue || "");
+    setInputError("");
     previouslyFocusedRef.current = document.activeElement;
     setOpen(true);
     return new Promise((resolve) => {
@@ -73,10 +89,39 @@ export function ConfirmProvider({ children }) {
     });
   }, []);
 
-  // Focus management: trap within dialog and restore on close
+  const confirm = useCallback((input) => openRequest(input, "confirm"), [openRequest]);
+  const alert = useCallback(async (input) => {
+    await openRequest(input, "alert");
+    return true;
+  }, [openRequest]);
+  const prompt = useCallback((input) => openRequest(input, "prompt"), [openRequest]);
+
+  const onCancel = useCallback(() => {
+    if (opts.kind === "prompt") {
+      closeWith(null);
+      return;
+    }
+    closeWith(false);
+  }, [closeWith, opts.kind]);
+
+  const onConfirm = useCallback(() => {
+    if (opts.kind === "prompt") {
+      const value = String(inputValue ?? "");
+      if (typeof opts.validate === "function") {
+        const result = opts.validate(value);
+        if (result !== true && result) {
+          setInputError(String(result));
+          return;
+        }
+      }
+      closeWith(value);
+      return;
+    }
+    closeWith(true);
+  }, [closeWith, inputValue, opts]);
+
   useEffect(() => {
     if (!open) {
-      // restore focus after close
       const el = previouslyFocusedRef.current;
       if (el && typeof el.focus === "function") {
         try {
@@ -86,38 +131,57 @@ export function ConfirmProvider({ children }) {
       return;
     }
 
-    // autofocus first button after mount
     const t = setTimeout(() => {
-      firstBtnRef.current?.focus?.();
+      if (opts.kind === "prompt") {
+        inputRef.current?.focus?.();
+        inputRef.current?.select?.();
+        return;
+      }
+      if (opts.kind === "alert") {
+        confirmBtnRef.current?.focus?.();
+        return;
+      }
+      cancelBtnRef.current?.focus?.();
     }, 0);
 
     const handleKeyDown = (e) => {
       if (e.key === "Escape") {
         e.preventDefault();
         onCancel();
-      } else if (e.key === "Enter") {
-        // only treat Enter as confirm when not typing in inputs
+        return;
+      }
+
+      if (e.key === "Enter") {
         const tag = document.activeElement?.tagName?.toLowerCase();
+        if (opts.kind === "prompt") {
+          if (tag !== "textarea") {
+            e.preventDefault();
+            onConfirm();
+          }
+          return;
+        }
         if (!["input", "textarea", "select"].includes(tag || "")) {
           e.preventDefault();
           onConfirm();
         }
-      } else if (e.key === "Tab") {
-        // simple trap between the two footer buttons
-        const focusables = [firstBtnRef.current, lastBtnRef.current].filter(Boolean);
-        if (focusables.length) {
-          const idx = focusables.indexOf(document.activeElement);
-          if (e.shiftKey) {
-            if (idx <= 0) {
-              e.preventDefault();
-              focusables[focusables.length - 1].focus();
-            }
-          } else {
-            if (idx === -1 || idx >= focusables.length - 1) {
-              e.preventDefault();
-              focusables[0].focus();
-            }
+        return;
+      }
+
+      if (e.key === "Tab") {
+        const focusables = [inputRef.current, cancelBtnRef.current, confirmBtnRef.current].filter(
+          Boolean
+        );
+        if (!focusables.length) return;
+
+        const idx = focusables.indexOf(document.activeElement);
+        if (e.shiftKey) {
+          if (idx <= 0) {
+            e.preventDefault();
+            focusables[focusables.length - 1].focus();
           }
+        } else if (idx === -1 || idx >= focusables.length - 1) {
+          e.preventDefault();
+          focusables[0].focus();
         }
       }
     };
@@ -128,9 +192,17 @@ export function ConfirmProvider({ children }) {
       clearTimeout(t);
       node?.removeEventListener("keydown", handleKeyDown);
     };
-  }, [open, onCancel, onConfirm]);
+  }, [open, onCancel, onConfirm, opts.kind]);
 
-  const ctxValue = useMemo(() => ({ confirm }), [confirm]);
+  const ctxValue = useMemo(() => {
+    const callable = Object.assign((input) => confirm(input), {
+      alert,
+      prompt,
+    });
+    return { confirm: callable };
+  }, [alert, confirm, prompt]);
+
+  const showCancel = opts.kind !== "alert";
 
   return (
     <ConfirmContext.Provider value={ctxValue}>
@@ -144,7 +216,6 @@ export function ConfirmProvider({ children }) {
               aria-labelledby="cnm-confirm-title"
               aria-describedby="cnm-confirm-desc"
               onMouseDown={(e) => {
-                // click on the backdrop cancels
                 if (e.target === e.currentTarget) onCancel();
               }}
             >
@@ -159,26 +230,53 @@ export function ConfirmProvider({ children }) {
                   </h2>
                 </div>
 
-                <div className="px-5 py-4">
+                <div className="px-5 py-4 space-y-3">
                   <p
                     id="cnm-confirm-desc"
                     className="text-sm text-zinc-700 dark:text-zinc-200 whitespace-pre-wrap"
                   >
                     {opts.message}
                   </p>
+
+                  {opts.kind === "prompt" && (
+                    <div>
+                      <label className="block text-sm font-medium mb-1">{opts.inputLabel}</label>
+                      <input
+                        ref={inputRef}
+                        type={opts.inputType}
+                        min={opts.min}
+                        max={opts.max}
+                        step={opts.step}
+                        value={inputValue}
+                        onChange={(e) => {
+                          setInputValue(e.target.value);
+                          if (inputError) setInputError("");
+                        }}
+                        className="w-full rounded-lg border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-800 px-3 py-2"
+                        placeholder={opts.inputPlaceholder}
+                      />
+                      {inputError ? (
+                        <div className="mt-2 text-xs text-rose-600 dark:text-rose-300">
+                          {inputError}
+                        </div>
+                      ) : null}
+                    </div>
+                  )}
                 </div>
 
                 <div className="px-5 pb-5 flex items-center justify-end gap-2">
+                  {showCancel ? (
+                    <button
+                      ref={cancelBtnRef}
+                      type="button"
+                      className="chip"
+                      onClick={onCancel}
+                    >
+                      {opts.cancelLabel}
+                    </button>
+                  ) : null}
                   <button
-                    ref={firstBtnRef}
-                    type="button"
-                    className="chip"
-                    onClick={onCancel}
-                  >
-                    {opts.cancelLabel}
-                  </button>
-                  <button
-                    ref={lastBtnRef}
+                    ref={confirmBtnRef}
                     type="button"
                     className={
                       opts.tone === "danger"
@@ -202,20 +300,34 @@ export function ConfirmProvider({ children }) {
 export function useConfirm() {
   const ctx = useContext(ConfirmContext);
   if (!ctx) {
-    // Fallback to native confirm if provider is missing (shouldn't happen in production).
-    return async (input) => {
+    const fallback = async (input) => {
       const msg = typeof input === "string" ? input : String(input?.message || "");
       try {
-        // eslint-disable-next-line no-alert
         return window.confirm(msg);
       } catch {
         return false;
       }
     };
+    fallback.alert = async (input) => {
+      const msg = typeof input === "string" ? input : String(input?.message || "");
+      try {
+        window.alert(msg);
+      } catch {}
+      return true;
+    };
+    fallback.prompt = async (input) => {
+      const raw = typeof input === "string" ? { message: input } : input || {};
+      const msg = String(raw.message || raw.title || "Enter a value");
+      try {
+        return window.prompt(msg, raw.defaultValue == null ? "" : String(raw.defaultValue));
+      } catch {
+        return null;
+      }
+    };
+    return fallback;
   }
   return ctx.confirm;
 }
 
-// ✅ Back-compat for places importing a default:
 export default ConfirmProvider;
-export { ConfirmProvider as ConfirmDialog }; // optional alias if you used this name before
+export { ConfirmProvider as ConfirmDialog };

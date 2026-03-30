@@ -2,13 +2,41 @@
 import React, { useEffect, useState } from "react";
 import { db, auth } from "../../firebase-config";
 import { doc, getDoc } from "firebase/firestore";
-import { canonicalUnit, COUNT_UNITS, convert, formatAmount } from "../../lib/units";
+import { areCompatible, canonicalUnit, COUNT_UNITS, convert, formatAmount } from "../../lib/units";
 
 function norm(v) { return String(v || "").trim().toLowerCase(); }
 function isCountUnit(u) { return canonicalUnit(u) === "count" || COUNT_UNITS.includes(canonicalUnit(u)); }
 
 function roundForUnit(val, unit) {
   return isCountUnit(unit) ? Math.ceil(Math.max(0, Number(val) || 0)) : Math.max(0, Number(val) || 0);
+}
+
+function getRecipeItemUnits(item = {}, supply = {}) {
+  const stockUnit = canonicalUnit(supply?.unit || item?.stockUnit || item?.unit || "");
+  const displayUnit = canonicalUnit(
+    item?.unit || item?.amountUnit || supply?.unit || item?.stockUnit || ""
+  );
+
+  return {
+    stockUnit,
+    displayUnit: displayUnit || stockUnit,
+  };
+}
+
+function getRecipeItemDisplayAmount(item = {}, supply = {}) {
+  const { stockUnit, displayUnit } = getRecipeItemUnits(item, supply);
+  const storedStockAmount = Number(item?.amount || 0);
+  const storedDisplayAmount = Number(item?.amountDisplay);
+
+  if (Number.isFinite(storedDisplayAmount) && storedDisplayAmount > 0) {
+    return storedDisplayAmount;
+  }
+
+  if (displayUnit && stockUnit && areCompatible(displayUnit, stockUnit)) {
+    return convert(storedStockAmount, stockUnit, displayUnit);
+  }
+
+  return storedStockAmount;
 }
 
 function getRecipeYield(recipe = {}) {
@@ -75,30 +103,51 @@ export default function RecipeConsumptionPreview({
       const out = [];
       for (const it of items) {
         const supplyId = it?.supplyId || it?.id;
-        const base = Number(it?.amount) || 0;
-        const unit = it?.unit || it?.amountUnit || "";
-        if (!supplyId || base <= 0) continue;
-
-        const need = roundForUnit(base * scale, unit);
+        if (!supplyId) continue;
 
         // enrich with supply info
         const sSnap = await getDoc(doc(db, "users", user.uid, "supplies", supplyId));
         const sData = sSnap.exists() ? sSnap.data() : null;
-        const inStock = sData ? Number(sData?.qty) || 0 : 0;
-        const stockUnit = sData?.unit || unit;
         const name = sData?.name || it?.name || supplyId;
         const type = sData?.type || "";
+
+        const { stockUnit, displayUnit } = getRecipeItemUnits(it, sData || {});
+        const baseStock = Number(it?.amount) || 0;
+        if (baseStock <= 0) continue;
+
+        const perBatchDisplay = getRecipeItemDisplayAmount(it, sData || {});
+        const needStock = roundForUnit(baseStock * scale, stockUnit);
+        const needDisplay =
+          displayUnit && stockUnit && areCompatible(displayUnit, stockUnit)
+            ? roundForUnit(convert(needStock, stockUnit, displayUnit), displayUnit)
+            : roundForUnit(perBatchDisplay * scale, displayUnit);
+
+        const inStock = sData
+          ? Number(sData?.quantity ?? sData?.qty ?? sData?.q ?? 0) || 0
+          : 0;
+
+        const stockForDisplayUnit =
+          displayUnit && stockUnit && areCompatible(displayUnit, stockUnit)
+            ? Number(convert(inStock, stockUnit, displayUnit)) || 0
+            : inStock;
+
+        const shortStock = Math.max(0, needStock - inStock);
+        const shortDisplay =
+          displayUnit && stockUnit && areCompatible(displayUnit, stockUnit)
+            ? Number(convert(shortStock, stockUnit, displayUnit)) || 0
+            : shortStock;
 
         out.push({
           supplyId,
           name,
           type,
-          perBatch: base,
-          unit,
-          need,
-          inStock,
           stockUnit,
-          short: Math.max(0, need - (canonicalUnit(stockUnit) === canonicalUnit(unit) ? inStock : Number(convert(inStock, stockUnit, unit)) || 0)),
+          perBatchDisplay,
+          displayUnit,
+          needDisplay,
+          onHandStock: inStock,
+          inStockDisplay: stockForDisplayUnit,
+          shortDisplay,
         });
       }
 
@@ -126,23 +175,39 @@ export default function RecipeConsumptionPreview({
                 <th className="py-1 pr-2">Supply</th>
                 <th className="py-1 pr-2">Per batch</th>
                 <th className="py-1 pr-2">Total need</th>
-                <th className="py-1 pr-2">In stock</th>
+                <th className="py-1 pr-2">Stock unit</th>
+                <th className="py-1 pr-2">On hand</th>
                 <th className="py-1 pr-2">Short</th>
               </tr>
             </thead>
             <tbody>
               {rows.map((r) => {
-                const stockSameUnit = canonicalUnit(r.stockUnit) === canonicalUnit(r.unit);
-                const stockForNeedUnit = stockSameUnit ? r.inStock : (Number(convert(r.inStock, r.stockUnit, r.unit)) || 0);
-                const shortage = Math.max(0, r.need - stockForNeedUnit);
+                const displayUnitCanonical = canonicalUnit(r.displayUnit);
+                const stockUnitCanonical = canonicalUnit(r.stockUnit);
+                const shortage = Math.max(0, Number(r.shortDisplay || 0));
                 return (
                   <tr key={r.supplyId} className="border-t border-zinc-200 dark:border-zinc-800">
                     <td className="py-1 pr-2">{r.name}</td>
-                    <td className="py-1 pr-2">{formatAmount(r.perBatch)} {r.unit}</td>
-                    <td className="py-1 pr-2">{formatAmount(r.need)} {r.unit}</td>
-                    <td className="py-1 pr-2">{formatAmount(stockForNeedUnit)} {r.unit}</td>
+                    <td className="py-1 pr-2">
+                      {displayUnitCanonical === "count"
+                        ? Math.floor(Number(r.perBatchDisplay || 0))
+                        : formatAmount(r.perBatchDisplay)} {r.displayUnit}
+                    </td>
+                    <td className="py-1 pr-2">
+                      {displayUnitCanonical === "count"
+                        ? Math.floor(Number(r.needDisplay || 0))
+                        : formatAmount(r.needDisplay)} {r.displayUnit}
+                    </td>
+                    <td className="py-1 pr-2">{r.stockUnit}</td>
+                    <td className="py-1 pr-2">
+                      {stockUnitCanonical === "count"
+                        ? Math.floor(Number(r.onHandStock || 0))
+                        : formatAmount(r.onHandStock)} {r.stockUnit}
+                    </td>
                     <td className={"py-1 pr-2 " + (shortage > 0 ? "text-amber-600 dark:text-amber-300" : "opacity-70")}>
-                      {shortage > 0 ? `${formatAmount(shortage)} ${r.unit}` : "OK"}
+                      {shortage > 0
+                        ? `${displayUnitCanonical === "count" ? Math.floor(shortage) : formatAmount(shortage)} ${r.displayUnit}`
+                        : "OK"}
                     </td>
                   </tr>
                 );

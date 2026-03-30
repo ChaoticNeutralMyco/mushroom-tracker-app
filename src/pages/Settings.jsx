@@ -4,10 +4,12 @@
 // and a desktop-only "Check for updates" button in the Advanced tab.
 
 import React, { useCallback, useEffect, useMemo, useState } from "react";
-import { auth, db } from "../firebase-config";
+import { auth, db, storage } from "../firebase-config";
 import { doc, getDoc, setDoc, collection, getDocs } from "firebase/firestore";
 import { deleteAllUserData, clearAllLocalCaches, deleteGrowDataOnly } from "../lib/delete-all";
 import { useConfirm } from "../components/ui/ConfirmDialog";
+import { canonicalUnit } from "../lib/units";
+import { allowedStagesForType, normalizeType } from "../lib/growFilters";
 
 /** Accent palette */
 const ACCENTS = [
@@ -48,6 +50,60 @@ const defaultPrefs = {
   autoConvertEnvNotes: true,
   guideEnabled: true,
 };
+
+
+const APP_VERSION = import.meta.env.VITE_APP_VERSION || import.meta.env.VITE_RELEASE_VERSION || "dev";
+const APP_RELEASE_CHANNEL = import.meta.env.MODE || "development";
+
+const CHANGELOG_NOTES = [
+  "Auth polish with Enter-to-submit, password reveal, and cleaner reset flow.",
+  "Settings now include diagnostics and a data integrity scanner before final release tweaks.",
+  "Remaining alert and prompt style interactions are moving into the shared modal flow.",
+  "Recipe and GrowForm unit previews now keep tiny nonzero values visible instead of collapsing to zero.",
+  "Release prep is staged for desktop install, web deploy, and later mobile packaging.",
+];
+
+function getBuildTargetLabel() {
+  if (typeof window !== "undefined" && window.__TAURI__) return "Desktop (Tauri)";
+  if (typeof navigator !== "undefined") {
+    const ua = String(navigator.userAgent || "");
+    if (/android|iphone|ipad|ipod/i.test(ua)) return "Mobile web";
+  }
+  return "Web";
+}
+
+function formatBytes(value) {
+  const bytes = Number(value);
+  if (!Number.isFinite(bytes) || bytes <= 0) return "0 B";
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  let size = bytes;
+  let idx = 0;
+  while (size >= 1024 && idx < units.length - 1) {
+    size /= 1024;
+    idx += 1;
+  }
+  const shown = size >= 100 ? size.toFixed(0) : size >= 10 ? size.toFixed(1) : size.toFixed(2);
+  return `${shown.replace(/(\.\d*?[1-9])0+$/, "$1").replace(/\.0+$/, "")} ${units[idx]}`;
+}
+
+function normalizeScope(value = "") {
+  const raw = String(value || "").trim().toLowerCase();
+  if (
+    [
+      "post-production",
+      "post production",
+      "postproduction",
+      "post-process",
+      "post process",
+      "postprocessing",
+      "post processing",
+      "post-processing",
+    ].includes(raw)
+  ) {
+    return "post-production";
+  }
+  return "production";
+}
 
 // LocalStorage keys used by LabelPrint.jsx
 const LS_LABEL_TEMPLATE = "labels.template"; // "5160" | "5167"
@@ -117,6 +173,12 @@ export default function Settings({
   // Simple status for updater button
   // null | "checking" | "available" | "none" | "error"
   const [updateStatus, setUpdateStatus] = useState(null);
+
+
+  const [diagnosticsBusy, setDiagnosticsBusy] = useState(false);
+  const [diagnostics, setDiagnostics] = useState(null);
+  const [integrityBusy, setIntegrityBusy] = useState(false);
+  const [integrityReport, setIntegrityReport] = useState(null);
 
   // ---- Labels state (kept in this file; read by LabelPrint via LS) ----
   const [labelTemplate, setLabelTemplate] = useState(() => {
@@ -464,6 +526,228 @@ export default function Settings({
     }
   };
 
+
+  const appBuildInfo = useMemo(() => {
+    const projectId = auth?.app?.options?.projectId || db?.app?.options?.projectId || "unknown";
+    const bucket = storage?.app?.options?.storageBucket || "unknown";
+    return {
+      version: APP_VERSION,
+      channel: APP_RELEASE_CHANNEL,
+      target: getBuildTargetLabel(),
+      projectId,
+      bucket,
+      themeMode: prefs.mode || "system",
+      accent: prefs.accent || DEFAULT_ACCENT,
+      themeStyle: prefs.themeStyle || DEFAULT_THEME_STYLE,
+    };
+  }, [prefs]);
+
+  const runDiagnostics = useCallback(async () => {
+    setDiagnosticsBusy(true);
+    try {
+      const localStorageOk = (() => {
+        try {
+          localStorage.setItem("__cnm_diag__", "1");
+          localStorage.removeItem("__cnm_diag__");
+          return true;
+        } catch {
+          return false;
+        }
+      })();
+
+      const counts = {};
+      if (uid) {
+        for (const name of ["grows", "recipes", "supplies", "tasks", "strains"]) {
+          const snap = await getDocs(collection(db, "users", uid, name));
+          counts[name] = snap.size;
+        }
+      }
+
+      const prefsReadable = uid
+        ? (await getDoc(doc(db, "users", uid, "settings", "preferences"))).exists()
+        : false;
+
+      const storageEstimate =
+        typeof navigator !== "undefined" && navigator.storage?.estimate
+          ? await navigator.storage.estimate()
+          : null;
+
+      setDiagnostics({
+        ranAt: new Date().toISOString(),
+        checks: [
+          { label: "Signed in user", status: uid ? "ok" : "warn", value: uid || "Not signed in" },
+          { label: "Online", status: typeof navigator === "undefined" || navigator.onLine ? "ok" : "warn", value: typeof navigator === "undefined" ? "Unknown" : navigator.onLine ? "Yes" : "No" },
+          { label: "Theme", status: "ok", value: `${prefs.mode || "system"} / ${prefs.accent || DEFAULT_ACCENT} / ${prefs.themeStyle || DEFAULT_THEME_STYLE}` },
+          { label: "Notifications", status: typeof Notification !== "undefined" ? "ok" : "warn", value: typeof Notification !== "undefined" ? Notification.permission : "Unsupported" },
+          { label: "Camera API", status: typeof navigator !== "undefined" && navigator.mediaDevices?.getUserMedia ? "ok" : "warn", value: typeof navigator !== "undefined" && navigator.mediaDevices?.getUserMedia ? "Available" : "Unavailable" },
+          { label: "Service Worker", status: typeof navigator !== "undefined" && "serviceWorker" in navigator ? "ok" : "warn", value: typeof navigator !== "undefined" && "serviceWorker" in navigator ? "Supported" : "Unsupported" },
+          { label: "IndexedDB", status: typeof window !== "undefined" && "indexedDB" in window ? "ok" : "warn", value: typeof window !== "undefined" && "indexedDB" in window ? "Supported" : "Unsupported" },
+          { label: "Local storage", status: localStorageOk ? "ok" : "warn", value: localStorageOk ? "Readable and writable" : "Unavailable" },
+          { label: "Preferences doc", status: uid ? (prefsReadable ? "ok" : "warn") : "warn", value: uid ? (prefsReadable ? "Readable" : "Missing") : "Not signed in" },
+          { label: "Firebase project", status: "ok", value: appBuildInfo.projectId },
+          { label: "Storage bucket", status: "ok", value: appBuildInfo.bucket },
+        ],
+        counts,
+        storageEstimate,
+      });
+    } catch (error) {
+      console.error("Diagnostics failed:", error);
+      pushNotice("Diagnostics failed. See console for details.", "error");
+    } finally {
+      setDiagnosticsBusy(false);
+    }
+  }, [appBuildInfo.bucket, appBuildInfo.projectId, prefs.accent, prefs.mode, prefs.themeStyle, pushNotice, uid]);
+
+  const runIntegrityScan = useCallback(async () => {
+    if (!uid) {
+      pushNotice("Sign in before running the data integrity scan.", "warning");
+      return;
+    }
+
+    setIntegrityBusy(true);
+    try {
+      const [growsSnap, recipesSnap, suppliesSnap, tasksSnap] = await Promise.all([
+        getDocs(collection(db, "users", uid, "grows")),
+        getDocs(collection(db, "users", uid, "recipes")),
+        getDocs(collection(db, "users", uid, "supplies")),
+        getDocs(collection(db, "users", uid, "tasks")),
+      ]);
+
+      const grows = growsSnap.docs.map((d) => ({ id: d.id, ...d.data() }));
+      const recipes = recipesSnap.docs.map((d) => ({ id: d.id, ...d.data() }));
+      const supplies = suppliesSnap.docs.map((d) => ({ id: d.id, ...d.data() }));
+      const tasks = tasksSnap.docs.map((d) => ({ id: d.id, ...d.data() }));
+
+      const growIds = new Set(grows.map((g) => g.id));
+      const recipeIds = new Set(recipes.map((r) => r.id));
+      const supplyIds = new Set(supplies.map((s) => s.id));
+      const issues = [];
+
+      const pushIssue = (severity, scope, title, detail) => {
+        issues.push({ severity, scope, title, detail });
+      };
+
+      const seenSupplyNames = new Map();
+      for (const supply of supplies) {
+        const qty = Number(supply?.quantity ?? supply?.qty ?? 0);
+        const cost = Number(supply?.cost ?? 0);
+        const stockUnit = canonicalUnit(supply?.unit || "");
+        const normalizedName = String(supply?.name || "").trim().toLowerCase();
+
+        if (!stockUnit) {
+          pushIssue("warning", "Supplies", supply.name || supply.id, "Missing stock unit.");
+        }
+        if (qty < 0) {
+          pushIssue("error", "Supplies", supply.name || supply.id, `Negative quantity detected: ${qty}.`);
+        }
+        if (cost < 0) {
+          pushIssue("error", "Supplies", supply.name || supply.id, `Negative locked unit cost detected: ${cost}.`);
+        }
+        if (normalizedName) {
+          if (seenSupplyNames.has(normalizedName)) {
+            pushIssue(
+              "warning",
+              "Supplies",
+              supply.name || supply.id,
+              `Possible duplicate supply name with ${seenSupplyNames.get(normalizedName)}.`
+            );
+          } else {
+            seenSupplyNames.set(normalizedName, supply.name || supply.id);
+          }
+        }
+      }
+
+      for (const recipe of recipes) {
+        const items = Array.isArray(recipe?.items) ? recipe.items : [];
+        if (!items.length) {
+          pushIssue("warning", "Recipes", recipe.name || recipe.id, "Recipe has no items.");
+        }
+        if (Number(recipe?.yield ?? 0) <= 0) {
+          pushIssue("warning", "Recipes", recipe.name || recipe.id, "Recipe yield is missing or zero.");
+        }
+        const scope = normalizeScope(recipe?.recipeScope || recipe?.scope || recipe?.recipeType || "");
+        if (!["production", "post-production"].includes(scope)) {
+          pushIssue("warning", "Recipes", recipe.name || recipe.id, `Unexpected recipe scope: ${scope}.`);
+        }
+
+        for (const item of items) {
+          const supplyId = item?.supplyId || item?.id;
+          const amount = Number(item?.amount || 0);
+          if (!supplyId || !supplyIds.has(supplyId)) {
+            pushIssue("error", "Recipes", recipe.name || recipe.id, `Missing supply reference: ${supplyId || "unknown"}.`);
+            continue;
+          }
+          if (!(amount > 0)) {
+            pushIssue("warning", "Recipes", recipe.name || recipe.id, `Non-positive item amount for supply ${supplyId}.`);
+          }
+        }
+      }
+
+      for (const grow of grows) {
+        const label = grow.abbr || grow.strain || grow.id;
+        if (grow?.recipeId && !recipeIds.has(grow.recipeId)) {
+          pushIssue("error", "Grows", label, `References missing recipe ${grow.recipeId}.`);
+        }
+        if ((grow?.parentSource === "Grow" || grow?.parentSource === "grow") && grow?.parentId && !growIds.has(grow.parentId)) {
+          pushIssue("warning", "Grows", label, `References missing parent grow ${grow.parentId}.`);
+        }
+        const stage = String(grow?.stage || "").trim();
+        if (stage) {
+          const allowed = allowedStagesForType(normalizeType(grow?.type || grow?.growType || ""));
+          const allowedPlusTerminal = new Set([...allowed, "Contaminated", "Consumed"]);
+          if (!allowedPlusTerminal.has(stage)) {
+            pushIssue("warning", "Grows", label, `Stage "${stage}" does not match the current type flow.`);
+          }
+        }
+        const total = Number(grow?.amountTotal ?? 0);
+        const available = Number(grow?.amountAvailable ?? 0);
+        if (total < 0) {
+          pushIssue("error", "Grows", label, `Negative amountTotal detected: ${total}.`);
+        }
+        if (available < 0) {
+          pushIssue("error", "Grows", label, `Negative amountAvailable detected: ${available}.`);
+        }
+        const consumables = Array.isArray(grow?.labConsumablesUsed) ? grow.labConsumablesUsed : [];
+        for (const row of consumables) {
+          if (row?.supplyId && !supplyIds.has(row.supplyId)) {
+            pushIssue("warning", "Grows", label, `Lab consumable reference is missing supply ${row.supplyId}.`);
+          }
+        }
+      }
+
+      for (const task of tasks) {
+        const label = task?.title || task?.name || task?.id;
+        if (task?.growId && !growIds.has(task.growId)) {
+          pushIssue("warning", "Tasks", label, `Linked grow is missing: ${task.growId}.`);
+        }
+      }
+
+      const summary = {
+        total: issues.length,
+        errors: issues.filter((issue) => issue.severity === "error").length,
+        warnings: issues.filter((issue) => issue.severity !== "error").length,
+      };
+
+      setIntegrityReport({
+        ranAt: new Date().toISOString(),
+        summary,
+        issues,
+      });
+
+      pushNotice(
+        issues.length
+          ? `Integrity scan complete. Found ${summary.errors} error(s) and ${summary.warnings} warning(s).`
+          : "Integrity scan complete. No problems found in the checked collections.",
+        issues.length ? "warning" : "success"
+      );
+    } catch (error) {
+      console.error("Integrity scan failed:", error);
+      pushNotice("Integrity scan failed. See console for details.", "error");
+    } finally {
+      setIntegrityBusy(false);
+    }
+  }, [pushNotice, uid]);
+
   return (
     <div className="mx-auto max-w-5xl px-4 py-6">
       <h1 className="text-2xl font-semibold mb-4">Settings</h1>
@@ -779,6 +1063,162 @@ export default function Settings({
       {/* ADVANCED */}
       {activeTab === "adv" && (
         <section role="tabpanel" aria-label="Advanced settings" className="space-y-6">
+          <div className="space-y-3">
+            <h2 className="text-lg font-medium">App Build</h2>
+            <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-3">
+              <div className="rounded-xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 p-4">
+                <div className="text-xs uppercase tracking-wide opacity-60">Version</div>
+                <div className="mt-2 text-lg font-semibold">{appBuildInfo.version}</div>
+                <div className="mt-1 text-xs opacity-70">Channel: {appBuildInfo.channel}</div>
+              </div>
+              <div className="rounded-xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 p-4">
+                <div className="text-xs uppercase tracking-wide opacity-60">Target</div>
+                <div className="mt-2 text-lg font-semibold">{appBuildInfo.target}</div>
+                <div className="mt-1 text-xs opacity-70">Theme: {appBuildInfo.themeMode}</div>
+              </div>
+              <div className="rounded-xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 p-4">
+                <div className="text-xs uppercase tracking-wide opacity-60">Firebase Project</div>
+                <div className="mt-2 text-sm font-semibold break-all">{appBuildInfo.projectId}</div>
+                <div className="mt-1 text-xs opacity-70">Bucket: {appBuildInfo.bucket}</div>
+              </div>
+              <div className="rounded-xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 p-4">
+                <div className="text-xs uppercase tracking-wide opacity-60">Active theme</div>
+                <div className="mt-2 text-sm font-semibold">{appBuildInfo.accent} · {appBuildInfo.themeStyle}</div>
+                <div className="mt-1 text-xs opacity-70">Ready for final polish + release prep</div>
+              </div>
+            </div>
+          </div>
+
+          <div className="space-y-3">
+            <h2 className="text-lg font-medium">Changelog Preview</h2>
+            <div className="rounded-xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 p-4">
+              <ul className="space-y-2 text-sm text-zinc-700 dark:text-zinc-200">
+                {CHANGELOG_NOTES.map((item) => (
+                  <li key={item} className="flex gap-2">
+                    <span className="mt-1 h-1.5 w-1.5 rounded-full bg-[rgba(var(--_accent-rgb),1)]" />
+                    <span>{item}</span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          </div>
+
+          <div className="space-y-3">
+            <h2 className="text-lg font-medium">Diagnostics</h2>
+            <p className="text-sm text-slate-500 dark:text-slate-400">
+              Run a quick health check before you do final release tweaks or deploy a new build.
+            </p>
+            <div className="flex flex-wrap items-center gap-2">
+              <button type="button" className="btn" onClick={runDiagnostics} disabled={busy || diagnosticsBusy}>
+                {diagnosticsBusy ? "Running diagnostics…" : "Run diagnostics"}
+              </button>
+              {diagnostics?.ranAt ? (
+                <span className="text-xs text-slate-500 dark:text-slate-400">
+                  Last run: {new Date(diagnostics.ranAt).toLocaleString()}
+                </span>
+              ) : null}
+            </div>
+            {diagnostics ? (
+              <div className="rounded-xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 p-4 space-y-4">
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                  {diagnostics.checks.map((check) => (
+                    <div key={check.label} className="rounded-lg border border-zinc-200 dark:border-zinc-800 px-3 py-2">
+                      <div className="text-xs uppercase tracking-wide opacity-60">{check.label}</div>
+                      <div className="mt-1 flex items-center gap-2 text-sm">
+                        <span
+                          className={`inline-flex h-2.5 w-2.5 rounded-full ${
+                            check.status === "ok"
+                              ? "bg-emerald-500"
+                              : check.status === "warn"
+                                ? "bg-amber-500"
+                                : "bg-rose-500"
+                          }`}
+                        />
+                        <span>{check.value}</span>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+                {diagnostics.storageEstimate ? (
+                  <div className="text-xs text-slate-500 dark:text-slate-400">
+                    Estimated storage usage: {formatBytes(diagnostics.storageEstimate.usage)} of {formatBytes(diagnostics.storageEstimate.quota)}
+                  </div>
+                ) : null}
+                <div className="grid grid-cols-2 md:grid-cols-5 gap-3 text-sm">
+                  {Object.entries(diagnostics.counts || {}).map(([name, count]) => (
+                    <div key={name} className="rounded-lg border border-zinc-200 dark:border-zinc-800 px-3 py-2">
+                      <div className="text-xs uppercase tracking-wide opacity-60">{name}</div>
+                      <div className="mt-1 font-semibold">{count}</div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ) : null}
+          </div>
+
+          <div className="space-y-3">
+            <h2 className="text-lg font-medium">Data Integrity Scanner</h2>
+            <p className="text-sm text-slate-500 dark:text-slate-400">
+              Checks grows, recipes, supplies, and tasks for broken references, invalid counts, and stage mismatches.
+            </p>
+            <div className="flex flex-wrap items-center gap-2">
+              <button type="button" className="btn" onClick={runIntegrityScan} disabled={busy || integrityBusy}>
+                {integrityBusy ? "Scanning…" : "Run integrity scan"}
+              </button>
+              {integrityReport?.ranAt ? (
+                <span className="text-xs text-slate-500 dark:text-slate-400">
+                  Last run: {new Date(integrityReport.ranAt).toLocaleString()}
+                </span>
+              ) : null}
+            </div>
+            {integrityReport ? (
+              <div className="rounded-xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 p-4 space-y-4">
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                  <div className="rounded-lg border border-zinc-200 dark:border-zinc-800 px-3 py-2">
+                    <div className="text-xs uppercase tracking-wide opacity-60">Issues found</div>
+                    <div className="mt-1 text-lg font-semibold">{integrityReport.summary.total}</div>
+                  </div>
+                  <div className="rounded-lg border border-zinc-200 dark:border-zinc-800 px-3 py-2">
+                    <div className="text-xs uppercase tracking-wide opacity-60">Errors</div>
+                    <div className="mt-1 text-lg font-semibold text-rose-600 dark:text-rose-300">{integrityReport.summary.errors}</div>
+                  </div>
+                  <div className="rounded-lg border border-zinc-200 dark:border-zinc-800 px-3 py-2">
+                    <div className="text-xs uppercase tracking-wide opacity-60">Warnings</div>
+                    <div className="mt-1 text-lg font-semibold text-amber-600 dark:text-amber-300">{integrityReport.summary.warnings}</div>
+                  </div>
+                </div>
+                {integrityReport.issues.length ? (
+                  <div className="max-h-80 overflow-y-auto rounded-lg border border-zinc-200 dark:border-zinc-800">
+                    <div className="divide-y divide-zinc-200 dark:divide-zinc-800">
+                      {integrityReport.issues.map((issue, index) => (
+                        <div key={`${issue.scope}-${issue.title}-${index}`} className="px-3 py-2 text-sm">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <span
+                              className={`inline-flex rounded-full px-2 py-0.5 text-xs font-medium ${
+                                issue.severity === "error"
+                                  ? "bg-rose-600/15 text-rose-700 dark:text-rose-300"
+                                  : "bg-amber-600/15 text-amber-700 dark:text-amber-300"
+                              }`}
+                            >
+                              {issue.severity}
+                            </span>
+                            <span className="font-medium">{issue.scope}</span>
+                            <span className="opacity-70">{issue.title}</span>
+                          </div>
+                          <div className="mt-1 text-zinc-600 dark:text-zinc-300">{issue.detail}</div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                ) : (
+                  <div className="text-sm text-emerald-700 dark:text-emerald-300">
+                    No integrity problems found in the checked collections.
+                  </div>
+                )}
+              </div>
+            ) : null}
+          </div>
+
           {/* Updates block */}
           <div className="space-y-3">
             <h2 className="text-lg font-medium">Desktop Updates</h2>

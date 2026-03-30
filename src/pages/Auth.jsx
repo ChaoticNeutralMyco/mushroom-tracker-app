@@ -1,5 +1,5 @@
 // src/pages/Auth.jsx
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { auth } from "../firebase-config";
 import {
   signInWithEmailAndPassword,
@@ -8,14 +8,30 @@ import {
   signInWithPopup,
   sendPasswordResetEmail,
 } from "firebase/auth";
+import { Eye, EyeOff, Mail, Lock, KeyRound } from "lucide-react";
+
+function friendlyAuthError(error) {
+  const code = String(error?.code || "").toLowerCase();
+  if (!code) return error?.message || "Something went wrong.";
+  if (code.includes("invalid-email")) return "Enter a valid email address.";
+  if (code.includes("missing-password")) return "Enter your password.";
+  if (code.includes("missing-email")) return "Enter your email address.";
+  if (code.includes("invalid-credential") || code.includes("wrong-password") || code.includes("user-not-found")) {
+    return "Email or password is incorrect.";
+  }
+  if (code.includes("email-already-in-use")) return "That email is already being used.";
+  if (code.includes("weak-password")) return "Use a stronger password with at least 6 characters.";
+  if (code.includes("too-many-requests")) {
+    return "Too many attempts right now. Wait a bit and try again.";
+  }
+  return error?.message || "Something went wrong.";
+}
 
 function BrandLogo() {
-  // Use your CNM PWA icon as the primary logo
   const [src, setSrc] = useState("/pwa-192.png");
   const [showImg, setShowImg] = useState(true);
 
   useEffect(() => {
-    // Try to preload the CNM logo; fall back to inline SVG if it fails
     const img = new Image();
     img.onload = () => {
       setSrc("/pwa-192.png");
@@ -43,7 +59,7 @@ function BrandLogo() {
       />
     );
   }
-  // Fallback minimal SVG (theme-accent aware) — unchanged from your original
+
   return (
     <svg
       width="80"
@@ -74,56 +90,85 @@ function BrandLogo() {
     </svg>
   );
 }
+
 export default function Auth() {
   const [mode, setMode] = useState("signin"); // signin | signup | reset
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [showPassword, setShowPassword] = useState(false);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
   const [notice, setNotice] = useState("");
 
-  const setAndClearError = (e) => {
-    setErr(e?.message || String(e) || "Something went wrong.");
+  const emailTrimmed = useMemo(() => email.trim(), [email]);
+  const passwordTrimmed = useMemo(() => String(password || ""), [password]);
+
+  const clearState = () => {
+    setErr("");
     setNotice("");
-    setBusy(false);
+  };
+
+  const setAndClearError = (error) => {
+    setErr(friendlyAuthError(error));
+    setNotice("");
   };
 
   const signIn = async () => {
+    if (!emailTrimmed) {
+      setErr("Enter your email address.");
+      return;
+    }
+    if (!passwordTrimmed) {
+      setErr("Enter your password.");
+      return;
+    }
+
     setBusy(true);
-    setErr("");
-    setNotice("");
+    clearState();
     try {
-      await signInWithEmailAndPassword(auth, email.trim(), password);
-    } catch (e) {
-      setAndClearError(e);
+      await signInWithEmailAndPassword(auth, emailTrimmed, passwordTrimmed);
+    } catch (error) {
+      setAndClearError(error);
     } finally {
       setBusy(false);
     }
   };
 
   const signUp = async () => {
+    if (!emailTrimmed) {
+      setErr("Enter your email address.");
+      return;
+    }
+    if (!passwordTrimmed) {
+      setErr("Create a password.");
+      return;
+    }
+
     setBusy(true);
-    setErr("");
-    setNotice("");
+    clearState();
     try {
-      await createUserWithEmailAndPassword(auth, email.trim(), password);
-    } catch (e) {
-      setAndClearError(e);
+      await createUserWithEmailAndPassword(auth, emailTrimmed, passwordTrimmed);
+    } catch (error) {
+      setAndClearError(error);
     } finally {
       setBusy(false);
     }
   };
 
   const reset = async () => {
+    if (!emailTrimmed) {
+      setErr("Enter the email address for your account first.");
+      return;
+    }
+
     setBusy(true);
-    setErr("");
-    setNotice("");
+    clearState();
     try {
-      await sendPasswordResetEmail(auth, email.trim());
+      await sendPasswordResetEmail(auth, emailTrimmed);
       setMode("signin");
-      setNotice("Password reset email sent if the address exists.");
-    } catch (e) {
-      setAndClearError(e);
+      setNotice("Reset link sent. Check your email inbox and spam folder.");
+    } catch (error) {
+      setAndClearError(error);
     } finally {
       setBusy(false);
     }
@@ -131,16 +176,38 @@ export default function Auth() {
 
   const google = async () => {
     setBusy(true);
-    setErr("");
-    setNotice("");
+    clearState();
     try {
       const provider = new GoogleAuthProvider();
       await signInWithPopup(auth, provider);
-    } catch (e) {
-      setAndClearError(e);
+    } catch (error) {
+      setAndClearError(error);
     } finally {
       setBusy(false);
     }
+  };
+
+  const handlePrimarySubmit = async (event) => {
+    event.preventDefault();
+    if (busy) return;
+    if (mode === "signin") {
+      await signIn();
+      return;
+    }
+    await signUp();
+  };
+
+  const handleResetSubmit = async (event) => {
+    event.preventDefault();
+    if (busy) return;
+    await reset();
+  };
+
+  const switchMode = (nextMode) => {
+    setMode(nextMode);
+    setErr("");
+    setNotice("");
+    if (nextMode !== "reset") setShowPassword(false);
   };
 
   return (
@@ -150,67 +217,91 @@ export default function Auth() {
           <div className="flex flex-col items-center gap-3 mb-4">
             <BrandLogo />
             <h1 className="text-xl font-semibold">Mushroom Tracker</h1>
+            <p className="text-sm text-zinc-500 dark:text-zinc-400 text-center">
+              Sign in faster with Enter, preview your password when needed, and reset access without leaving the page.
+            </p>
           </div>
 
-          {err && (
-            <div className="mb-3 rounded-lg border border-rose-200 dark:border-rose-900/60 bg-rose-50 dark:bg-rose-950/30 px-3 py-2 text-sm text-rose-700 dark:text-rose-200">{err}</div>
-          )}
+          {err ? (
+            <div className="mb-3 rounded-lg border border-rose-200 dark:border-rose-900/60 bg-rose-50 dark:bg-rose-950/30 px-3 py-2 text-sm text-rose-700 dark:text-rose-200">
+              {err}
+            </div>
+          ) : null}
 
-          {notice && (
-            <div className="mb-3 rounded-lg border border-[rgba(var(--_accent-rgb),0.35)] bg-[rgba(var(--_accent-rgb),0.10)] px-3 py-2 text-sm text-zinc-800 dark:text-zinc-100">{notice}</div>
-          )}
+          {notice ? (
+            <div className="mb-3 rounded-lg border border-[rgba(var(--_accent-rgb),0.35)] bg-[rgba(var(--_accent-rgb),0.10)] px-3 py-2 text-sm text-zinc-800 dark:text-zinc-100">
+              {notice}
+            </div>
+          ) : null}
 
-          {mode !== "reset" && (
-            <>
-              <label className="block mb-3 text-sm">
-                <div className="mb-1 opacity-80">Email</div>
+          {mode !== "reset" ? (
+            <form onSubmit={handlePrimarySubmit} className="space-y-4">
+              <label className="block text-sm">
+                <div className="mb-1 opacity-80 flex items-center gap-2">
+                  <Mail size={14} />
+                  <span>Email</span>
+                </div>
                 <input
                   type="email"
                   value={email}
                   onChange={(e) => setEmail(e.target.value)}
                   className="w-full rounded-lg border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-800 px-3 py-2"
                   autoComplete="email"
-                />
-              </label>
-              <label className="block mb-4 text-sm">
-                <div className="mb-1 opacity-80">Password</div>
-                <input
-                  type="password"
-                  value={password}
-                  onChange={(e) => setPassword(e.target.value)}
-                  className="w-full rounded-lg border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-800 px-3 py-2"
-                  autoComplete={mode === "signup" ? "new-password" : "current-password"}
+                  autoFocus
                 />
               </label>
 
-              {mode === "signin" ? (
-                <button
-                  onClick={signIn}
-                  disabled={busy}
-                  className="w-full px-4 py-2 rounded-lg accent-bg disabled:opacity-60"
-                >
-                  {busy ? "Signing in…" : "Sign in"}
-                </button>
-              ) : (
-                <button
-                  onClick={signUp}
-                  disabled={busy}
-                  className="w-full px-4 py-2 rounded-lg accent-bg disabled:opacity-60"
-                >
-                  {busy ? "Creating account…" : "Create account"}
-                </button>
-              )}
+              <label className="block text-sm">
+                <div className="mb-1 opacity-80 flex items-center gap-2">
+                  <Lock size={14} />
+                  <span>Password</span>
+                </div>
+                <div className="relative">
+                  <input
+                    type={showPassword ? "text" : "password"}
+                    value={password}
+                    onChange={(e) => setPassword(e.target.value)}
+                    className="w-full rounded-lg border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-800 px-3 py-2 pr-12"
+                    autoComplete={mode === "signup" ? "new-password" : "current-password"}
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowPassword((prev) => !prev)}
+                    className="absolute inset-y-0 right-0 px-3 text-zinc-500 hover:text-zinc-800 dark:hover:text-zinc-200"
+                    aria-label={showPassword ? "Hide password" : "Show password"}
+                    title={showPassword ? "Hide password" : "Show password"}
+                  >
+                    {showPassword ? <EyeOff size={18} /> : <Eye size={18} />}
+                  </button>
+                </div>
+              </label>
+
+              <button
+                type="submit"
+                disabled={busy}
+                className="w-full px-4 py-2 rounded-lg accent-bg disabled:opacity-60"
+              >
+                {mode === "signin"
+                  ? busy
+                    ? "Signing in…"
+                    : "Sign in"
+                  : busy
+                    ? "Creating account…"
+                    : "Create account"}
+              </button>
 
               <div className="mt-3 grid grid-cols-2 gap-2">
                 <button
-                  onClick={() => setMode(mode === "signin" ? "signup" : "signin")}
+                  type="button"
+                  onClick={() => switchMode(mode === "signin" ? "signup" : "signin")}
                   className="px-3 py-2 rounded-lg bg-zinc-200 dark:bg-zinc-800 hover:bg-zinc-300 dark:hover:bg-zinc-700 text-sm"
                   disabled={busy}
                 >
                   {mode === "signin" ? "Need an account?" : "Have an account?"}
                 </button>
                 <button
-                  onClick={() => setMode("reset")}
+                  type="button"
+                  onClick={() => switchMode("reset")}
                   className="px-3 py-2 rounded-lg bg-zinc-200 dark:bg-zinc-800 hover:bg-zinc-300 dark:hover:bg-zinc-700 text-sm"
                   disabled={busy}
                 >
@@ -225,42 +316,52 @@ export default function Auth() {
               </div>
 
               <button
+                type="button"
                 onClick={google}
                 disabled={busy}
                 className="w-full px-4 py-2 rounded-lg border border-zinc-300 dark:border-zinc-700 hover:bg-zinc-50 dark:hover:bg-zinc-800 text-sm disabled:opacity-60"
               >
                 Continue with Google
               </button>
-            </>
-          )}
+            </form>
+          ) : (
+            <form onSubmit={handleResetSubmit} className="space-y-4">
+              <div className="rounded-xl border border-zinc-200 dark:border-zinc-800 bg-zinc-50 dark:bg-zinc-950/40 p-3 text-sm text-zinc-600 dark:text-zinc-300">
+                Enter your email and press Enter or click the button below. We will send a reset link for that account.
+              </div>
 
-          {mode === "reset" && (
-            <>
-              <label className="block mb-4 text-sm">
-                <div className="mb-1 opacity-80">Email</div>
+              <label className="block text-sm">
+                <div className="mb-1 opacity-80 flex items-center gap-2">
+                  <KeyRound size={14} />
+                  <span>Email for reset</span>
+                </div>
                 <input
                   type="email"
                   value={email}
                   onChange={(e) => setEmail(e.target.value)}
                   className="w-full rounded-lg border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-800 px-3 py-2"
                   autoComplete="email"
+                  autoFocus
                 />
               </label>
+
               <button
-                onClick={reset}
+                type="submit"
                 disabled={busy}
                 className="w-full px-4 py-2 rounded-lg accent-bg disabled:opacity-60"
               >
                 {busy ? "Sending…" : "Send reset link"}
               </button>
+
               <button
-                onClick={() => setMode("signin")}
-                className="mt-3 w-full px-4 py-2 rounded-lg bg-zinc-200 dark:bg-zinc-800 hover:bg-zinc-300 dark:hover:bg-zinc-700 text-sm"
+                type="button"
+                onClick={() => switchMode("signin")}
+                className="w-full px-4 py-2 rounded-lg bg-zinc-200 dark:bg-zinc-800 hover:bg-zinc-300 dark:hover:bg-zinc-700 text-sm"
                 disabled={busy}
               >
                 Back to sign in
               </button>
-            </>
+            </form>
           )}
         </div>
 

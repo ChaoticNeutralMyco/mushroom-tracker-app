@@ -169,6 +169,40 @@ function getRecipeYieldForGrow(g, recipesMap) {
   return recY > 0 ? recY : 1;
 }
 
+function computeStoredLabConsumablesCost(g, suppliesMap) {
+  const inline = Number(g?.labConsumablesCost);
+  if (Number.isFinite(inline)) return Math.max(0, Number(inline.toFixed(2)));
+
+  const rows = Array.isArray(g?.labConsumablesUsed) ? g.labConsumablesUsed : [];
+  if (!rows.length) return 0;
+
+  let total = 0;
+  for (const row of rows) {
+    const directTotal = Number(row?.totalCost ?? row?.totalCostPerGrow ?? row?.costTotal);
+    if (Number.isFinite(directTotal)) {
+      total += directTotal;
+      continue;
+    }
+
+    const amount = toNumber(row?.amount ?? row?.amountPerGrow ?? row?.qty, 0);
+    const directUnitCost = Number(row?.unitCost ?? row?.unitPrice ?? row?.costPerUnit);
+    if (Number.isFinite(directUnitCost)) {
+      total += directUnitCost * amount;
+      continue;
+    }
+
+    const liveUnitCost = toNumber(
+      row?.supplyId && suppliesMap.has(row.supplyId)
+        ? suppliesMap.get(row.supplyId)?.cost
+        : 0,
+      0
+    );
+    total += liveUnitCost * amount;
+  }
+
+  return Math.max(0, Number(total.toFixed(2)));
+}
+
 function buildSuppliesMap(source) {
   const map = new Map();
   const arr = Array.isArray(source) ? source : [];
@@ -494,9 +528,11 @@ export default function GrowList({
         derived = Math.max(0, Number(((batchCost || 0) / divisor).toFixed(2)));
       }
 
-      if (derived != null) cost = derived;
+      const labConsumablesCost = computeStoredLabConsumablesCost(g, suppliesMap);
+
+      if (derived != null) cost = Number((derived + labConsumablesCost).toFixed(2));
       else if (hasStored) cost = stored;
-      else cost = null;
+      else cost = labConsumablesCost > 0 ? labConsumablesCost : null;
 
       map.set(g.id, cost);
     }

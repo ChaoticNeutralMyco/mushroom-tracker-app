@@ -2,14 +2,6 @@
 import React, { useMemo, useState } from "react";
 import { getCardFrontURL, getCardFrontURLFromCode } from "../../lib/strain-cards";
 
-/**
- * Displays the front artwork for a strain card.
- * - If `code` is provided, use it directly (e.g., "GT", "PE6").
- * - Otherwise, guess from the `name`.
- * - Falls back to default-front.png, then to GT-front.png if default is missing.
- * - Calls `onResolvedSrc(src)` with the final loaded image URL so the parent
- *   can know if we’re using the default.
- */
 export default function StrainCardImage({
   name,
   code,

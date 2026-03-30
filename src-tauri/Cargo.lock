@@ -1856,7 +1856,7 @@ dependencies = [
 
 [[package]]
 name = "mushroom-tracker"
-version = "1.0.3"
+version = "1.0.4"
 dependencies = [
  "serde",
  "serde_json",

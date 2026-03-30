@@ -1043,10 +1043,40 @@ export default function GrowDetail({
                 <button
                   className="btn-outline"
                   onClick={async () => {
-                    const t = prompt("Set total amount", String(total));
-                    if (t == null) return;
-                    const u = prompt("Set unit (e.g., ml, g, pcs)", amountUnit || "ml");
-                    await saveAmountSettings(t, u || "ml");
+                    const nextTotal = await confirm.prompt({
+                      title: "Edit total amount",
+                      message: "Set the total amount available for this grow.",
+                      inputLabel: `Total amount (${amountUnit || "ml"})`,
+                      inputType: "number",
+                      defaultValue: String(total),
+                      min: 0,
+                      step: 0.1,
+                      confirmLabel: "Save",
+                      validate: (value) => {
+                        if (String(value).trim() === "") return "Enter a total amount.";
+                        const parsed = Number(value);
+                        if (!Number.isFinite(parsed)) return "Enter a valid number.";
+                        if (parsed < 0) return "Total amount cannot be negative.";
+                        return true;
+                      },
+                    });
+                    if (nextTotal == null) return;
+
+                    const nextUnit = await confirm.prompt({
+                      title: "Edit unit",
+                      message: "Set the unit used for this grow volume or amount.",
+                      inputLabel: "Unit",
+                      defaultValue: amountUnit || "ml",
+                      inputPlaceholder: "ml, g, pcs",
+                      confirmLabel: "Save",
+                      validate: (value) => {
+                        if (!String(value).trim()) return "Enter a unit such as ml, g, or pcs.";
+                        return true;
+                      },
+                    });
+                    if (nextUnit == null) return;
+
+                    await saveAmountSettings(nextTotal, String(nextUnit || "ml").trim());
                   }}
                 >
                   Edit total/unit

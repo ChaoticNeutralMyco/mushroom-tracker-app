@@ -1,13 +1,14 @@
 // src/components/strains/StrainCard.jsx
-import React, { useMemo, useState } from "react";
+import React, { useId, useMemo, useState } from "react";
 import "./strain-card.css";
 import { Pencil, Trash2, ExternalLink } from "lucide-react";
 import StrainCardImage from "./StrainCardImage";
-import { getCardBackURL } from "../../lib/strain-cards";
+import StrainCardFrontBuilder from "./StrainCardFrontBuilder";
+import { getCardBackURL, normalizeStrainCardDesign } from "../../lib/strain-cards";
 
 function computeBannerFit(title = "") {
   const len = String(title).trim().length;
-  if (len <= 3) return { textLength: 42, fontSize: 9.2 };   // e.g., "B+"
+  if (len <= 3) return { textLength: 42, fontSize: 9.2 };
   if (len <= 6) return { textLength: 52, fontSize: 8.8 };
   if (len <= 10) return { textLength: 62, fontSize: 8.6 };
   if (len <= 16) return { textLength: 72, fontSize: 8.2 };
@@ -19,12 +20,8 @@ const toNum = (v) => (Number.isFinite(Number(v)) ? Number(v) : null);
 
 export default function StrainCard({
   strain,
-  // legacy props (already used in your app)
   stats,
   counts,
-  // NEW: per-strain aggregate from Analytics (optional)
-  // { avgColonize, avgFruit, avgHarvest, avgWet, avgDry, contamRate,
-  //   activeCount, archivedCount, storedCount }
   aggregate,
   checked = false,
   onToggleSelect,
@@ -35,6 +32,8 @@ export default function StrainCard({
   const [flipped, setFlipped] = useState(false);
   const [isDefaultFront, setIsDefaultFront] = useState(false);
   const backURL = useMemo(() => getCardBackURL(), []);
+  const backArcId = useId();
+  const cardDesign = useMemo(() => normalizeStrainCardDesign(strain || {}), [strain]);
 
   const title = strain?.name || "Untitled Strain";
   const sci = strain?.scientificName || "";
@@ -45,7 +44,6 @@ export default function StrainCard({
   const safeEdit = typeof onEdit === "function" ? onEdit : () => {};
   const safeDelete = typeof onDelete === "function" ? onDelete : () => {};
 
-  // Prefer aggregate (from Analytics) first, then legacy stats/counts
   const agg = aggregate || {};
   const s = stats || {};
   const c = counts || {};
@@ -61,14 +59,15 @@ export default function StrainCard({
   const archivedCount = toNum(agg.archivedCount ?? c.archivedCount) ?? 0;
   const storedCount = toNum(agg.storedCount ?? c.storedCount) ?? 0;
 
-  // Show name/species on the FRONT only if using default placeholder
-  const showFrontText = isDefaultFront && !strain?.photoURL;
+  const useBuilderFront = !strain?.photoURL && strain?.cardBuilder?.enabled !== false;
+  const showFrontText = !useBuilderFront && isDefaultFront && !strain?.photoURL;
 
   const handleFrontClick = (e) => {
     const tag = (e.target?.tagName || "").toLowerCase();
     if (tag === "input" || tag === "button" || e.target.closest?.(".cn-front-actions")) return;
     setFlipped(true);
   };
+
   const handleBackClick = (e) => {
     if (e.target.closest?.(".cn-back-actions")) return;
     setFlipped(false);
@@ -77,7 +76,6 @@ export default function StrainCard({
   return (
     <div className="cn-strain-card">
       <div className={`cn-card-inner ${flipped ? "is-flipped" : ""}`}>
-        {/* ---------- FRONT ---------- */}
         <div className="cn-card-face cn-card-front clickable" onClick={handleFrontClick}>
           <label
             className="cn-card-checkbox"
@@ -93,25 +91,25 @@ export default function StrainCard({
             />
           </label>
 
-          {checked && (
-            <div
-              className="cn-front-actions"
-              onClick={(e) => e.stopPropagation()}
-              onMouseDown={(e) => e.stopPropagation()}
+          <div
+            className="cn-front-actions"
+            onClick={(e) => e.stopPropagation()}
+            onMouseDown={(e) => e.stopPropagation()}
+          >
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                safeEdit();
+              }}
+              className="cn-chip"
+              aria-label={`Edit ${title}`}
+              title="Edit"
             >
-              <button
-                onClick={(e) => {
-                  e.stopPropagation();
-                  safeEdit();
-                }}
-                className="cn-chip"
-                aria-label={`Edit ${title}`}
-                title="Edit"
-              >
-                <Pencil className="w-4 h-4" />
-                Edit
-              </button>
+              <Pencil className="w-4 h-4" />
+              Edit
+            </button>
 
+            {checked && (
               <button
                 onClick={(e) => {
                   e.stopPropagation();
@@ -124,8 +122,8 @@ export default function StrainCard({
                 <Trash2 className="w-4 h-4" />
                 Delete
               </button>
-            </div>
-          )}
+            )}
+          </div>
 
           {strain?.photoURL ? (
             <img
@@ -135,6 +133,8 @@ export default function StrainCard({
               decoding="async"
               loading="lazy"
             />
+          ) : useBuilderFront ? (
+            <StrainCardFrontBuilder strain={strain} />
           ) : (
             <StrainCardImage
               name={title}
@@ -154,34 +154,32 @@ export default function StrainCard({
           )}
         </div>
 
-        {/* ---------- BACK ---------- */}
         <div className="cn-card-face cn-card-back clickable" onClick={handleBackClick}>
           <img src={backURL} alt="" className="absolute inset-0 w-full h-full object-cover" />
 
-          {/* Curved banner text (raised) */}
           <div className="cn-banner-wrap">
             <svg
               className="cn-banner-svg"
               viewBox="0 0 100 40"
               preserveAspectRatio="xMidYMid meet"
             >
-              {/* ↑ Move arc even higher so text sits inside the ribbon */}
-              <path id="cnBannerArc" d="M 8 14 Q 50 3.8 92 14" fill="none" />
+              <path id={backArcId} d="M 8 14 Q 50 3.8 92 14" fill="none" />
               <text
                 className="cn-banner-text"
                 lengthAdjust="spacingAndGlyphs"
                 textLength={bannerFit.textLength}
                 style={{ fontSize: `${bannerFit.fontSize}px` }}
               >
-                <textPath href="#cnBannerArc" startOffset="50%" textAnchor="middle">
-                  {title}
+                <textPath href={`#${backArcId}`} startOffset="50%" textAnchor="middle">
+                  {cardDesign.title || title}
                 </textPath>
               </text>
             </svg>
-            {!!sci && <div className="cn-back-sub">{sci}</div>}
+            {!!(cardDesign.speciesLine || sci) && (
+              <div className="cn-back-sub">{cardDesign.speciesLine || sci}</div>
+            )}
           </div>
 
-          {/* Four mid boxes — now prefer aggregate values if present */}
           <div className="cn-back-boxes">
             <div className="cn-box">
               <div className="cn-box-label">Colonize avg</div>
@@ -203,27 +201,25 @@ export default function StrainCard({
             </div>
           </div>
 
-          {/* Bottom wide box — counts + contam */}
           <div className="cn-back-wide">
             <div className="cn-wide-grid">
               <div>
-                <span className="cn-wide-label">Active grows:</span>{" "}
-                <strong>{activeCount}</strong>
+                <span className="cn-wide-label">Active grows:</span> <strong>{activeCount}</strong>
               </div>
               <div>
-                <span className="cn-wide-label">Archived grows:</span>{" "}
-                <strong>{archivedCount}</strong>
+                <span className="cn-wide-label">Archived grows:</span> <strong>{archivedCount}</strong>
               </div>
               <div>
-                <span className="cn-wide-label">Stored items:</span>{" "}
-                <strong>{storedCount}</strong>
+                <span className="cn-wide-label">Stored items:</span> <strong>{storedCount}</strong>
               </div>
               <div>
                 <span className="cn-wide-label">Contam rate:</span>{" "}
                 <strong>{contamRate != null ? `${contamRate}%` : "—"}</strong>
               </div>
             </div>
-            {strain?.description ? <div className="cn-wide-note">{strain.description}</div> : null}
+            {(cardDesign.summary || strain?.description) ? (
+              <div className="cn-wide-note">{cardDesign.summary || strain?.description}</div>
+            ) : null}
           </div>
 
           <div

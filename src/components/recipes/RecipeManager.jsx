@@ -58,6 +58,42 @@ function numberOrZero(value) {
   return Number.isFinite(n) ? n : 0;
 }
 
+const RECIPE_SCOPE_OPTIONS = [
+  { value: "production", label: "Production" },
+  { value: "post-production", label: "Post Production" },
+];
+
+function normalizeRecipeScope(value = "") {
+  const raw = String(value || "").trim().toLowerCase();
+  if (
+    [
+      "post-production",
+      "post production",
+      "postproduction",
+      "post-process",
+      "post process",
+      "postprocessing",
+      "post processing",
+      "post-processing",
+    ].includes(raw)
+  ) {
+    return "post-production";
+  }
+  return "production";
+}
+
+function recipeScopeLabel(value = "") {
+  return normalizeRecipeScope(value) === "post-production"
+    ? "Post Production"
+    : "Production";
+}
+
+function recipeScopePillClass(value = "") {
+  return normalizeRecipeScope(value) === "post-production"
+    ? "bg-violet-600/20 text-violet-300"
+    : "bg-emerald-600/20 text-emerald-300";
+}
+
 function RecipeSummaryCard({ icon: Icon, label, value, hint }) {
   return (
     <div className="rounded-xl border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-900 p-3">
@@ -73,6 +109,39 @@ function RecipeSummaryCard({ icon: Icon, label, value, hint }) {
   );
 }
 
+function isCountLikeUnit(unit = "") {
+  const normalized = canonicalUnit(unit);
+  return normalized === "count" || COUNT_UNITS.includes(normalized);
+}
+
+function getRecipeItemUnits(item = {}, supply = {}) {
+  const stockUnit = canonicalUnit(supply?.unit || item?.stockUnit || item?.unit || "");
+  const displayUnit = canonicalUnit(
+    item?.unit || item?.amountUnit || supply?.unit || item?.stockUnit || ""
+  );
+
+  return {
+    stockUnit,
+    displayUnit: displayUnit || stockUnit,
+  };
+}
+
+function getRecipeItemDisplayAmount(item = {}, supply = {}) {
+  const { stockUnit, displayUnit } = getRecipeItemUnits(item, supply);
+  const storedStockAmount = numberOrZero(item?.amount);
+  const storedDisplayAmount = Number(item?.amountDisplay);
+
+  if (Number.isFinite(storedDisplayAmount) && storedDisplayAmount > 0) {
+    return storedDisplayAmount;
+  }
+
+  if (displayUnit && stockUnit && areCompatible(displayUnit, stockUnit)) {
+    return convert(storedStockAmount, stockUnit, displayUnit);
+  }
+
+  return storedStockAmount;
+}
+
 export default function RecipeManager() {
   const [supplies, setSupplies] = useState([]);
   const [recipes, setRecipes] = useState([]);
@@ -84,6 +153,7 @@ export default function RecipeManager() {
   const [newRecipeTags, setNewRecipeTags] = useState("");
   const [newRecipeItems, setNewRecipeItems] = useState([]);
   const [newRecipeInstructions, setNewRecipeInstructions] = useState("");
+  const [newRecipeScope, setNewRecipeScope] = useState("production");
   const [newRecipeYield, setNewRecipeYield] = useState(0);
   const [newRecipeYieldDraft, setNewRecipeYieldDraft] = useState("0");
   const [newRecipeYieldFocused, setNewRecipeYieldFocused] = useState(false);
@@ -100,6 +170,7 @@ export default function RecipeManager() {
     instructions: "",
     yield: 1,
     servingLabel: "",
+    recipeScope: "production",
   });
   const [editYieldDraft, setEditYieldDraft] = useState("0");
   const [editYieldFocused, setEditYieldFocused] = useState(false);
@@ -199,18 +270,34 @@ export default function RecipeManager() {
         const s = supplyById(it.supplyId);
         if (!s) return null;
 
-        const stockUnit = canonicalUnit(s.unit || "");
-        let need = Number(it.amount || 0) * factor;
-        if (stockUnit === "count") need = Math.ceil(need);
+        const { stockUnit, displayUnit } = getRecipeItemUnits(it, s);
+        const baseStockAmount = numberOrZero(it.amount);
+        const baseDisplayAmount = getRecipeItemDisplayAmount(it, s);
+
+        let needStock = baseStockAmount * factor;
+        if (isCountLikeUnit(stockUnit)) {
+          needStock = Math.ceil(Math.max(0, needStock));
+        }
+
+        let needDisplay =
+          displayUnit && stockUnit && areCompatible(displayUnit, stockUnit)
+            ? convert(needStock, stockUnit, displayUnit)
+            : baseDisplayAmount * factor;
+
+        if (isCountLikeUnit(displayUnit)) {
+          needDisplay = Math.ceil(Math.max(0, needDisplay));
+        }
 
         const onHandRaw = Number(s.quantity ?? s.qty ?? s.q ?? 0);
 
         return {
           supplyId: s.id,
           name: s.name,
-          unit: s.unit || "",
-          need,
-          onHand: Number.isFinite(onHandRaw) ? onHandRaw : 0,
+          stockUnit: s.unit || stockUnit || "",
+          displayUnit: displayUnit || s.unit || "",
+          needStock,
+          needDisplay,
+          onHandStock: Number.isFinite(onHandRaw) ? onHandRaw : 0,
           reusable: isReusable(s),
           unitCost: Number(s.cost || 0) || 0,
         };
@@ -228,11 +315,19 @@ export default function RecipeManager() {
     const recipesWithInstructions = recipes.filter((recipe) =>
       String(recipe.instructions || "").trim()
     ).length;
+    const productionCount = recipes.filter(
+      (recipe) => normalizeRecipeScope(recipe.recipeScope) === "production"
+    ).length;
+    const postProductionCount = recipes.filter(
+      (recipe) => normalizeRecipeScope(recipe.recipeScope) === "post-production"
+    ).length;
 
     return {
       totalRecipes,
       avgItems,
       recipesWithInstructions,
+      productionCount,
+      postProductionCount,
     };
   }, [recipes]);
 
@@ -241,6 +336,7 @@ export default function RecipeManager() {
     setNewRecipeTags("");
     setNewRecipeItems([]);
     setNewRecipeInstructions("");
+    setNewRecipeScope("production");
     setNewRecipeYield(0);
     setNewRecipeYieldDraft("0");
     setNewRecipeYieldFocused(false);
@@ -291,6 +387,7 @@ export default function RecipeManager() {
       tags,
       items: newRecipeItems,
       instructions: newRecipeInstructions || "",
+      recipeScope: normalizeRecipeScope(newRecipeScope),
       yield: Number(newRecipeYield) > 0 ? Number(newRecipeYield) : 1,
       servingLabel: (newRecipeServingLabel || "").trim(),
       createdAt: new Date().toISOString(),
@@ -319,6 +416,7 @@ export default function RecipeManager() {
     const clone = {
       ...recipe,
       name: `${recipe.name} (Copy)`,
+      recipeScope: normalizeRecipeScope(recipe.recipeScope),
       createdAt: new Date().toISOString(),
     };
     delete clone.id;
@@ -335,6 +433,7 @@ export default function RecipeManager() {
       instructions: recipe.instructions || "",
       yield: recipe.yield || 1,
       servingLabel: recipe.servingLabel || "",
+      recipeScope: normalizeRecipeScope(recipe.recipeScope),
     });
   };
 
@@ -382,6 +481,7 @@ export default function RecipeManager() {
       tags,
       items: editData.items,
       instructions: editData.instructions || "",
+      recipeScope: normalizeRecipeScope(editData.recipeScope),
       yield: Number(editData.yield) > 0 ? Number(editData.yield) : 1,
       servingLabel: (editData.servingLabel || "").trim(),
       updatedAt: new Date().toISOString(),
@@ -395,7 +495,11 @@ export default function RecipeManager() {
     const ok = await confirm(`Delete ${selected.length} selected recipes?`);
     if (!ok) return;
 
-    await Promise.all(selected.map((id) => deleteDoc(doc(db, "users", auth.currentUser.uid, "recipes", id))));
+    await Promise.all(
+      selected.map((id) =>
+        deleteDoc(doc(db, "users", auth.currentUser.uid, "recipes", id))
+      )
+    );
     setSelected([]);
   };
 
@@ -456,12 +560,13 @@ export default function RecipeManager() {
         </thead>
         <tbody>
           {rows.map((r) => {
-            const unitCanonical = canonicalUnit(r.unit);
+            const displayUnitCanonical = canonicalUnit(r.displayUnit);
+            const stockUnitCanonical = canonicalUnit(r.stockUnit);
             const status = r.reusable
               ? "reusable"
-              : r.onHand >= r.need
+              : r.onHandStock >= r.needStock
                 ? "ok"
-                : r.onHand > 0
+                : r.onHandStock > 0
                   ? "low"
                   : "out";
 
@@ -485,14 +590,14 @@ export default function RecipeManager() {
               );
 
             const shownNeed =
-              unitCanonical === "count"
-                ? `${r.need} ${r.unit}`
-                : `${formatAmount(r.need)} ${r.unit}`;
+              displayUnitCanonical === "count"
+                ? `${Math.floor(Number(r.needDisplay || 0))} ${r.displayUnit}`
+                : `${formatAmount(r.needDisplay)} ${r.displayUnit}`;
 
             const shownOnHand =
-              unitCanonical === "count"
-                ? Math.floor(Number(r.onHand || 0))
-                : formatAmount(Number(r.onHand || 0));
+              stockUnitCanonical === "count"
+                ? Math.floor(Number(r.onHandStock || 0))
+                : formatAmount(Number(r.onHandStock || 0));
 
             return (
               <tr
@@ -501,7 +606,7 @@ export default function RecipeManager() {
               >
                 <td className="p-2">{r.name}</td>
                 <td className="p-2">{shownNeed}</td>
-                <td className="p-2">{r.unit}</td>
+                <td className="p-2">{r.stockUnit}</td>
                 <td className="p-2">{shownOnHand}</td>
                 <td className="p-2">{statusChip}</td>
               </tr>
@@ -527,9 +632,8 @@ export default function RecipeManager() {
             <h2 className="text-2xl font-bold">📖 Recipes</h2>
             <p className="text-sm text-zinc-600 dark:text-zinc-400 max-w-3xl mt-1">
               Recipes act as BOM-style supply sets for both cultivation and post-processing.
-              The Production tab can scale these recipes to a target output count and roll the
-              matching COG cost into finished batch costing for capsules, gummies, tinctures,
-              and chocolates.
+              Mark each recipe as Production or Post Production so GrowForm only shows grow-ready
+              recipes, while finished-goods workflows can use the post-production ones.
             </p>
           </div>
 
@@ -545,7 +649,7 @@ export default function RecipeManager() {
           </button>
         </div>
 
-        <div className="grid grid-cols-1 md:grid-cols-3 xl:grid-cols-4 gap-3">
+        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-5 gap-3">
           <RecipeSummaryCard
             icon={Package}
             label="Total recipes"
@@ -560,9 +664,15 @@ export default function RecipeManager() {
           />
           <RecipeSummaryCard
             icon={Factory}
-            label="Production ready"
-            value={String(recipeStats.totalRecipes)}
-            hint="Available to Post Processing"
+            label="Production"
+            value={String(recipeStats.productionCount)}
+            hint="Grow-ready recipes"
+          />
+          <RecipeSummaryCard
+            icon={Factory}
+            label="Post production"
+            value={String(recipeStats.postProductionCount)}
+            hint="Finished-goods recipes"
           />
           <RecipeSummaryCard
             icon={Tag}
@@ -636,6 +746,8 @@ export default function RecipeManager() {
           const servingLabel = (recipe.servingLabel || "").trim();
           const perServing = costPerServing(recipe);
           const reusables = reusableItemCount(recipe);
+          const scopeValue = normalizeRecipeScope(recipe.recipeScope);
+          const isPostProduction = scopeValue === "post-production";
 
           return (
             <div
@@ -672,7 +784,14 @@ export default function RecipeManager() {
                         Total Cost: {money(total)}
                       </span>
                       <span
-                        className="ml-2 text-xs px-2 py-0.5 rounded-full bg-emerald-600/20 text-emerald-300"
+                        className={`ml-2 text-xs px-2 py-0.5 rounded-full ${recipeScopePillClass(
+                          scopeValue
+                        )}`}
+                      >
+                        {recipeScopeLabel(scopeValue)}
+                      </span>
+                      <span
+                        className="text-xs px-2 py-0.5 rounded-full bg-emerald-600/20 text-emerald-300"
                         title="Consumables cost per serving or per output unit based on recipe yield"
                       >
                         {money(perServing)} / unit
@@ -739,11 +858,11 @@ export default function RecipeManager() {
                         </div>
 
                         <div className="rounded-xl border border-blue-200 dark:border-blue-900/50 bg-blue-50 dark:bg-blue-950/20 p-3 text-sm text-blue-900 dark:text-blue-100">
-                          <div className="font-medium">Post Processing note</div>
+                          <div className="font-medium">Recipe use</div>
                           <div className="mt-1">
-                            This recipe can be selected in the Production tab. The batch there will
-                            scale this recipe to the target output count and add the matching supply
-                            cost into finished batch costing.
+                            {isPostProduction
+                              ? "This recipe is marked Post Production. Use it for finished-goods and post-processing workflows, not GrowForm."
+                              : "This recipe is marked Production. It stays available for GrowForm and other cultivation workflows."}
                           </div>
                         </div>
 
@@ -766,19 +885,21 @@ export default function RecipeManager() {
                             }
                           />
 
-                          <button
-                            className="chip chip--active !px-3 !py-1 text-sm"
-                            title="Check stock and start a grow with this recipe"
-                            onClick={() =>
-                              setStartGrow({
-                                show: true,
-                                recipe,
-                                targetServings: Math.max(1, Number(servings) || 1),
-                              })
-                            }
-                          >
-                            Start Grow
-                          </button>
+                          {!isPostProduction && (
+                            <button
+                              className="chip chip--active !px-3 !py-1 text-sm"
+                              title="Check stock and start a grow with this recipe"
+                              onClick={() =>
+                                setStartGrow({
+                                  show: true,
+                                  recipe,
+                                  targetServings: Math.max(1, Number(servings) || 1),
+                                })
+                              }
+                            >
+                              Start Grow
+                            </button>
+                          )}
                         </div>
 
                         {renderScaledTable(recipe)}
@@ -839,6 +960,23 @@ export default function RecipeManager() {
                             placeholder='Serving label (e.g., "agar dishes", "jars", "tubs")'
                             title="What the servings represent"
                           />
+                          <select
+                            value={editData.recipeScope}
+                            onChange={(e) =>
+                              setEditData({
+                                ...editData,
+                                recipeScope: e.target.value,
+                              })
+                            }
+                            className="p-1 border rounded w-full dark:bg-gray-700"
+                            title="Where this recipe should be used"
+                          >
+                            {RECIPE_SCOPE_OPTIONS.map((option) => (
+                              <option key={option.value} value={option.value}>
+                                {option.label}
+                              </option>
+                            ))}
+                          </select>
                           <input
                             type="number"
                             inputMode="decimal"
@@ -1032,6 +1170,18 @@ export default function RecipeManager() {
                 placeholder="Tags (comma-separated)"
                 className="p-2 border rounded dark:bg-zinc-800"
               />
+              <select
+                value={newRecipeScope}
+                onChange={(e) => setNewRecipeScope(e.target.value)}
+                className="p-2 border rounded dark:bg-zinc-800"
+                title="Where this recipe should be used"
+              >
+                {RECIPE_SCOPE_OPTIONS.map((option) => (
+                  <option key={option.value} value={option.value}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
               <input
                 type="text"
                 value={newRecipeServingLabel}
@@ -1182,10 +1332,7 @@ export default function RecipeManager() {
               >
                 Cancel
               </button>
-              <button
-                onClick={createRecipe}
-                className="btn btn-accent"
-              >
+              <button onClick={createRecipe} className="btn btn-accent">
                 Save Recipe
               </button>
             </div>

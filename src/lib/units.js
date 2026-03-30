@@ -1,3 +1,5 @@
+// src/lib/units.js
+
 // Lightweight unit helpers used by RecipeManager (and elsewhere).
 
 // Canonical unit lists
@@ -17,12 +19,14 @@ const SYN = {
   grams: "g",
   kilogram: "kg",
   kilograms: "kg",
+
   // volume
   l: "liter",
   litre: "liter",
   litres: "liter",
   milliliter: "ml",
   milliliters: "ml",
+
   // count/time
   ea: "count",
   unit: "count",
@@ -48,14 +52,13 @@ export function areCompatible(a, b) {
   return group(a) === group(b);
 }
 
-// Convert to "base" units (g, ml, count, hour)
+// Convert to base units (g, ml, count, hour)
 function toBase(amount, unit) {
   const n = Number(amount) || 0;
   const u = canonicalUnit(unit);
 
   switch (group(u)) {
     case "mass": {
-      // base = grams
       if (u === "mg") return n / 1000;
       if (u === "g") return n;
       if (u === "kg") return n * 1000;
@@ -63,15 +66,17 @@ function toBase(amount, unit) {
       if (u === "lbs") return n * 453.59237;
       return n;
     }
+
     case "volume": {
-      // base = milliliters
       if (u === "ml") return n;
       if (u === "liter") return n * 1000;
       return n;
     }
-    case "count": // fallthrough
+
+    case "count":
     case "time":
-      return n; // "count" and "hour" are their own base
+      return n;
+
     default:
       return n;
   }
@@ -90,14 +95,17 @@ function fromBase(amountBase, unit) {
       if (u === "lbs") return n / 453.59237;
       return n;
     }
+
     case "volume": {
       if (u === "ml") return n;
       if (u === "liter") return n / 1000;
       return n;
     }
-    case "count": // fallthrough
+
+    case "count":
     case "time":
       return n;
+
     default:
       return n;
   }
@@ -106,9 +114,9 @@ function fromBase(amountBase, unit) {
 export function convert(amount, fromUnit, toUnit) {
   const from = canonicalUnit(fromUnit);
   const to = canonicalUnit(toUnit);
+
   if (!from || !to) return Number(amount) || 0;
   if (!areCompatible(from, to)) {
-    // incompatible: just return the number without converting
     return Number(amount) || 0;
   }
   if (from === to) return Number(amount) || 0;
@@ -117,12 +125,40 @@ export function convert(amount, fromUnit, toUnit) {
   return fromBase(base, to);
 }
 
+function trimDecimalZeros(value) {
+  const str = String(value);
+  if (!str.includes(".")) return str;
+  return str.replace(/(\.\d*?[1-9])0+$/, "$1").replace(/\.0+$/, "");
+}
+
 export function formatAmount(n) {
   const v = Number(n);
   if (!Number.isFinite(v)) return "0";
+  if (v === 0) return "0";
+
   const abs = Math.abs(v);
-  const fixed =
-    abs >= 100 ? v.toFixed(0) : abs >= 10 ? v.toFixed(1) : v.toFixed(2);
-  // trim trailing zeros
-  return fixed.replace(/\.?0+$/, "");
+
+  const decimals =
+    abs >= 100
+      ? 0
+      : abs >= 10
+        ? 1
+        : abs >= 1
+          ? 2
+          : abs >= 0.1
+            ? 3
+            : abs >= 0.01
+              ? 4
+              : abs >= 0.001
+                ? 5
+                : 6;
+
+  const fixed = v.toFixed(decimals);
+  const trimmed = trimDecimalZeros(fixed);
+
+  if (trimmed === "0" && abs > 0) {
+    return trimDecimalZeros(v.toPrecision(2));
+  }
+
+  return trimmed;
 }
