@@ -1,9 +1,11 @@
+# .github/workflows/tauri-release.yml
 name: Tauri Desktop Release
 
 on:
+  workflow_dispatch:
   push:
     tags:
-      - "v*"
+      - "v*.*.*"
 
 permissions:
   contents: write
@@ -11,6 +13,9 @@ permissions:
 jobs:
   build:
     runs-on: windows-latest
+    env:
+      CI: "1"
+      NODE_OPTIONS: --max-old-space-size=4096
 
     steps:
       - name: Checkout
@@ -20,16 +25,17 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: "20"
+          cache: "npm"
+
+      - name: Install frontend deps
+        run: npm ci
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: stable
 
-      - name: Install frontend deps
-        run: npm ci
-
-      - name: Build Tauri (sign + create GitHub Release)
+      - name: Build desktop release
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -37,8 +43,11 @@ jobs:
           TAURI_KEY_PASSWORD: ${{ secrets.TAURI_KEY_PASSWORD }}
         with:
           tagName: ${{ github.ref_name }}
-          releaseName: "Desktop ${{ github.ref_name }}"
-          releaseBody: "Auto-generated desktop build."
+          releaseName: "Chaotic Neutral Myco Tracker ${{ github.ref_name }}"
+          releaseBody: |
+            Desktop release for Chaotic Neutral Myco Tracker.
+
+            Includes the Windows NSIS installer and updater artifacts.
           releaseDraft: false
           prerelease: false
           tauriScript: "tauri"

@@ -1,7 +1,10 @@
 {
   "appId": "com.chaoticneutral.myco",
-  "appName": "Mushroom Tracker",
+  "appName": "Chaotic Neutral Myco Tracker",
   "webDir": "dist",
   "bundledWebRuntime": false,
-  "server": { "androidScheme": "https", "allowNavigation": ["*"] }
+  "server": {
+    "androidScheme": "https",
+    "allowNavigation": ["*"]
+  }
 }
