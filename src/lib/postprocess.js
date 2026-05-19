@@ -136,6 +136,68 @@ function buildPricingSnapshot({
   };
 }
 
+function buildYieldMetricsSnapshot({
+  expectedQuantity = 0,
+  expectedUnit = "",
+  actualQuantity = 0,
+  actualUnit = "",
+  wasteQuantity = 0,
+  wasteUnit = "",
+  wasteReason = "",
+  wasteNotes = "",
+  varianceQuantity = null,
+  variancePercent = null,
+} = {}) {
+  const normalizedExpectedQuantity = sanitizePositiveNumber(expectedQuantity);
+  const normalizedActualQuantity = sanitizePositiveNumber(actualQuantity);
+  const normalizedWasteQuantity = sanitizePositiveNumber(wasteQuantity);
+  const normalizedExpectedUnit = safeString(expectedUnit);
+  const normalizedActualUnit = safeString(actualUnit) || normalizedExpectedUnit;
+  const normalizedWasteUnit = safeString(wasteUnit) || normalizedActualUnit || normalizedExpectedUnit;
+
+  const calculatedVarianceQuantity = roundNumber(
+    normalizedActualQuantity - normalizedExpectedQuantity,
+    3
+  );
+  const resolvedVarianceQuantity =
+    varianceQuantity !== undefined && varianceQuantity !== null && varianceQuantity !== ""
+      ? sanitizeSignedNumber(varianceQuantity)
+      : calculatedVarianceQuantity;
+
+  const calculatedVariancePercent =
+    normalizedExpectedQuantity > 0
+      ? roundNumber((resolvedVarianceQuantity / normalizedExpectedQuantity) * 100, 2)
+      : 0;
+  const resolvedVariancePercent =
+    variancePercent !== undefined && variancePercent !== null && variancePercent !== ""
+      ? sanitizeSignedNumber(variancePercent)
+      : calculatedVariancePercent;
+
+  const yieldPercent =
+    normalizedExpectedQuantity > 0
+      ? roundNumber((normalizedActualQuantity / normalizedExpectedQuantity) * 100, 2)
+      : 0;
+  const wastePercent =
+    normalizedExpectedQuantity > 0
+      ? roundNumber((normalizedWasteQuantity / normalizedExpectedQuantity) * 100, 2)
+      : 0;
+
+  return {
+    expectedQuantity: normalizedExpectedQuantity,
+    expectedUnit: normalizedExpectedUnit,
+    actualQuantity: normalizedActualQuantity,
+    actualUnit: normalizedActualUnit,
+    wasteQuantity: normalizedWasteQuantity,
+    wasteUnit: normalizedWasteUnit,
+    wasteReason: safeString(wasteReason),
+    wasteNotes: safeString(wasteNotes),
+    varianceQuantity: resolvedVarianceQuantity,
+    variancePercent: resolvedVariancePercent,
+    yieldPercent,
+    wastePercent,
+  };
+}
+
 function normalizeRecipeCosting({
   recipeId,
   recipeName,
@@ -539,12 +601,12 @@ export function isLowStockLot(lot = {}) {
 }
 
 export function isActiveMaterialLot(record = {}) {
-  if (!record || isProductionBatch(record)) return false;
+  if (!record) return false;
   return !isArchivedPostProcessRecord(record) && hasPositiveRemainingQuantity(record);
 }
 
 export function isArchivedOrDepletedMaterialLot(record = {}) {
-  if (!record || isProductionBatch(record)) return false;
+  if (!record) return false;
   return isArchivedPostProcessRecord(record) || !hasPositiveRemainingQuantity(record);
 }
 
@@ -971,224 +1033,232 @@ export async function createExtractionBatch({
     throw new Error("Completed extraction batches need an output amount so an extract lot can be created.");
   }
 
-  return runTransaction(db, async (tx) => {
-    const lotSnapshots = [];
-
-    for (const item of normalizedInputs) {
+  const lotEntries = await Promise.all(
+    normalizedInputs.map(async (item) => {
       const lotRef = doc(db, "users", userId, "materialLots", item.lotId);
-      const lotSnap = await tx.get(lotRef);
-      if (!lotSnap.exists()) throw new Error(`Source lot ${item.lotId} could not be found.`);
-      lotSnapshots.push({ ref: lotRef, snap: lotSnap, quantity: item.quantity });
+      const lotSnap = await getDoc(lotRef);
+      if (!lotSnap.exists()) {
+        throw new Error(`Source lot ${item.lotId} could not be found.`);
+      }
+      return { ref: lotRef, snap: lotSnap, quantity: item.quantity };
+    })
+  );
+
+  const enrichedInputs = [];
+  const sourceGrowIds = [];
+  const originGrowIds = [];
+  const sourceStrains = [];
+  let inputDryTotal = 0;
+
+  for (const entry of lotEntries) {
+    const lot = entry.snap.data() || {};
+    if (String(lot?.lotType || "").trim().toLowerCase() !== "dry_material") {
+      throw new Error("Extraction batches can only consume dry-material lots.");
     }
 
-    const enrichedInputs = [];
-    const sourceGrowIds = [];
-    const originGrowIds = [];
-    const sourceStrains = [];
-    let inputDryTotal = 0;
-
-    for (const entry of lotSnapshots) {
-      const lot = entry.snap.data() || {};
-      if (String(lot?.lotType || "") !== "dry_material") {
-        throw new Error("Extraction batches can only consume dry-material lots.");
-      }
-
-      const remaining = lotRemaining(lot);
-      const available = getLotAvailableQuantity(lot);
-      if (entry.quantity > available) {
-        throw new Error(`${lot?.name || entry.ref.id} only has ${formatQty(available, lot?.unit || "g")} available after reservations.`);
-      }
-
-      const nextRemaining = sanitizePositiveNumber(remaining - entry.quantity);
-      const nextAllocated = sanitizePositiveNumber((Number(lot?.allocatedQuantity) || 0) + entry.quantity);
-      tx.update(entry.ref, {
-        remainingQuantity: nextRemaining,
-        allocatedQuantity: nextAllocated,
-        status: nextLotStatus(nextRemaining, lotInitial(lot)),
-        updatedDate: normalizedDate,
-        updatedAt: serverTimestamp(),
-      });
-
-      const growIds = extractGrowIdsFromLot(lot);
-      sourceGrowIds.push(...growIds);
-      originGrowIds.push(...growIds);
-      if (lot?.strain) sourceStrains.push(String(lot.strain));
-
-      inputDryTotal += entry.quantity;
-      const unitCost = getLotUnitCost(lot);
-      const inputCostApplied = roundCurrency(unitCost * entry.quantity);
-
-      enrichedInputs.push({
-        lotId: entry.ref.id,
-        lotType: "dry_material",
-        lotName: lot?.name || entry.ref.id,
-        growLabel: lot?.growLabel || lot?.name || entry.ref.id,
-        strain: lot?.strain || "",
-        sourceGrowId: lot?.sourceGrowId || null,
-        originGrowIds: growIds,
-        quantity: entry.quantity,
-        unit: lot?.unit || "g",
-        unitCost,
-        inputCostApplied,
-        remainingBefore: remaining,
-        remainingAfter: nextRemaining,
-      });
+    const remaining = lotRemaining(lot);
+    const available = getLotAvailableQuantity(lot);
+    if (entry.quantity > available) {
+      throw new Error(`${lot?.name || entry.ref.id} only has ${formatQty(available, lot?.unit || "g")} available after reservations.`);
     }
 
-    inputDryTotal = sanitizePositiveNumber(inputDryTotal);
-    const finalBatchName =
-      String(name || "").trim() ||
-      buildExtractionBatchName({
-        extractionType: normalizedExtractionType,
-        date: normalizedDate,
-        lots: enrichedInputs,
-      });
+    const growIds = extractGrowIdsFromLot(lot);
+    sourceGrowIds.push(...growIds);
+    originGrowIds.push(...growIds);
+    if (lot?.strain) sourceStrains.push(String(lot.strain));
 
-    const batchRef = doc(collection(db, "users", userId, "processBatches"));
-    const outputLotRef = normalizedOutputAmount > 0 ? doc(collection(db, "users", userId, "materialLots")) : null;
+    inputDryTotal += entry.quantity;
+    const unitCost = getLotUnitCost(lot);
+    const inputCostApplied = roundCurrency(unitCost * entry.quantity);
 
-    const computedYieldPercent =
-      manualYieldPercent > 0
-        ? manualYieldPercent
-        : normalizedOutputUnit.toLowerCase() === "g" && inputDryTotal > 0
-        ? sanitizePositiveNumber((normalizedOutputAmount / inputDryTotal) * 100)
-        : null;
+    enrichedInputs.push({
+      lotId: entry.ref.id,
+      lotType: "dry_material",
+      lotName: lot?.name || entry.ref.id,
+      growLabel: lot?.growLabel || lot?.name || entry.ref.id,
+      strain: lot?.strain || "",
+      sourceGrowId: lot?.sourceGrowId || null,
+      originGrowIds: growIds,
+      quantity: entry.quantity,
+      unit: lot?.unit || "g",
+      unitCost,
+      inputCostApplied,
+      remainingBefore: remaining,
+      remainingAfter: sanitizePositiveNumber(remaining - entry.quantity),
+    });
+  }
 
-    const inputMaterialCostTotal = roundCurrency(
-      enrichedInputs.reduce((sum, input) => sum + sanitizeCurrency(input.inputCostApplied), 0)
-    );
-    const outputUnitCost =
-      normalizedOutputAmount > 0 ? roundCurrency(inputMaterialCostTotal / normalizedOutputAmount) : 0;
-
-    const uniqueGrowIds = uniqueStrings(sourceGrowIds);
-    const uniqueOriginGrowIds = uniqueStrings(originGrowIds);
-    const uniqueStrains = uniqueStrings(sourceStrains);
-
-    const outputLots = outputLotRef
-      ? [{
-          lotId: outputLotRef.id,
-          lotType: "extract",
-          name: buildExtractLotName({
-            batchName: finalBatchName,
-            extractionType: normalizedExtractionType,
-            date: normalizedDate,
-          }),
-          quantity: normalizedOutputAmount,
-          unit: normalizedOutputUnit,
-        }]
-      : [];
-
-    tx.set(batchRef, {
-      processType: "extraction",
-      name: finalBatchName,
-      status: normalizedStatus,
-      date: normalizedDate,
+  inputDryTotal = sanitizePositiveNumber(inputDryTotal);
+  const finalBatchName =
+    String(name || "").trim() ||
+    buildExtractionBatchName({
       extractionType: normalizedExtractionType,
-      method: normalizedMethod,
-      notes: normalizedNotes,
-      inputLots: enrichedInputs,
-      outputLots,
-      sourceGrowIds: uniqueGrowIds,
-      originGrowIds: uniqueOriginGrowIds,
-      strains: uniqueStrains,
-      inputDryTotal,
-      inputUnit: "g",
-      outputAmount: normalizedOutputAmount,
-      outputUnit: normalizedOutputUnit,
-      outputYieldPercent: computedYieldPercent,
+      date: normalizedDate,
+      lots: enrichedInputs,
+    });
+
+  const batchRef = doc(collection(db, "users", userId, "processBatches"));
+  const outputLotRef = normalizedOutputAmount > 0 ? doc(collection(db, "users", userId, "materialLots")) : null;
+
+  const computedYieldPercent =
+    manualYieldPercent > 0
+      ? manualYieldPercent
+      : normalizedOutputUnit.toLowerCase() === "g" && inputDryTotal > 0
+      ? sanitizePositiveNumber((normalizedOutputAmount / inputDryTotal) * 100)
+      : null;
+
+  const inputMaterialCostTotal = roundCurrency(
+    enrichedInputs.reduce((sum, input) => sum + sanitizeCurrency(input.inputCostApplied), 0)
+  );
+  const outputUnitCost =
+    normalizedOutputAmount > 0 ? roundCurrency(inputMaterialCostTotal / normalizedOutputAmount) : 0;
+
+  const uniqueGrowIds = uniqueStrings(sourceGrowIds);
+  const uniqueOriginGrowIds = uniqueStrings(originGrowIds);
+  const uniqueStrains = uniqueStrings(sourceStrains);
+
+  const outputLots = outputLotRef
+    ? [{
+        lotId: outputLotRef.id,
+        lotType: "extract",
+        name: buildExtractLotName({
+          batchName: finalBatchName,
+          extractionType: normalizedExtractionType,
+          date: normalizedDate,
+        }),
+        quantity: normalizedOutputAmount,
+        unit: normalizedOutputUnit,
+      }]
+    : [];
+
+  const batch = writeBatch(db);
+
+  for (const entry of lotEntries) {
+    const lot = entry.snap.data() || {};
+    const remaining = lotRemaining(lot);
+    const nextRemaining = sanitizePositiveNumber(remaining - entry.quantity);
+    const nextAllocated = sanitizePositiveNumber((Number(lot?.allocatedQuantity) || 0) + entry.quantity);
+    batch.update(entry.ref, {
+      remainingQuantity: nextRemaining,
+      allocatedQuantity: nextAllocated,
+      status: nextLotStatus(nextRemaining, lotInitial(lot)),
+      updatedDate: normalizedDate,
+      updatedAt: serverTimestamp(),
+    });
+  }
+
+  batch.set(batchRef, {
+    processType: "extraction",
+    name: finalBatchName,
+    status: normalizedStatus,
+    date: normalizedDate,
+    extractionType: normalizedExtractionType,
+    method: normalizedMethod,
+    notes: normalizedNotes,
+    inputLots: enrichedInputs,
+    outputLots,
+    sourceGrowIds: uniqueGrowIds,
+    originGrowIds: uniqueOriginGrowIds,
+    strains: uniqueStrains,
+    inputDryTotal,
+    inputUnit: "g",
+    outputAmount: normalizedOutputAmount,
+    outputUnit: normalizedOutputUnit,
+    outputYieldPercent: computedYieldPercent,
+    inputMaterialCostTotal,
+    batchTotalCost: inputMaterialCostTotal,
+    unitCost: outputUnitCost,
+    costs: {
       inputMaterialCostTotal,
       batchTotalCost: inputMaterialCostTotal,
       unitCost: outputUnitCost,
+    },
+    outputLotId: outputLotRef?.id || null,
+    createdDate: normalizedDate,
+    updatedDate: normalizedDate,
+    createdAt: serverTimestamp(),
+    updatedAt: serverTimestamp(),
+  });
+
+  for (const input of enrichedInputs) {
+    const movementRef = doc(collection(db, "users", userId, "inventoryMovements"));
+    batch.set(movementRef, {
+      movementType: "consume_lot",
+      lotId: input.lotId,
+      batchId: batchRef.id,
+      processType: "extraction",
+      direction: "out",
+      sourceGrowId: input.sourceGrowId || null,
+      sourceType: "grow",
+      quantity: input.quantity,
+      unit: input.unit || "g",
+      date: normalizedDate,
+      note: `Consumed by extraction batch ${finalBatchName}.`,
+      createdAt: serverTimestamp(),
+    });
+  }
+
+  if (outputLotRef) {
+    batch.set(outputLotRef, {
+      lotType: "extract",
+      inventoryCategory: "extract",
+      processType: "extraction",
+      processCategory: "manufacturing",
+      status: "available",
+      sourceType: "batch",
+      sourceBatchId: batchRef.id,
+      sourceGrowIds: uniqueGrowIds,
+      originGrowIds: uniqueOriginGrowIds,
+      name: outputLots[0].name,
+      batchName: finalBatchName,
+      extractionType: normalizedExtractionType,
+      method: normalizedMethod,
+      strain: uniqueStrains.join(", "),
+      unit: normalizedOutputUnit,
+      initialQuantity: normalizedOutputAmount,
+      allocatedQuantity: 0,
+      remainingQuantity: normalizedOutputAmount,
+      inputMaterialCostTotal,
+      unitCost: outputUnitCost,
+      costPerUnit: outputUnitCost,
+      batchTotalCost: inputMaterialCostTotal,
       costs: {
         inputMaterialCostTotal,
         batchTotalCost: inputMaterialCostTotal,
         unitCost: outputUnitCost,
       },
-      outputLotId: outputLotRef?.id || null,
+      notes: normalizedNotes,
       createdDate: normalizedDate,
       updatedDate: normalizedDate,
       createdAt: serverTimestamp(),
       updatedAt: serverTimestamp(),
     });
 
-    for (const input of enrichedInputs) {
-      const movementRef = doc(collection(db, "users", userId, "inventoryMovements"));
-      tx.set(movementRef, {
-        movementType: "consume_lot",
-        lotId: input.lotId,
-        batchId: batchRef.id,
-        processType: "extraction",
-        direction: "out",
-        sourceGrowId: input.sourceGrowId || null,
-        sourceType: "grow",
-        quantity: input.quantity,
-        unit: input.unit || "g",
-        date: normalizedDate,
-        note: `Consumed by extraction batch ${finalBatchName}.`,
-        createdAt: serverTimestamp(),
-      });
-    }
-
-    if (outputLotRef) {
-      tx.set(outputLotRef, {
-        lotType: "extract",
-        inventoryCategory: "extract",
-        processType: "extraction",
-        processCategory: "manufacturing",
-        status: "available",
-        sourceType: "batch",
-        sourceBatchId: batchRef.id,
-        sourceGrowIds: uniqueGrowIds,
-        originGrowIds: uniqueOriginGrowIds,
-        name: outputLots[0].name,
-        batchName: finalBatchName,
-        extractionType: normalizedExtractionType,
-        method: normalizedMethod,
-        strain: uniqueStrains.join(", "),
-        unit: normalizedOutputUnit,
-        initialQuantity: normalizedOutputAmount,
-        allocatedQuantity: 0,
-        remainingQuantity: normalizedOutputAmount,
-        inputMaterialCostTotal,
-        unitCost: outputUnitCost,
-        costPerUnit: outputUnitCost,
-        batchTotalCost: inputMaterialCostTotal,
-        costs: {
-          inputMaterialCostTotal,
-          batchTotalCost: inputMaterialCostTotal,
-          unitCost: outputUnitCost,
-        },
-        notes: normalizedNotes,
-        createdDate: normalizedDate,
-        updatedDate: normalizedDate,
-        createdAt: serverTimestamp(),
-        updatedAt: serverTimestamp(),
-      });
-
-      const movementRef = doc(collection(db, "users", userId, "inventoryMovements"));
-      tx.set(movementRef, {
-        movementType: "produce_lot",
-        lotId: outputLotRef.id,
-        batchId: batchRef.id,
-        processType: "extraction",
-        direction: "in",
-        sourceGrowId: uniqueGrowIds[0] || null,
-        sourceType: "batch",
-        quantity: normalizedOutputAmount,
-        unit: normalizedOutputUnit,
-        date: normalizedDate,
-        note: `Extract lot created from extraction batch ${finalBatchName}.`,
-        createdAt: serverTimestamp(),
-      });
-    }
-
-    return {
-      created: true,
+    const movementRef = doc(collection(db, "users", userId, "inventoryMovements"));
+    batch.set(movementRef, {
+      movementType: "produce_lot",
+      lotId: outputLotRef.id,
       batchId: batchRef.id,
-      outputLotId: outputLotRef?.id || null,
-      name: finalBatchName,
-    };
-  });
+      processType: "extraction",
+      direction: "in",
+      sourceGrowId: uniqueGrowIds[0] || null,
+      sourceType: "batch",
+      quantity: normalizedOutputAmount,
+      unit: normalizedOutputUnit,
+      date: normalizedDate,
+      note: `Extract lot created from extraction batch ${finalBatchName}.`,
+      createdAt: serverTimestamp(),
+    });
+  }
+
+  await batch.commit();
+
+  return {
+    created: true,
+    batchId: batchRef.id,
+    outputLotId: outputLotRef?.id || null,
+    name: finalBatchName,
+  };
 }
 
 export async function finalizeExtractionBatchOutput({
@@ -1213,127 +1283,128 @@ export async function finalizeExtractionBatchOutput({
   const manualYieldPercent = sanitizePositiveNumber(outputYieldPercent);
   const normalizedNotes = String(notes || "").trim();
 
-  return runTransaction(db, async (tx) => {
-    const batchRef = doc(db, "users", userId, "processBatches", batchId);
-    const batchSnap = await tx.get(batchRef);
-    if (!batchSnap.exists()) throw new Error("Extraction batch could not be found.");
+  const batchRef = doc(db, "users", userId, "processBatches", batchId);
+  const batchSnap = await getDoc(batchRef);
+  if (!batchSnap.exists()) throw new Error("Extraction batch could not be found.");
 
-    const batch = batchSnap.data() || {};
-    if (String(batch?.processType || "") !== "extraction") {
-      throw new Error("Only extraction batches can create extract lots.");
-    }
-    if (batch?.outputLotId) {
-      throw new Error("This extraction batch already has an extract lot.");
-    }
+  const batchData = batchSnap.data() || {};
+  if (String(batchData?.processType || "") !== "extraction") {
+    throw new Error("Only extraction batches can create extract lots.");
+  }
+  if (batchData?.outputLotId) {
+    throw new Error("This extraction batch already has an extract lot.");
+  }
 
-    const inputDryTotal = sanitizePositiveNumber(batch?.inputDryTotal);
-    const computedYieldPercent =
-      manualYieldPercent > 0
-        ? manualYieldPercent
-        : normalizedOutputUnit.toLowerCase() === "g" && inputDryTotal > 0
-        ? sanitizePositiveNumber((normalizedOutputAmount / inputDryTotal) * 100)
-        : null;
+  const inputDryTotal = sanitizePositiveNumber(batchData?.inputDryTotal);
+  const computedYieldPercent =
+    manualYieldPercent > 0
+      ? manualYieldPercent
+      : normalizedOutputUnit.toLowerCase() === "g" && inputDryTotal > 0
+      ? sanitizePositiveNumber((normalizedOutputAmount / inputDryTotal) * 100)
+      : null;
 
-    const outputLotRef = doc(collection(db, "users", userId, "materialLots"));
-    const inputMaterialCostTotal = sanitizeCurrency(
-      valueOrFallback(batch?.inputMaterialCostTotal, batch?.batchTotalCost, batch?.costs?.inputMaterialCostTotal)
-    );
-    const outputUnitCost =
-      normalizedOutputAmount > 0 ? roundCurrency(inputMaterialCostTotal / normalizedOutputAmount) : 0;
-    const outputLotName = buildExtractLotName({
-      batchName: batch?.name || "",
-      extractionType: batch?.extractionType || "extract",
-      date: normalizedDate,
-    });
+  const outputLotRef = doc(collection(db, "users", userId, "materialLots"));
+  const inputMaterialCostTotal = sanitizeCurrency(
+    valueOrFallback(batchData?.inputMaterialCostTotal, batchData?.batchTotalCost, batchData?.costs?.inputMaterialCostTotal)
+  );
+  const outputUnitCost =
+    normalizedOutputAmount > 0 ? roundCurrency(inputMaterialCostTotal / normalizedOutputAmount) : 0;
+  const outputLotName = buildExtractLotName({
+    batchName: batchData?.name || "",
+    extractionType: batchData?.extractionType || "extract",
+    date: normalizedDate,
+  });
 
-    tx.update(batchRef, {
-      status: "completed",
-      outputAmount: normalizedOutputAmount,
-      outputUnit: normalizedOutputUnit,
-      outputYieldPercent: computedYieldPercent,
+  const batchWriter = writeBatch(db);
+
+  batchWriter.update(batchRef, {
+    status: "completed",
+    outputAmount: normalizedOutputAmount,
+    outputUnit: normalizedOutputUnit,
+    outputYieldPercent: computedYieldPercent,
+    inputMaterialCostTotal,
+    batchTotalCost: inputMaterialCostTotal,
+    unitCost: outputUnitCost,
+    costs: {
       inputMaterialCostTotal,
       batchTotalCost: inputMaterialCostTotal,
       unitCost: outputUnitCost,
-      costs: {
-        inputMaterialCostTotal,
-        batchTotalCost: inputMaterialCostTotal,
-        unitCost: outputUnitCost,
-      },
-      outputLotId: outputLotRef.id,
-      outputLots: [{
-        lotId: outputLotRef.id,
-        lotType: "extract",
-        name: outputLotName,
-        quantity: normalizedOutputAmount,
-        unit: normalizedOutputUnit,
-      }],
-      notes: normalizedNotes
-        ? [String(batch?.notes || "").trim(), normalizedNotes].filter(Boolean).join("\n\n")
-        : batch?.notes || "",
-      updatedDate: normalizedDate,
-      updatedAt: serverTimestamp(),
-    });
-
-    tx.set(outputLotRef, {
-      lotType: "extract",
-      inventoryCategory: "extract",
-      processType: "extraction",
-      processCategory: "manufacturing",
-      status: "available",
-      sourceType: "batch",
-      sourceBatchId: batchRef.id,
-      sourceGrowIds: Array.isArray(batch?.sourceGrowIds) ? batch.sourceGrowIds : [],
-      originGrowIds: Array.isArray(batch?.originGrowIds) ? batch.originGrowIds : [],
-      name: outputLotName,
-      batchName: batch?.name || outputLotName,
-      extractionType: batch?.extractionType || "other",
-      method: batch?.method || "",
-      strain: Array.isArray(batch?.strains) ? batch.strains.join(", ") : String(batch?.strain || ""),
-      unit: normalizedOutputUnit,
-      initialQuantity: normalizedOutputAmount,
-      allocatedQuantity: 0,
-      remainingQuantity: normalizedOutputAmount,
-      inputMaterialCostTotal,
-      unitCost: outputUnitCost,
-      costPerUnit: outputUnitCost,
-      batchTotalCost: inputMaterialCostTotal,
-      costs: {
-        inputMaterialCostTotal,
-        batchTotalCost: inputMaterialCostTotal,
-        unitCost: outputUnitCost,
-      },
-      notes: normalizedNotes || batch?.notes || "",
-      createdDate: normalizedDate,
-      updatedDate: normalizedDate,
-      createdAt: serverTimestamp(),
-      updatedAt: serverTimestamp(),
-    });
-
-    const movementRef = doc(collection(db, "users", userId, "inventoryMovements"));
-    tx.set(movementRef, {
-      movementType: "produce_lot",
+    },
+    outputLotId: outputLotRef.id,
+    outputLots: [{
       lotId: outputLotRef.id,
-      batchId: batchRef.id,
-      processType: "extraction",
-      direction: "in",
-      sourceGrowId: (Array.isArray(batch?.sourceGrowIds) ? batch.sourceGrowIds : [])[0] || null,
-      sourceType: "batch",
+      lotType: "extract",
+      name: outputLotName,
       quantity: normalizedOutputAmount,
       unit: normalizedOutputUnit,
-      date: normalizedDate,
-      note: `Extract lot created from extraction batch ${batch?.name || batchRef.id}.`,
-      createdAt: serverTimestamp(),
-    });
-
-    return {
-      created: true,
-      batchId: batchRef.id,
-      outputLotId: outputLotRef.id,
-      name: batch?.name || outputLotName,
-    };
+    }],
+    notes: normalizedNotes
+      ? [String(batchData?.notes || "").trim(), normalizedNotes].filter(Boolean).join("\n\n")
+      : batchData?.notes || "",
+    updatedDate: normalizedDate,
+    updatedAt: serverTimestamp(),
   });
-}
 
+  batchWriter.set(outputLotRef, {
+    lotType: "extract",
+    inventoryCategory: "extract",
+    processType: "extraction",
+    processCategory: "manufacturing",
+    status: "available",
+    sourceType: "batch",
+    sourceBatchId: batchRef.id,
+    sourceGrowIds: Array.isArray(batchData?.sourceGrowIds) ? batchData.sourceGrowIds : [],
+    originGrowIds: Array.isArray(batchData?.originGrowIds) ? batchData.originGrowIds : [],
+    name: outputLotName,
+    batchName: batchData?.name || outputLotName,
+    extractionType: batchData?.extractionType || "other",
+    method: batchData?.method || "",
+    strain: Array.isArray(batchData?.strains) ? batchData.strains.join(", ") : String(batchData?.strain || ""),
+    unit: normalizedOutputUnit,
+    initialQuantity: normalizedOutputAmount,
+    allocatedQuantity: 0,
+    remainingQuantity: normalizedOutputAmount,
+    inputMaterialCostTotal,
+    unitCost: outputUnitCost,
+    costPerUnit: outputUnitCost,
+    batchTotalCost: inputMaterialCostTotal,
+    costs: {
+      inputMaterialCostTotal,
+      batchTotalCost: inputMaterialCostTotal,
+      unitCost: outputUnitCost,
+    },
+    notes: normalizedNotes || batchData?.notes || "",
+    createdDate: normalizedDate,
+    updatedDate: normalizedDate,
+    createdAt: serverTimestamp(),
+    updatedAt: serverTimestamp(),
+  });
+
+  const movementRef = doc(collection(db, "users", userId, "inventoryMovements"));
+  batchWriter.set(movementRef, {
+    movementType: "produce_lot",
+    lotId: outputLotRef.id,
+    batchId: batchRef.id,
+    processType: "extraction",
+    direction: "in",
+    sourceGrowId: (Array.isArray(batchData?.sourceGrowIds) ? batchData.sourceGrowIds : [])[0] || null,
+    sourceType: "batch",
+    quantity: normalizedOutputAmount,
+    unit: normalizedOutputUnit,
+    date: normalizedDate,
+    note: `Extract lot created from extraction batch ${batchData?.name || batchRef.id}.`,
+    createdAt: serverTimestamp(),
+  });
+
+  await batchWriter.commit();
+
+  return {
+    created: true,
+    batchId: batchRef.id,
+    outputLotId: outputLotRef.id,
+    name: batchData?.name || outputLotName,
+  };
+}
 
 export async function createProductBatch({
   userId,
