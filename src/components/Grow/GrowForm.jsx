@@ -595,6 +595,40 @@ function buildInitialConsumableSelections(grow = {}, suppliesMap = new Map()) {
   return selections;
 }
 
+function normalizeSopChecklistItems(items = [], templateMeta = {}) {
+  const now = new Date().toISOString();
+  return (Array.isArray(items) ? items : [])
+    .filter((item) => item && String(item.label || item.title || "").trim())
+    .map((item, index) => ({
+      id: String(item.id || `sop-check-${index + 1}`),
+      label: String(item.label || item.title || `SOP checkpoint ${index + 1}`).trim(),
+      detail: String(item.detail || item.description || item.notes || "").trim(),
+      category: String(item.category || "Workflow").trim(),
+      stage: String(item.stage || templateMeta.workflowStep || "General").trim(),
+      source: "sop-template",
+      workflowTemplateId: templateMeta.workflowTemplateId || "",
+      workflowTemplateTitle: templateMeta.workflowTemplateTitle || "Workflow SOP",
+      status: "pending",
+      completed: false,
+      skipped: false,
+      createdAt: now,
+      updatedAt: now,
+    }));
+}
+
+function cloneWorkflowTaskTemplates(items = []) {
+  return (Array.isArray(items) ? items : [])
+    .filter((item) => item && String(item.title || "").trim())
+    .map((item, index) => ({
+      id: String(item.id || `sop-task-${index + 1}`),
+      title: String(item.title || `SOP task ${index + 1}`).trim(),
+      stage: String(item.stage || "General").trim(),
+      dueOffsetDays: Number.isFinite(Number(item.dueOffsetDays)) ? Number(item.dueOffsetDays) : index + 1,
+      notes: String(item.notes || item.description || "").trim(),
+      workflowStep: String(item.workflowStep || "").trim(),
+    }));
+}
+
 /* ==================== COMPONENT ==================== */
 export default function GrowForm(props) {
   const {
@@ -607,6 +641,7 @@ export default function GrowForm(props) {
     supplies,
     onCreateGrow,
     onUpdateGrow,
+    onCreateTasksForGrow,
   } = props;
 
   const confirm = useConfirm();
@@ -626,16 +661,98 @@ export default function GrowForm(props) {
 
   const mode = editingGrow && editingGrow.id ? "edit" : "create";
 
+  const workflowMeta = useMemo(() => {
+    const id = String(editingGrow?.workflowTemplateId || editingGrow?.sopTemplateId || "").trim();
+    const title = String(
+      editingGrow?.workflowTemplateTitle ||
+        editingGrow?.sopTemplateTitle ||
+        editingGrow?.workflowTitle ||
+        ""
+    ).trim();
+    const category = String(
+      editingGrow?.workflowTemplateCategory || editingGrow?.sopTemplateCategory || ""
+    ).trim();
+    const step = String(editingGrow?.workflowStep || category || "").trim();
+    const summary = String(editingGrow?.workflowTemplateSummary || "").trim();
+
+    return {
+      hasWorkflow: !!(id || title),
+      workflowSource: String(editingGrow?.workflowSource || "sop-template").trim(),
+      workflowTemplateId: id,
+      workflowTemplateTitle: title,
+      workflowTemplateCategory: category,
+      workflowStep: step,
+      workflowTemplateSummary: summary,
+      checklistItems: Array.isArray(editingGrow?.workflowChecklistTemplate)
+        ? editingGrow.workflowChecklistTemplate
+        : Array.isArray(editingGrow?.checklistItems)
+          ? editingGrow.checklistItems
+          : [],
+      taskTemplates: Array.isArray(editingGrow?.workflowTaskTemplates)
+        ? editingGrow.workflowTaskTemplates
+        : Array.isArray(editingGrow?.taskTemplates)
+          ? editingGrow.taskTemplates
+          : [],
+    };
+  }, [editingGrow]);
+
+  const workflowPayloadFields = useMemo(() => {
+    if (!workflowMeta.hasWorkflow) return {};
+    const fields = {
+      workflowSource: workflowMeta.workflowSource || "sop-template",
+      workflowTemplateId: workflowMeta.workflowTemplateId,
+      sopTemplateId: workflowMeta.workflowTemplateId,
+      workflowTemplateTitle: workflowMeta.workflowTemplateTitle,
+      sopTemplateTitle: workflowMeta.workflowTemplateTitle,
+      workflowTemplateCategory: workflowMeta.workflowTemplateCategory,
+      workflowStep: workflowMeta.workflowStep,
+      workflowTemplateSummary: workflowMeta.workflowTemplateSummary,
+    };
+
+    return Object.fromEntries(
+      Object.entries(fields).filter(([, value]) => value !== undefined && value !== null && value !== "")
+    );
+  }, [workflowMeta]);
+
+  const normalizedSopChecklist = useMemo(
+    () => normalizeSopChecklistItems(workflowMeta.checklistItems, workflowMeta),
+    [workflowMeta]
+  );
+  const normalizedSopTaskTemplates = useMemo(
+    () => cloneWorkflowTaskTemplates(workflowMeta.taskTemplates),
+    [workflowMeta]
+  );
+
+  const [attachSopChecklist, setAttachSopChecklist] = useState(() =>
+    workflowMeta.hasWorkflow && normalizeSopChecklistItems(workflowMeta.checklistItems, workflowMeta).length > 0
+  );
+  const [generateSopTasks, setGenerateSopTasks] = useState(false);
+
+  useEffect(() => {
+    if (!workflowMeta.hasWorkflow) return;
+    setAttachSopChecklist(normalizedSopChecklist.length > 0);
+    setGenerateSopTasks(false);
+  }, [workflowMeta.workflowTemplateId, workflowMeta.workflowTemplateTitle, normalizedSopChecklist.length]);
+
   /* ---- Parent Source ---- */
   const cameFromLibrary =
     editingGrow?.parentSource === "Library" && editingGrow?.parentId;
-  const [parentSource, setParentSource] = useState(
-    cameFromLibrary ? "library" : "grow"
-  );
+  const initialParentSource = (() => {
+    const raw = String(editingGrow?.parentSource || "").trim().toLowerCase();
+    if (workflowMeta.hasWorkflow && ["direct", "none", "sop", "workflow"].includes(raw)) {
+      return "direct";
+    }
+    if (raw === "library" || cameFromLibrary) return "library";
+    return "grow";
+  })();
+  const [parentSource, setParentSource] = useState(initialParentSource);
   const isSubmittingRef = useRef(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [formNotice, setFormNotice] = useState(null);
   const effectiveParentSource = parentSource;
+  const availableParentSources = workflowMeta.hasWorkflow
+    ? [{ key: "direct", label: "Direct / SOP Start" }, ...PARENT_SOURCES]
+    : PARENT_SOURCES;
 
   /* ---- Basics ---- */
   const [growType, setGrowType] = useState(
@@ -825,7 +942,26 @@ export default function GrowForm(props) {
   useEffect(() => {
     if (mode !== "create") return;
 
-    if (effectiveParentSource === "grow") {
+    if (effectiveParentSource === "direct") {
+      setParentGrowId("");
+      setConsumeFromParent("");
+      setConsumeWarn("");
+      setExtraParents([]);
+      setExtraParentErrors([]);
+      setParentRemaining(0);
+      setParentTotal(null);
+      setLibId("");
+      setStorageDoc(null);
+      setStorageMode({
+        ok: false,
+        mode: "unknown",
+        available: 0,
+        unit: "",
+        typeLabel: "",
+        fieldPref: [],
+      });
+      setUseFromStorageAmount("");
+    } else if (effectiveParentSource === "grow") {
       setLibId("");
       setStorageDoc(null);
       setStorageMode({
@@ -1448,15 +1584,35 @@ export default function GrowForm(props) {
           cost: totalCostNum,
           createdAt,
           parentSource:
-            effectiveParentSource === "library" ? "Library" : "Grow",
+            effectiveParentSource === "library"
+              ? "Library"
+              : effectiveParentSource === "direct"
+              ? "Direct"
+              : "Grow",
           parentId:
             effectiveParentSource === "library"
               ? libId
+              : effectiveParentSource === "direct"
+              ? null
               : parentGrowId || null,
           parentType:
             effectiveParentSource === "library"
               ? storageDoc?.type || null
               : null,
+          ...workflowPayloadFields,
+          ...(attachSopChecklist && normalizedSopChecklist.length
+            ? {
+                sopChecklist: normalizedSopChecklist,
+                sopChecklistCreatedAt: new Date().toISOString(),
+                sopChecklistStatus: "active",
+              }
+            : {}),
+          ...(generateSopTasks && normalizedSopTaskTemplates.length
+            ? {
+                sopTaskTemplatesGenerated: false,
+                sopTaskTemplateCount: normalizedSopTaskTemplates.length,
+              }
+            : {}),
           ...(parentContributions.length ? { parentContributions } : {}),
           ...(perGrowAllocatedConsumables.length
             ? { labConsumablesUsed: perGrowAllocatedConsumables }
@@ -1499,7 +1655,39 @@ export default function GrowForm(props) {
               : `${prefix}-${existingMax + i + 1}`;
           createPayloads.push(payload);
         }
-        await Promise.all(createPayloads.map((p) => createGrow(p)));
+        const createdGrowIds = await Promise.all(createPayloads.map((p) => createGrow(p)));
+
+        if (
+          generateSopTasks &&
+          normalizedSopTaskTemplates.length > 0 &&
+          typeof onCreateTasksForGrow === "function"
+        ) {
+          for (let i = 0; i < createPayloads.length; i++) {
+            const growIdCreated = createdGrowIds[i];
+            if (!growIdCreated) continue;
+            const growPayload = { ...createPayloads[i], id: growIdCreated };
+            try {
+              const taskIds = await onCreateTasksForGrow({
+                growId: growIdCreated,
+                grow: growPayload,
+                taskTemplates: normalizedSopTaskTemplates,
+              });
+              if (Array.isArray(taskIds) && taskIds.length) {
+                await patchGrow(growIdCreated, {
+                  sopTaskTemplatesGenerated: true,
+                  sopTaskIds: taskIds,
+                  sopTaskGeneratedAt: new Date().toISOString(),
+                });
+              }
+            } catch (taskErr) {
+              console.error("SOP task creation failed:", taskErr);
+              setFormNotice({
+                tone: "warning",
+                message: "Grow was created, but SOP task generation needs review.",
+              });
+            }
+          }
+        }
 
         if (effectiveParentSource === "grow" && parentGrowId) {
           const consume = Number(consumeFromParent || 0);
@@ -1709,6 +1897,7 @@ ${
         cost: Number.isFinite(totalCostNum) ? totalCostNum : 0,
         createdAt,
         updatedAt: serverTimestamp(),
+        ...workflowPayloadFields,
       };
 
       if (normalizeType(growType) !== "Bulk") {
@@ -2000,11 +2189,68 @@ ${
             {formNotice.message}
           </div>
         ) : null}
+
+        {workflowMeta.hasWorkflow ? (
+          <section data-testid="grow-form-sop-banner" className="mb-3 rounded-2xl border border-[rgba(var(--_accent-rgb),0.35)] bg-[rgba(var(--_accent-rgb),0.10)] p-3 text-sm">
+            <div className="text-xs uppercase tracking-wide opacity-70">Started from SOP template</div>
+            <div className="mt-1 font-semibold">
+              {workflowMeta.workflowTemplateTitle || "Workflow SOP"}
+            </div>
+            <div className="mt-1 text-xs opacity-80">
+              {workflowMeta.workflowTemplateCategory || "Workflow"}
+              {workflowMeta.workflowStep ? ` · ${workflowMeta.workflowStep}` : ""}
+            </div>
+            {workflowMeta.workflowTemplateSummary ? (
+              <div className="mt-2 text-xs opacity-80">{workflowMeta.workflowTemplateSummary}</div>
+            ) : null}
+
+            {mode === "create" ? (
+              <div className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-2">
+                {normalizedSopChecklist.length > 0 ? (
+                  <label className="flex items-start gap-2 rounded-xl border border-emerald-200 bg-white/70 p-3 text-xs text-emerald-950 dark:border-emerald-900/60 dark:bg-emerald-950/20 dark:text-emerald-100">
+                    <input
+                      type="checkbox"
+                      data-testid="grow-form-attach-sop-checklist"
+                      checked={attachSopChecklist}
+                      onChange={(e) => setAttachSopChecklist(e.target.checked)}
+                      className="mt-1"
+                    />
+                    <span>
+                      <span className="font-semibold">Attach SOP run checklist</span>
+                      <span className="mt-1 block opacity-75">
+                        Adds {normalizedSopChecklist.length} workflow checkpoints to this grow detail page.
+                      </span>
+                    </span>
+                  </label>
+                ) : null}
+
+                {normalizedSopTaskTemplates.length > 0 ? (
+                  <label className="flex items-start gap-2 rounded-xl border border-blue-200 bg-white/70 p-3 text-xs text-blue-950 dark:border-blue-900/60 dark:bg-blue-950/20 dark:text-blue-100">
+                    <input
+                      type="checkbox"
+                      data-testid="grow-form-generate-sop-tasks"
+                      checked={generateSopTasks}
+                      onChange={(e) => setGenerateSopTasks(e.target.checked)}
+                      className="mt-1"
+                    />
+                    <span>
+                      <span className="font-semibold">Create suggested SOP tasks</span>
+                      <span className="mt-1 block opacity-75">
+                        Creates {normalizedSopTaskTemplates.length} optional task reminders after the grow is saved.
+                      </span>
+                    </span>
+                  </label>
+                ) : null}
+              </div>
+            ) : null}
+          </section>
+        ) : null}
+
         {mode === "create" && (
           <section className="mb-2">
             <label className="label mb-1 block">Parent Source</label>
             <div className="chipset">
-              {PARENT_SOURCES.map((opt) => (
+              {availableParentSources.map((opt) => (
                 <button
                   type="button"
                   key={opt.key}
@@ -2017,6 +2263,13 @@ ${
                 </button>
               ))}
             </div>
+          </section>
+        )}
+
+        {mode === "create" && effectiveParentSource === "direct" && (
+          <section className="mb-3 rounded-xl border border-blue-200 dark:border-blue-900/60 bg-blue-50 dark:bg-blue-950/30 p-3 text-sm text-blue-900 dark:text-blue-100">
+            This grow will start directly from the selected SOP template without consuming a parent grow or storage item.
+            Use this for first-run agar plates, test batches, or entries where the source material is tracked outside the app.
           </section>
         )}
 

@@ -409,6 +409,121 @@ const EMPTY_CARD_BUILDER = {
   frontArtUrl: "",
 };
 
+const WORKFLOW_OPTIONS = [
+  "Agar → LC → Grain → Bulk",
+  "Agar → Grain → Bulk",
+  "LC → Grain → Bulk",
+  "Spore → Agar cleanup → LC → Grain → Bulk",
+  "Library culture → Grain → Bulk",
+  "Gourmet block workflow",
+  "Custom",
+];
+
+const GRAIN_OPTIONS = [
+  "Popcorn",
+  "Milo",
+  "Rye berries",
+  "Oats",
+  "Wheat berries",
+  "Wild bird seed",
+  "Brown rice",
+  "Mixed grain",
+  "Custom",
+];
+
+const GRAIN_PREP_OPTIONS = [
+  "Pressure-cook hydration",
+  "Soak / simmer / dry",
+  "No-soak / no-simmer",
+  "Purchased sterile grain",
+  "Custom",
+];
+
+const SUBSTRATE_OPTIONS = [
+  "CVG",
+  "CV",
+  "Coir only",
+  "Manure blend",
+  "Straw",
+  "Hardwood fuel pellets",
+  "Master's Mix",
+  "Custom",
+];
+
+const CLEAN_WORK_OPTIONS = [
+  "Bella Bora SAB",
+  "Still air box",
+  "FFU",
+  "Flow hood",
+  "Glove box",
+  "Custom",
+];
+
+const CONTAMINATION_RISK_OPTIONS = ["Unknown", "Low", "Moderate", "High"];
+
+const EMPTY_CULTIVATION_PROFILE = {
+  preferredWorkflow: "Agar → LC → Grain → Bulk",
+  preferredGrain: "Popcorn",
+  grainPrepMethod: "Pressure-cook hydration",
+  preferredSubstrate: "CVG",
+  cleanWorkspace: "Bella Bora SAB",
+  contaminationRisk: "Unknown",
+  colonizationTempMinF: "",
+  colonizationTempMaxF: "",
+  fruitingTempMinF: "",
+  fruitingTempMaxF: "",
+  fruitingHumidityMin: "",
+  fruitingHumidityMax: "",
+  expectedColonizationDays: "",
+  expectedFruitingDays: "",
+  agarNotes: "",
+  lcNotes: "",
+  grainNotes: "",
+  bulkNotes: "",
+  cleanWorkNotes: "",
+  contaminationNotes: "",
+};
+
+function buildCultivationProfileSeed(seed = {}) {
+  const source = seed?.cultivationProfile || seed?.profile || {};
+  return {
+    ...EMPTY_CULTIVATION_PROFILE,
+    ...source,
+    preferredWorkflow: source?.preferredWorkflow || EMPTY_CULTIVATION_PROFILE.preferredWorkflow,
+    preferredGrain: source?.preferredGrain || EMPTY_CULTIVATION_PROFILE.preferredGrain,
+    grainPrepMethod: source?.grainPrepMethod || EMPTY_CULTIVATION_PROFILE.grainPrepMethod,
+    preferredSubstrate: source?.preferredSubstrate || EMPTY_CULTIVATION_PROFILE.preferredSubstrate,
+    cleanWorkspace: source?.cleanWorkspace || EMPTY_CULTIVATION_PROFILE.cleanWorkspace,
+    contaminationRisk: source?.contaminationRisk || EMPTY_CULTIVATION_PROFILE.contaminationRisk,
+  };
+}
+
+function hasUsefulCultivationProfile(profile = {}) {
+  const seeded = buildCultivationProfileSeed({ cultivationProfile: profile });
+  return Object.entries(seeded).some(([key, value]) => {
+    if (value == null) return false;
+    const clean = String(value).trim();
+    if (!clean) return false;
+    return clean !== String(EMPTY_CULTIVATION_PROFILE[key] || "").trim();
+  });
+}
+
+function formatProfileRange(min, max, unit = "") {
+  const left = String(min ?? "").trim();
+  const right = String(max ?? "").trim();
+  if (left && right) return `${left}–${right}${unit}`;
+  if (left) return `${left}${unit}`;
+  if (right) return `${right}${unit}`;
+  return "—";
+}
+
+function joinProfileNotes(...values) {
+  return values
+    .map((value) => String(value || "").trim())
+    .filter(Boolean)
+    .join("\n\n");
+}
+
 function buildTradeSyringeDraft(location = DEFAULT_STORAGE_LOCATIONS[0]) {
   return {
     sourceGrowId: "",
@@ -633,6 +748,7 @@ export default function StrainManager(props) {
     genetics: "",
     notes: "",
     photoURL: "",
+    cultivationProfile: buildCultivationProfileSeed({}),
     cardBuilder: buildCardBuilderSeed({}),
   });
   const [imageFile, setImageFile] = useState(null);
@@ -904,6 +1020,15 @@ export default function StrainManager(props) {
       cardBuilder: { ...(f.cardBuilder || EMPTY_CARD_BUILDER), [key]: value },
     }));
 
+  const updateCultivationProfile = (key, value) =>
+    setForm((f) => ({
+      ...f,
+      cultivationProfile: {
+        ...buildCultivationProfileSeed(f),
+        [key]: value,
+      },
+    }));
+
   const loadBuilderForStrain = useCallback(
     (strainDoc = {}) => {
       setForm({
@@ -913,6 +1038,7 @@ export default function StrainManager(props) {
         genetics: strainDoc.genetics || "",
         notes: strainDoc.notes || "",
         photoURL: strainDoc.photoURL || "",
+        cultivationProfile: buildCultivationProfileSeed(strainDoc),
         cardBuilder: buildCardBuilderSeed(strainDoc),
       });
       setImageFile(null);
@@ -933,6 +1059,7 @@ export default function StrainManager(props) {
       genetics: "",
       notes: "",
       photoURL: "",
+      cultivationProfile: buildCultivationProfileSeed({}),
       cardBuilder: buildCardBuilderSeed({}),
     });
     setImageFile(null);
@@ -977,6 +1104,7 @@ export default function StrainManager(props) {
       genetics: "",
       notes: "",
       photoURL: "",
+      cultivationProfile: buildCultivationProfileSeed({}),
       cardBuilder: buildCardBuilderSeed({}),
     });
     setImageFile(null);
@@ -1044,6 +1172,7 @@ export default function StrainManager(props) {
         genetics: form.genetics || "",
         notes: form.notes || "",
         photoURL,
+        cultivationProfile: buildCultivationProfileSeed(form),
         cardBuilder,
       };
       if (!data.name) throw new Error("Strain name is required.");
@@ -1177,6 +1306,7 @@ export default function StrainManager(props) {
       createdAt,
       updatedAt: createdAt,
       source: "library",
+      cultivationProfile: buildCultivationProfileSeed({}),
       cardBuilder: buildCardBuilderSeed({
         name: clean,
         scientificName: String(scientificName || "").trim(),
@@ -1586,13 +1716,34 @@ export default function StrainManager(props) {
     return () => window.clearTimeout(t);
   }, [scanLibraryId, libraryItems.length]);
 
+  const selectedStrainRecord = useMemo(() => {
+    if (!viewStrain) return null;
+    const rows = Array.isArray(strainsToShow) ? strainsToShow : [];
+    if (viewStrain?.id) {
+      const byId = rows.find((row) => row?.id === viewStrain.id);
+      if (byId) return byId;
+    }
+    const target = norm(viewStrain?.name || viewStrain);
+    return rows.find((row) => norm(row?.name) === target) || viewStrain;
+  }, [strainsToShow, viewStrain]);
+
+  const selectedCultivationProfile = useMemo(
+    () => buildCultivationProfileSeed(selectedStrainRecord || {}),
+    [selectedStrainRecord]
+  );
+
+  const selectedProfileHasDetails = useMemo(
+    () => hasUsefulCultivationProfile(selectedCultivationProfile),
+    [selectedCultivationProfile]
+  );
+
   const growsForSelected = useMemo(() => {
-    if (!viewStrain) return [];
-    const target = norm(viewStrain.name || viewStrain);
+    if (!selectedStrainRecord) return [];
+    const target = norm(selectedStrainRecord.name || selectedStrainRecord);
     return (Array.isArray(growsSource) ? growsSource : []).filter(
       (g) => norm(g.strain) === target
     );
-  }, [viewStrain, growsSource]);
+  }, [selectedStrainRecord, growsSource]);
 
   const statsForSelected = useMemo(
     () => calcStatsFromGrows(growsForSelected),
@@ -2994,10 +3145,7 @@ export default function StrainManager(props) {
               checked={isChecked}
               onToggleSelect={() => toggleStrain(s.id)}
               onOpen={() => {
-                setViewStrain({
-                  name: s.name,
-                  scientificName: s.scientificName,
-                });
+                setViewStrain(s);
                 setViewTab("grows");
                 setLineageView("tree");
               }}
@@ -3137,6 +3285,243 @@ export default function StrainManager(props) {
                 aria-label="Notes"
                 rows={3}
               />
+
+              <div className="md:col-span-2 rounded-2xl border border-emerald-200 dark:border-emerald-900/70 bg-emerald-50/60 dark:bg-emerald-950/20 p-4 space-y-4">
+                <div className="flex flex-wrap items-start justify-between gap-3">
+                  <div>
+                    <h3 className="text-lg font-semibold">Cultivation Profile</h3>
+                    <p className="text-xs text-zinc-600 dark:text-zinc-400">
+                      Strain-specific defaults for workflow, grain prep, environment targets, and contamination watchouts. These save on the strain card and can guide future grows without changing existing lifecycle behavior.
+                    </p>
+                  </div>
+                  <span className="rounded-full border border-emerald-300 bg-white/70 px-3 py-1 text-xs font-medium text-emerald-800 dark:border-emerald-800 dark:bg-zinc-950/50 dark:text-emerald-200">
+                    SOP profile
+                  </span>
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
+                  <label className="space-y-1 text-sm">
+                    <span className="font-medium">Preferred workflow</span>
+                    <select
+                      className="p-2 rounded border dark:bg-zinc-800 dark:border-zinc-700 w-full"
+                      value={form?.cultivationProfile?.preferredWorkflow || EMPTY_CULTIVATION_PROFILE.preferredWorkflow}
+                      onChange={(e) => updateCultivationProfile("preferredWorkflow", e.target.value)}
+                    >
+                      {WORKFLOW_OPTIONS.map((option) => (
+                        <option key={option} value={option}>{option}</option>
+                      ))}
+                    </select>
+                  </label>
+
+                  <label className="space-y-1 text-sm">
+                    <span className="font-medium">Preferred grain</span>
+                    <select
+                      className="p-2 rounded border dark:bg-zinc-800 dark:border-zinc-700 w-full"
+                      value={form?.cultivationProfile?.preferredGrain || EMPTY_CULTIVATION_PROFILE.preferredGrain}
+                      onChange={(e) => updateCultivationProfile("preferredGrain", e.target.value)}
+                    >
+                      {GRAIN_OPTIONS.map((option) => (
+                        <option key={option} value={option}>{option}</option>
+                      ))}
+                    </select>
+                  </label>
+
+                  <label className="space-y-1 text-sm">
+                    <span className="font-medium">Grain prep method</span>
+                    <select
+                      className="p-2 rounded border dark:bg-zinc-800 dark:border-zinc-700 w-full"
+                      value={form?.cultivationProfile?.grainPrepMethod || EMPTY_CULTIVATION_PROFILE.grainPrepMethod}
+                      onChange={(e) => updateCultivationProfile("grainPrepMethod", e.target.value)}
+                    >
+                      {GRAIN_PREP_OPTIONS.map((option) => (
+                        <option key={option} value={option}>{option}</option>
+                      ))}
+                    </select>
+                  </label>
+
+                  <label className="space-y-1 text-sm">
+                    <span className="font-medium">Preferred substrate</span>
+                    <select
+                      className="p-2 rounded border dark:bg-zinc-800 dark:border-zinc-700 w-full"
+                      value={form?.cultivationProfile?.preferredSubstrate || EMPTY_CULTIVATION_PROFILE.preferredSubstrate}
+                      onChange={(e) => updateCultivationProfile("preferredSubstrate", e.target.value)}
+                    >
+                      {SUBSTRATE_OPTIONS.map((option) => (
+                        <option key={option} value={option}>{option}</option>
+                      ))}
+                    </select>
+                  </label>
+
+                  <label className="space-y-1 text-sm">
+                    <span className="font-medium">Clean-work setup</span>
+                    <select
+                      className="p-2 rounded border dark:bg-zinc-800 dark:border-zinc-700 w-full"
+                      value={form?.cultivationProfile?.cleanWorkspace || EMPTY_CULTIVATION_PROFILE.cleanWorkspace}
+                      onChange={(e) => updateCultivationProfile("cleanWorkspace", e.target.value)}
+                    >
+                      {CLEAN_WORK_OPTIONS.map((option) => (
+                        <option key={option} value={option}>{option}</option>
+                      ))}
+                    </select>
+                  </label>
+
+                  <label className="space-y-1 text-sm">
+                    <span className="font-medium">Contamination risk</span>
+                    <select
+                      className="p-2 rounded border dark:bg-zinc-800 dark:border-zinc-700 w-full"
+                      value={form?.cultivationProfile?.contaminationRisk || EMPTY_CULTIVATION_PROFILE.contaminationRisk}
+                      onChange={(e) => updateCultivationProfile("contaminationRisk", e.target.value)}
+                    >
+                      {CONTAMINATION_RISK_OPTIONS.map((option) => (
+                        <option key={option} value={option}>{option}</option>
+                      ))}
+                    </select>
+                  </label>
+                </div>
+
+                <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                  <label className="space-y-1 text-sm">
+                    <span className="font-medium">Colonize min °F</span>
+                    <input
+                      type="number"
+                      inputMode="decimal"
+                      className="p-2 rounded border dark:bg-zinc-800 dark:border-zinc-700 w-full"
+                      value={form?.cultivationProfile?.colonizationTempMinF || ""}
+                      onChange={(e) => updateCultivationProfile("colonizationTempMinF", e.target.value)}
+                    />
+                  </label>
+                  <label className="space-y-1 text-sm">
+                    <span className="font-medium">Colonize max °F</span>
+                    <input
+                      type="number"
+                      inputMode="decimal"
+                      className="p-2 rounded border dark:bg-zinc-800 dark:border-zinc-700 w-full"
+                      value={form?.cultivationProfile?.colonizationTempMaxF || ""}
+                      onChange={(e) => updateCultivationProfile("colonizationTempMaxF", e.target.value)}
+                    />
+                  </label>
+                  <label className="space-y-1 text-sm">
+                    <span className="font-medium">Fruit min °F</span>
+                    <input
+                      type="number"
+                      inputMode="decimal"
+                      className="p-2 rounded border dark:bg-zinc-800 dark:border-zinc-700 w-full"
+                      value={form?.cultivationProfile?.fruitingTempMinF || ""}
+                      onChange={(e) => updateCultivationProfile("fruitingTempMinF", e.target.value)}
+                    />
+                  </label>
+                  <label className="space-y-1 text-sm">
+                    <span className="font-medium">Fruit max °F</span>
+                    <input
+                      type="number"
+                      inputMode="decimal"
+                      className="p-2 rounded border dark:bg-zinc-800 dark:border-zinc-700 w-full"
+                      value={form?.cultivationProfile?.fruitingTempMaxF || ""}
+                      onChange={(e) => updateCultivationProfile("fruitingTempMaxF", e.target.value)}
+                    />
+                  </label>
+                  <label className="space-y-1 text-sm">
+                    <span className="font-medium">Humidity min %</span>
+                    <input
+                      type="number"
+                      inputMode="decimal"
+                      min="0"
+                      max="100"
+                      className="p-2 rounded border dark:bg-zinc-800 dark:border-zinc-700 w-full"
+                      value={form?.cultivationProfile?.fruitingHumidityMin || ""}
+                      onChange={(e) => updateCultivationProfile("fruitingHumidityMin", e.target.value)}
+                    />
+                  </label>
+                  <label className="space-y-1 text-sm">
+                    <span className="font-medium">Humidity max %</span>
+                    <input
+                      type="number"
+                      inputMode="decimal"
+                      min="0"
+                      max="100"
+                      className="p-2 rounded border dark:bg-zinc-800 dark:border-zinc-700 w-full"
+                      value={form?.cultivationProfile?.fruitingHumidityMax || ""}
+                      onChange={(e) => updateCultivationProfile("fruitingHumidityMax", e.target.value)}
+                    />
+                  </label>
+                  <label className="space-y-1 text-sm">
+                    <span className="font-medium">Colonize days</span>
+                    <input
+                      type="number"
+                      inputMode="numeric"
+                      min="0"
+                      className="p-2 rounded border dark:bg-zinc-800 dark:border-zinc-700 w-full"
+                      value={form?.cultivationProfile?.expectedColonizationDays || ""}
+                      onChange={(e) => updateCultivationProfile("expectedColonizationDays", e.target.value)}
+                    />
+                  </label>
+                  <label className="space-y-1 text-sm">
+                    <span className="font-medium">Fruit days</span>
+                    <input
+                      type="number"
+                      inputMode="numeric"
+                      min="0"
+                      className="p-2 rounded border dark:bg-zinc-800 dark:border-zinc-700 w-full"
+                      value={form?.cultivationProfile?.expectedFruitingDays || ""}
+                      onChange={(e) => updateCultivationProfile("expectedFruitingDays", e.target.value)}
+                    />
+                  </label>
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                  <label className="space-y-1 text-sm">
+                    <span className="font-medium">Agar / LC notes</span>
+                    <textarea
+                      rows={3}
+                      className="p-2 rounded border dark:bg-zinc-800 dark:border-zinc-700 w-full"
+                      value={form?.cultivationProfile?.agarNotes || ""}
+                      onChange={(e) => updateCultivationProfile("agarNotes", e.target.value)}
+                      placeholder="Clean-up behavior, transfer timing, LC vigor, cloudiness notes..."
+                    />
+                  </label>
+                  <label className="space-y-1 text-sm">
+                    <span className="font-medium">Grain / bulk notes</span>
+                    <textarea
+                      rows={3}
+                      className="p-2 rounded border dark:bg-zinc-800 dark:border-zinc-700 w-full"
+                      value={form?.cultivationProfile?.grainNotes || ""}
+                      onChange={(e) => updateCultivationProfile("grainNotes", e.target.value)}
+                      placeholder="Popcorn/milo behavior, shake timing, spawn ratio, CVG quirks..."
+                    />
+                  </label>
+                  <label className="space-y-1 text-sm">
+                    <span className="font-medium">Clean-work notes</span>
+                    <textarea
+                      rows={3}
+                      className="p-2 rounded border dark:bg-zinc-800 dark:border-zinc-700 w-full"
+                      value={form?.cultivationProfile?.cleanWorkNotes || ""}
+                      onChange={(e) => updateCultivationProfile("cleanWorkNotes", e.target.value)}
+                      placeholder="SAB/FFU handling, still-air rest time, flame/ISO habits, risky steps..."
+                    />
+                  </label>
+                  <label className="space-y-1 text-sm">
+                    <span className="font-medium">Contamination watchouts</span>
+                    <textarea
+                      rows={3}
+                      className="p-2 rounded border dark:bg-zinc-800 dark:border-zinc-700 w-full"
+                      value={form?.cultivationProfile?.contaminationNotes || ""}
+                      onChange={(e) => updateCultivationProfile("contaminationNotes", e.target.value)}
+                      placeholder="Known weak points, visual signs, smells, prevention notes..."
+                    />
+                  </label>
+                  <label className="space-y-1 text-sm md:col-span-2">
+                    <span className="font-medium">Bulk / fruiting notes</span>
+                    <textarea
+                      rows={3}
+                      className="p-2 rounded border dark:bg-zinc-800 dark:border-zinc-700 w-full"
+                      value={form?.cultivationProfile?.bulkNotes || ""}
+                      onChange={(e) => updateCultivationProfile("bulkNotes", e.target.value)}
+                      placeholder="Pinning behavior, casing preference, FAE sensitivity, harvest timing..."
+                    />
+                  </label>
+                </div>
+              </div>
+
               <input
                 type="file"
                 accept="image/*"
@@ -3473,6 +3858,17 @@ export default function StrainManager(props) {
               >
                 <GitBranch className="w-4 h-4" />
                 Lineage
+              </button>
+              <button
+                className={`chip flex items-center gap-1 ${
+                  viewTab === "profile" ? "accent-chip" : ""
+                }`}
+                onClick={() => setViewTab("profile")}
+                aria-pressed={viewTab === "profile" ? "true" : "false"}
+                title="Show strain-specific SOP and cultivation targets"
+              >
+                <TestTube className="w-4 h-4" />
+                Profile
               </button>
 
               {viewTab === "lineage" && (
@@ -3926,6 +4322,114 @@ export default function StrainManager(props) {
                     ? lineageGraphUI
                     : rootsListUI}
                 </>
+              )}
+
+              {viewTab === "profile" && (
+                <div className="space-y-4">
+                  <div className="flex flex-wrap items-start justify-between gap-3 rounded-2xl border border-emerald-200 bg-emerald-50/70 p-4 dark:border-emerald-900/70 dark:bg-emerald-950/20">
+                    <div>
+                      <h4 className="text-base font-semibold">Cultivation Profile</h4>
+                      <p className="mt-1 text-sm text-zinc-600 dark:text-zinc-300">
+                        SOP defaults and strain-specific cultivation targets for {selectedStrainRecord?.name || viewStrain?.name || "this strain"}.
+                      </p>
+                      {!selectedProfileHasDetails ? (
+                        <p className="mt-2 text-xs text-emerald-700 dark:text-emerald-300">
+                          This card is still using the default CNM workflow profile. Edit the strain to customize exact targets and watchouts.
+                        </p>
+                      ) : null}
+                    </div>
+                    {selectedStrainRecord ? (
+                      <button
+                        type="button"
+                        className="chip chip--active"
+                        onClick={() => {
+                          setViewStrain(null);
+                          loadBuilderForStrain(selectedStrainRecord);
+                        }}
+                      >
+                        Edit profile
+                      </button>
+                    ) : null}
+                  </div>
+
+                  <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3 text-sm">
+                    <div className="rounded-xl border border-zinc-200 bg-white p-3 dark:border-zinc-800 dark:bg-zinc-950/40">
+                      <div className="text-xs uppercase tracking-wide text-zinc-500">Workflow</div>
+                      <div className="mt-1 font-semibold">{selectedCultivationProfile.preferredWorkflow || "—"}</div>
+                    </div>
+                    <div className="rounded-xl border border-zinc-200 bg-white p-3 dark:border-zinc-800 dark:bg-zinc-950/40">
+                      <div className="text-xs uppercase tracking-wide text-zinc-500">Grain prep</div>
+                      <div className="mt-1 font-semibold">{selectedCultivationProfile.preferredGrain || "—"}</div>
+                      <div className="mt-1 text-xs text-zinc-500">{selectedCultivationProfile.grainPrepMethod || "—"}</div>
+                    </div>
+                    <div className="rounded-xl border border-zinc-200 bg-white p-3 dark:border-zinc-800 dark:bg-zinc-950/40">
+                      <div className="text-xs uppercase tracking-wide text-zinc-500">Substrate</div>
+                      <div className="mt-1 font-semibold">{selectedCultivationProfile.preferredSubstrate || "—"}</div>
+                    </div>
+                    <div className="rounded-xl border border-zinc-200 bg-white p-3 dark:border-zinc-800 dark:bg-zinc-950/40">
+                      <div className="text-xs uppercase tracking-wide text-zinc-500">Clean work</div>
+                      <div className="mt-1 font-semibold">{selectedCultivationProfile.cleanWorkspace || "—"}</div>
+                    </div>
+                    <div className="rounded-xl border border-zinc-200 bg-white p-3 dark:border-zinc-800 dark:bg-zinc-950/40">
+                      <div className="text-xs uppercase tracking-wide text-zinc-500">Contam risk</div>
+                      <div className="mt-1 font-semibold">{selectedCultivationProfile.contaminationRisk || "—"}</div>
+                    </div>
+                    <div className="rounded-xl border border-zinc-200 bg-white p-3 dark:border-zinc-800 dark:bg-zinc-950/40">
+                      <div className="text-xs uppercase tracking-wide text-zinc-500">Expected timing</div>
+                      <div className="mt-1 font-semibold">
+                        Colonize {selectedCultivationProfile.expectedColonizationDays || "—"}d · Fruit {selectedCultivationProfile.expectedFruitingDays || "—"}d
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-3 text-sm">
+                    <div className="rounded-xl border border-zinc-200 bg-white p-3 dark:border-zinc-800 dark:bg-zinc-950/40">
+                      <div className="text-xs uppercase tracking-wide text-zinc-500">Colonization target</div>
+                      <div className="mt-1 font-semibold">
+                        {formatProfileRange(selectedCultivationProfile.colonizationTempMinF, selectedCultivationProfile.colonizationTempMaxF, "°F")}
+                      </div>
+                    </div>
+                    <div className="rounded-xl border border-zinc-200 bg-white p-3 dark:border-zinc-800 dark:bg-zinc-950/40">
+                      <div className="text-xs uppercase tracking-wide text-zinc-500">Fruiting temp</div>
+                      <div className="mt-1 font-semibold">
+                        {formatProfileRange(selectedCultivationProfile.fruitingTempMinF, selectedCultivationProfile.fruitingTempMaxF, "°F")}
+                      </div>
+                    </div>
+                    <div className="rounded-xl border border-zinc-200 bg-white p-3 dark:border-zinc-800 dark:bg-zinc-950/40">
+                      <div className="text-xs uppercase tracking-wide text-zinc-500">Fruiting humidity</div>
+                      <div className="mt-1 font-semibold">
+                        {formatProfileRange(selectedCultivationProfile.fruitingHumidityMin, selectedCultivationProfile.fruitingHumidityMax, "%")}
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-sm">
+                    <div className="rounded-xl border border-zinc-200 bg-white p-3 dark:border-zinc-800 dark:bg-zinc-950/40">
+                      <div className="font-semibold">Agar / LC notes</div>
+                      <p className="mt-1 whitespace-pre-wrap text-zinc-600 dark:text-zinc-300">
+                        {joinProfileNotes(selectedCultivationProfile.agarNotes, selectedCultivationProfile.lcNotes) || "No agar or LC notes saved yet."}
+                      </p>
+                    </div>
+                    <div className="rounded-xl border border-zinc-200 bg-white p-3 dark:border-zinc-800 dark:bg-zinc-950/40">
+                      <div className="font-semibold">Grain / bulk notes</div>
+                      <p className="mt-1 whitespace-pre-wrap text-zinc-600 dark:text-zinc-300">
+                        {joinProfileNotes(selectedCultivationProfile.grainNotes, selectedCultivationProfile.bulkNotes) || "No grain or bulk notes saved yet."}
+                      </p>
+                    </div>
+                    <div className="rounded-xl border border-zinc-200 bg-white p-3 dark:border-zinc-800 dark:bg-zinc-950/40">
+                      <div className="font-semibold">Clean-work notes</div>
+                      <p className="mt-1 whitespace-pre-wrap text-zinc-600 dark:text-zinc-300">
+                        {selectedCultivationProfile.cleanWorkNotes || "No SAB/FFU notes saved yet."}
+                      </p>
+                    </div>
+                    <div className="rounded-xl border border-zinc-200 bg-white p-3 dark:border-zinc-800 dark:bg-zinc-950/40">
+                      <div className="font-semibold">Contamination watchouts</div>
+                      <p className="mt-1 whitespace-pre-wrap text-zinc-600 dark:text-zinc-300">
+                        {selectedCultivationProfile.contaminationNotes || "No contamination watchouts saved yet."}
+                      </p>
+                    </div>
+                  </div>
+                </div>
               )}
             </div>
           </div>

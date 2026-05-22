@@ -57,6 +57,231 @@ const isContaminated = (g) => {
   );
 };
 
+
+function cleanLabel(value, fallback = "Unknown") {
+  const text = String(value ?? "").trim();
+  return text || fallback;
+}
+
+function shortGrowName(g = {}) {
+  return (
+    g?.abbreviation ||
+    g?.subName ||
+    g?.strain ||
+    g?.name ||
+    (g?.id ? String(g.id).slice(0, 8) : "Grow")
+  );
+}
+
+
+function getSopWorkflowMeta(grow = {}) {
+  const templateId = String(grow?.workflowTemplateId || grow?.sopTemplateId || "").trim();
+  const title = String(
+    grow?.workflowTemplateTitle ||
+      grow?.sopTemplateTitle ||
+      grow?.workflowTitle ||
+      ""
+  ).trim();
+  const category = String(
+    grow?.workflowTemplateCategory ||
+      grow?.sopTemplateCategory ||
+      grow?.workflowCategory ||
+      ""
+  ).trim();
+  const step = String(grow?.workflowStep || category || "").trim();
+  const source = String(grow?.workflowSource || grow?.sopSource || "").trim();
+  const summary = String(grow?.workflowTemplateSummary || grow?.sopTemplateSummary || "").trim();
+
+  return {
+    hasWorkflow: !!(templateId || title || category || step || source),
+    templateId,
+    title: title || "Workflow SOP",
+    category,
+    step,
+    source: source || (templateId || title ? "sop-template" : ""),
+    summary,
+  };
+}
+
+function workflowKey(meta = {}) {
+  return meta.templateId || meta.title || meta.category || meta.step || "Workflow SOP";
+}
+
+function getSopChecklistStats(grow = {}) {
+  const items = Array.isArray(grow?.sopChecklist) ? grow.sopChecklist : [];
+  const total = items.length;
+  const done = items.filter((item) => {
+    const status = String(item?.status || "").toLowerCase();
+    return item?.completed === true || status === "done" || status === "complete" || status === "completed";
+  }).length;
+  const skipped = items.filter((item) => {
+    const status = String(item?.status || "").toLowerCase();
+    return item?.skipped === true || status === "skipped";
+  }).length;
+  const pending = Math.max(0, total - done - skipped);
+  const actionable = Math.max(0, total - skipped);
+  const completionRate = actionable > 0 ? Number(((done / actionable) * 100).toFixed(1)) : total > 0 ? 100 : 0;
+  return { total, done, skipped, pending, actionable, completionRate };
+}
+
+function isSopTask(task = {}) {
+  const source = String(task?.source || task?.taskSource || task?.origin || "").toLowerCase();
+  return source === "sop-template" || !!task?.workflowTemplateId || !!task?.sopTemplateId || !!task?.sopTaskTemplateId;
+}
+
+function isTaskComplete(task = {}) {
+  const status = String(task?.status || "").toLowerCase();
+  return task?.completed === true || status === "complete" || status === "completed" || status === "done";
+}
+
+function getGrowTypeLabel(g = {}) {
+  return cleanLabel(g?.type || g?.growType || g?.kind || g?.category, "Unknown type");
+}
+
+function getLogDate(log = {}, grow = {}) {
+  return (
+    toDateMaybe(log?.observedAt) ||
+    toDateMaybe(log?.timestamp) ||
+    toDateMaybe(log?.createdAt) ||
+    toDateMaybe(log?.updatedAt) ||
+    toDateMaybe(grow?.contaminationLastAt) ||
+    toDateMaybe(grow?.archivedAt) ||
+    toDateMaybe(grow?.updatedAt) ||
+    getRefDate(grow)
+  );
+}
+
+function isConfirmedContaminationLog(log = {}) {
+  const severity = String(log?.severity || "").toLowerCase();
+  const outcome = String(log?.outcome || "").toLowerCase();
+  const status = String(log?.status || "").toLowerCase();
+  return (
+    severity.includes("confirmed") ||
+    status.includes("confirmed") ||
+    outcome.includes("disposed") ||
+    outcome.includes("archived") ||
+    log?.confirmed === true ||
+    log?.markGrowContaminated === true
+  );
+}
+
+function splitContaminationTokens(value) {
+  return String(value || "")
+    .split(/[\n,;|]+/g)
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+function normalizeContaminationList(value) {
+  if (Array.isArray(value)) {
+    return value.map((item) => String(item || "").trim()).filter(Boolean);
+  }
+  if (value && typeof value === "object") {
+    return Object.entries(value)
+      .filter(([, checked]) => !!checked)
+      .map(([key]) => String(key || "").trim())
+      .filter(Boolean);
+  }
+  return splitContaminationTokens(value);
+}
+
+function cleanupLabel(id = "") {
+  return String(id || "")
+    .replace(/[-_]+/g, " ")
+    .replace(/\b\w/g, (letter) => letter.toUpperCase());
+}
+
+function incrementCount(map, key, amount = 1) {
+  const clean = cleanLabel(key);
+  map[clean] = (map[clean] || 0) + amount;
+}
+
+function countMapToRows(map, limit = 12) {
+  return Object.entries(map || {})
+    .map(([name, count]) => ({ name, count }))
+    .sort((a, b) => b.count - a.count || a.name.localeCompare(b.name))
+    .slice(0, limit);
+}
+
+function normalizeContaminationLog(raw = {}, grow = {}) {
+  const observedDate = getLogDate(raw, grow);
+  const severity =
+    raw?.severity ||
+    grow?.contaminationLastSeverity ||
+    (isContaminated(grow) ? "Confirmed" : "Suspected");
+
+  return {
+    id: raw?.id || `summary-${grow?.id || Math.random().toString(36).slice(2)}`,
+    growId: raw?.growId || grow?.id || "",
+    growName: shortGrowName(grow),
+    strain: cleanLabel(grow?.strain, "Unknown strain"),
+    growType: getGrowTypeLabel(grow),
+    stage: cleanLabel(raw?.stage || grow?.contaminationLastStage || grow?.stage, "Unknown stage"),
+    observedAt: raw?.observedAt || raw?.timestamp || grow?.contaminationLastAt || "",
+    observedDate,
+    observedTime: observedDate ? observedDate.getTime() : 0,
+    severity: cleanLabel(severity, "Suspected"),
+    suspectedCause: cleanLabel(raw?.suspectedCause || grow?.contaminationLastCause, "Unknown / investigating"),
+    visualSigns: String(raw?.visualSigns || raw?.signs || "").trim(),
+    actionTaken: cleanLabel(raw?.actionTaken || raw?.action || "", "Not recorded"),
+    outcome: cleanLabel(raw?.outcome || "", "Monitoring"),
+    notes: String(raw?.notes || raw?.note || "").trim(),
+    preventionNotes: String(raw?.preventionNotes || raw?.prevention || "").trim(),
+    cleanupChecklist: normalizeContaminationList(raw?.cleanupChecklist),
+    cleanupNotes: String(raw?.cleanupNotes || "").trim(),
+    quarantineLocation: String(raw?.quarantineLocation || "").trim(),
+    disposalMethod: cleanLabel(raw?.disposalMethod || "", "Not recorded"),
+    sanitationMethod: cleanLabel(raw?.sanitationMethod || "", "Not recorded"),
+    clearedForReuse: !!raw?.clearedForReuse,
+    clearedForReuseDate: raw?.clearedForReuseDate || "",
+    followUpRequired: !!raw?.followUpRequired,
+    followUpDate: raw?.followUpDate || "",
+    evidencePhotoCount: normalizeContaminationList(raw?.evidencePhotoIds).length || (Array.isArray(raw?.evidencePhotos) ? raw.evidencePhotos.length : 0),
+    confirmed: isConfirmedContaminationLog({ ...raw, severity }),
+    summaryFallback: raw?.summaryFallback === true,
+  };
+}
+
+function buildSummaryContaminationLog(grow = {}) {
+  if (!grow?.id) return null;
+  const hasSummary =
+    Number(grow?.contaminationLogCount || 0) > 0 ||
+    !!grow?.contaminationLastAt ||
+    !!grow?.contaminationLastCause ||
+    !!grow?.contaminationLastSeverity ||
+    isContaminated(grow);
+
+  if (!hasSummary) return null;
+
+  return normalizeContaminationLog(
+    {
+      id: `summary-${grow.id}`,
+      growId: grow.id,
+      stage: grow?.contaminationLastStage || grow?.stage || "Unknown stage",
+      observedAt: grow?.contaminationLastAt || grow?.archivedAt || grow?.updatedAt || "",
+      severity: grow?.contaminationLastSeverity || (isContaminated(grow) ? "Confirmed" : "Suspected"),
+      suspectedCause: grow?.contaminationLastCause || "Unknown / investigating",
+      outcome: isContaminated(grow) ? "Archived" : "Monitoring",
+      summaryFallback: true,
+    },
+    grow
+  );
+}
+
+function textExportLine(label, value) {
+  return `${label}: ${value === null || value === undefined || value === "" ? "—" : value}`;
+}
+
+function downloadTextFile(filename, text) {
+  const blob = new Blob([text], { type: "text/plain;charset=utf-8" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(a.href);
+}
+
+
 const PALETTE = {
   wet: "#60a5fa",
   dry: "#a78bfa",
@@ -337,6 +562,8 @@ export default function Analytics({
   const [materialLots, setMaterialLots] = useState([]);
   const [processBatches, setProcessBatches] = useState([]);
   const [inventoryMoves, setInventoryMoves] = useState([]);
+  const [contaminationLogsByGrow, setContaminationLogsByGrow] = useState({});
+  const [contaminationLogErrors, setContaminationLogErrors] = useState({});
 
   useEffect(() => setAudits(Array.isArray(supplyAudits) ? supplyAudits : []), [supplyAudits]);
   useEffect(() => {
@@ -389,6 +616,64 @@ export default function Analytics({
     }
     return Array.from(byId.values());
   }, [grows, archivedGrows]);
+
+  useEffect(() => {
+    const u = auth.currentUser;
+    const ids = Array.from(
+      new Set(
+        (allGrows || [])
+          .map((g) => g?.id)
+          .filter(Boolean)
+      )
+    );
+
+    if (!u || ids.length === 0) {
+      setContaminationLogsByGrow({});
+      setContaminationLogErrors({});
+      return undefined;
+    }
+
+    let active = true;
+    const unsubs = [];
+
+    setContaminationLogsByGrow((prev) => {
+      const next = {};
+      ids.forEach((id) => {
+        if (prev[id]) next[id] = prev[id];
+      });
+      return next;
+    });
+
+    ids.forEach((growId) => {
+      const logsRef = collection(db, "users", u.uid, "grows", growId, "contaminationLogs");
+      const unsub = onSnapshot(
+        logsRef,
+        (snap) => {
+          if (!active) return;
+          const logs = snap.docs.map((d) => ({ id: d.id, growId, ...d.data() }));
+          setContaminationLogsByGrow((prev) => ({ ...prev, [growId]: logs }));
+          setContaminationLogErrors((prev) => {
+            if (!prev[growId]) return prev;
+            const next = { ...prev };
+            delete next[growId];
+            return next;
+          });
+        },
+        (error) => {
+          if (!active) return;
+          console.warn("Contamination analytics log read failed:", growId, error?.message || error);
+          setContaminationLogErrors((prev) => ({ ...prev, [growId]: error?.message || "Read failed" }));
+        }
+      );
+      unsubs.push(unsub);
+    });
+
+    return () => {
+      active = false;
+      unsubs.forEach((unsub) => unsub && unsub());
+    };
+  }, [allGrows]);
+
 
   // Toggle sources
   const datasetActive = useMemo(
@@ -644,6 +929,307 @@ export default function Analytics({
       labelCompleteness,
     };
   }, [materialLots, processBatches, inventoryMoves, audits, packagingSupplyIds, supplyMetaById, supplies]);
+
+
+  const contaminationAnalytics = useMemo(() => {
+    const scopeGrows = (datasetAll || []).filter(filterPredicate);
+    const logs = [];
+
+    scopeGrows.forEach((grow) => {
+      const directLogs = Array.isArray(contaminationLogsByGrow[grow.id])
+        ? contaminationLogsByGrow[grow.id]
+        : [];
+
+      if (directLogs.length) {
+        directLogs.forEach((log) => logs.push(normalizeContaminationLog(log, grow)));
+        return;
+      }
+
+      const summaryLog = buildSummaryContaminationLog(grow);
+      if (summaryLog) logs.push(summaryLog);
+    });
+
+    const impactedGrowIds = new Set();
+    const confirmedGrowIds = new Set();
+    const suspectedGrowIds = new Set();
+    const stageCountsMap = {};
+    const strainCountsMap = {};
+    const typeCountsMap = {};
+    const causeCountsMap = {};
+    const signCountsMap = {};
+    const actionCountsMap = {};
+    const outcomeCountsMap = {};
+    const severityCountsMap = {};
+    const cleanupCountsMap = {};
+    const disposalCountsMap = {};
+    const sanitationCountsMap = {};
+    const monthCountsMap = {};
+    const preventionNotes = [];
+    const cleanupNotes = [];
+
+    logs.forEach((log) => {
+      if (log.growId) impactedGrowIds.add(log.growId);
+      if (log.confirmed && log.growId) confirmedGrowIds.add(log.growId);
+      if (!log.confirmed && log.growId) suspectedGrowIds.add(log.growId);
+
+      incrementCount(stageCountsMap, log.stage);
+      incrementCount(strainCountsMap, log.strain);
+      incrementCount(typeCountsMap, log.growType);
+      incrementCount(causeCountsMap, log.suspectedCause);
+      incrementCount(actionCountsMap, log.actionTaken);
+      incrementCount(outcomeCountsMap, log.outcome);
+      incrementCount(severityCountsMap, log.severity);
+      normalizeContaminationList(log.cleanupChecklist).forEach((item) => incrementCount(cleanupCountsMap, cleanupLabel(item)));
+      if (log.disposalMethod && log.disposalMethod !== "Not recorded") incrementCount(disposalCountsMap, log.disposalMethod);
+      if (log.sanitationMethod && log.sanitationMethod !== "Not recorded") incrementCount(sanitationCountsMap, log.sanitationMethod);
+
+      splitContaminationTokens(log.visualSigns).forEach((sign) => incrementCount(signCountsMap, sign));
+
+      if (log.observedDate) {
+        incrementCount(monthCountsMap, monthKey(log.observedDate));
+      }
+
+      const noteText = log.preventionNotes || log.notes;
+      if (noteText) {
+        preventionNotes.push({
+          id: log.id,
+          growId: log.growId,
+          growName: log.growName,
+          strain: log.strain,
+          stage: log.stage,
+          cause: log.suspectedCause,
+          text: noteText,
+          observedTime: log.observedTime,
+        });
+      }
+
+      if (log.cleanupNotes || log.followUpRequired || log.clearedForReuse || normalizeContaminationList(log.cleanupChecklist).length) {
+        cleanupNotes.push({
+          id: log.id,
+          growId: log.growId,
+          growName: log.growName,
+          strain: log.strain,
+          stage: log.stage,
+          clearedForReuse: !!log.clearedForReuse,
+          clearedForReuseDate: log.clearedForReuseDate,
+          followUpRequired: !!log.followUpRequired,
+          followUpDate: log.followUpDate,
+          cleanupNotes: log.cleanupNotes,
+          checklist: normalizeContaminationList(log.cleanupChecklist).map(cleanupLabel),
+          evidencePhotoCount: log.evidencePhotoCount || 0,
+          observedTime: log.observedTime,
+        });
+      }
+    });
+
+    const contaminatedStageGrowCount = scopeGrows.filter(isContaminated).length;
+    const summaryFallbacks = logs.filter((log) => log.summaryFallback).length;
+    const topCause = countMapToRows(causeCountsMap, 1)[0]?.name || "None logged";
+    const mostAffectedStage = countMapToRows(stageCountsMap, 1)[0]?.name || "None logged";
+    const mostAffectedStrain = countMapToRows(strainCountsMap, 1)[0]?.name || "None logged";
+
+    const recentEvents = [...logs]
+      .sort((a, b) => (b.observedTime || 0) - (a.observedTime || 0))
+      .slice(0, 8);
+
+    return {
+      scopeGrowCount: scopeGrows.length,
+      logCount: logs.length,
+      logs,
+      readErrorCount: Object.keys(contaminationLogErrors || {}).length,
+      summary: {
+        impactedGrows: impactedGrowIds.size,
+        confirmedGrows: confirmedGrowIds.size,
+        suspectedGrows: suspectedGrowIds.size,
+        contaminatedStageGrowCount,
+        confirmedLogs: logs.filter((log) => log.confirmed).length,
+        suspectedLogs: logs.filter((log) => !log.confirmed).length,
+        summaryFallbacks,
+        topCause,
+        mostAffectedStage,
+        mostAffectedStrain,
+        cleanupFollowUps: logs.filter((log) => log.followUpRequired).length,
+        clearedForReuse: logs.filter((log) => log.clearedForReuse).length,
+        evidencePhotoCount: logs.reduce((sum, log) => sum + (Number(log.evidencePhotoCount) || 0), 0),
+      },
+      byStage: countMapToRows(stageCountsMap),
+      byStrain: countMapToRows(strainCountsMap),
+      byGrowType: countMapToRows(typeCountsMap),
+      byCause: countMapToRows(causeCountsMap),
+      byVisualSign: countMapToRows(signCountsMap),
+      byAction: countMapToRows(actionCountsMap),
+      byOutcome: countMapToRows(outcomeCountsMap),
+      bySeverity: countMapToRows(severityCountsMap),
+      byCleanup: countMapToRows(cleanupCountsMap),
+      byDisposal: countMapToRows(disposalCountsMap),
+      bySanitation: countMapToRows(sanitationCountsMap),
+      byMonth: Object.entries(monthCountsMap)
+        .map(([month, count]) => ({ month, count }))
+        .sort((a, b) => a.month.localeCompare(b.month)),
+      recentEvents,
+      preventionNotes: preventionNotes
+        .sort((a, b) => (b.observedTime || 0) - (a.observedTime || 0))
+        .slice(0, 6),
+      cleanupNotes: cleanupNotes
+        .sort((a, b) => (b.observedTime || 0) - (a.observedTime || 0))
+        .slice(0, 8),
+    };
+  }, [datasetAll, filterPredicate, contaminationLogsByGrow, contaminationLogErrors]);
+
+
+
+  const sopWorkflowAnalytics = useMemo(() => {
+    const scopeGrows = (datasetAll || []).filter(filterPredicate);
+    const workflowGrows = scopeGrows.filter((grow) => getSopWorkflowMeta(grow).hasWorkflow);
+    const templateMap = {};
+    const categoryMap = {};
+    const stepMap = {};
+    const recent = [];
+    const sopTasks = (Array.isArray(tasks) ? tasks : []).filter(isSopTask);
+    const tasksByGrow = {};
+
+    sopTasks.forEach((task) => {
+      const growId = String(task?.growId || "").trim();
+      if (!growId) return;
+      if (!tasksByGrow[growId]) tasksByGrow[growId] = [];
+      tasksByGrow[growId].push(task);
+    });
+
+    workflowGrows.forEach((grow) => {
+      const meta = getSopWorkflowMeta(grow);
+      const key = workflowKey(meta);
+      const contaminated =
+        isContaminated(grow) ||
+        Number(grow?.contaminationLogCount || 0) > 0 ||
+        (Array.isArray(contaminationLogsByGrow[grow.id]) && contaminationLogsByGrow[grow.id].length > 0);
+      const harvested =
+        String(grow?.stage || "").toLowerCase() === "harvested" ||
+        !!grow?.harvestedAt ||
+        !!grow?.archived;
+      const active = isActiveGrow(grow);
+      const totals = totalsFromGrow(grow);
+      const cost = Number(normalizedCostById.get(grow.id) ?? grow?.cost ?? 0) || 0;
+      const checklist = getSopChecklistStats(grow);
+      const growTasks = tasksByGrow[grow.id] || [];
+      const taskDone = growTasks.filter(isTaskComplete).length;
+      const taskOpen = Math.max(0, growTasks.length - taskDone);
+
+      if (!templateMap[key]) {
+        templateMap[key] = {
+          name: meta.title || key,
+          templateId: meta.templateId,
+          category: meta.category || "Workflow",
+          step: meta.step || "",
+          total: 0,
+          active: 0,
+          harvested: 0,
+          contaminated: 0,
+          wet: 0,
+          dry: 0,
+          cost: 0,
+          costCount: 0,
+          checklistTotal: 0,
+          checklistDone: 0,
+          checklistSkipped: 0,
+          checklistPending: 0,
+          taskTotal: 0,
+          taskDone: 0,
+          taskOpen: 0,
+        };
+      }
+
+      templateMap[key].total += 1;
+      if (active) templateMap[key].active += 1;
+      if (harvested) templateMap[key].harvested += 1;
+      if (contaminated) templateMap[key].contaminated += 1;
+      templateMap[key].wet += Number(totals.Wet || 0);
+      templateMap[key].dry += Number(totals.Dry || 0);
+      if (cost > 0) {
+        templateMap[key].cost += cost;
+        templateMap[key].costCount += 1;
+      }
+      templateMap[key].checklistTotal += checklist.total;
+      templateMap[key].checklistDone += checklist.done;
+      templateMap[key].checklistSkipped += checklist.skipped;
+      templateMap[key].checklistPending += checklist.pending;
+      templateMap[key].taskTotal += growTasks.length;
+      templateMap[key].taskDone += taskDone;
+      templateMap[key].taskOpen += taskOpen;
+
+      if (meta.category) {
+        categoryMap[meta.category] = (categoryMap[meta.category] || 0) + 1;
+      }
+      if (meta.step) {
+        stepMap[meta.step] = (stepMap[meta.step] || 0) + 1;
+      }
+
+      recent.push({
+        id: grow.id,
+        name: shortGrowName(grow),
+        strain: grow?.strain || "Unknown strain",
+        stage: grow?.stage || "—",
+        template: meta.title,
+        category: meta.category || "Workflow",
+        step: meta.step || "",
+        createdAt: getRefDate(grow),
+        contaminated,
+        checklistPct: checklist.completionRate,
+        taskOpen,
+      });
+    });
+
+    const byTemplate = Object.values(templateMap)
+      .map((row) => ({
+        ...row,
+        contaminationRate: row.total ? Number(((row.contaminated / row.total) * 100).toFixed(1)) : 0,
+        harvestRate: row.total ? Number(((row.harvested / row.total) * 100).toFixed(1)) : 0,
+        avgWet: row.harvested ? Number((row.wet / row.harvested).toFixed(1)) : 0,
+        avgDry: row.harvested ? Number((row.dry / row.harvested).toFixed(1)) : 0,
+        avgCost: row.costCount ? Number((row.cost / row.costCount).toFixed(2)) : 0,
+        checklistCompletionRate:
+          row.checklistTotal - row.checklistSkipped > 0
+            ? Number(((row.checklistDone / (row.checklistTotal - row.checklistSkipped)) * 100).toFixed(1))
+            : row.checklistTotal > 0
+              ? 100
+              : 0,
+      }))
+      .sort((a, b) => b.total - a.total || a.name.localeCompare(b.name));
+
+    const topTemplate = byTemplate[0]?.name || "—";
+    const highestContam = byTemplate
+      .filter((row) => row.total > 0)
+      .slice()
+      .sort((a, b) => b.contaminationRate - a.contaminationRate || b.contaminated - a.contaminated)[0];
+
+    return {
+      scopeGrowCount: scopeGrows.length,
+      sopGrowCount: workflowGrows.length,
+      nonSopGrowCount: Math.max(0, scopeGrows.length - workflowGrows.length),
+      summary: {
+        topTemplate,
+        templatesTracked: byTemplate.length,
+        sopContaminated: byTemplate.reduce((sum, row) => sum + row.contaminated, 0),
+        sopHarvested: byTemplate.reduce((sum, row) => sum + row.harvested, 0),
+        highestContamTemplate: highestContam?.name || "—",
+        highestContamRate: highestContam?.contaminationRate || 0,
+        sopTaskTotal: sopTasks.length,
+        sopTaskOpen: sopTasks.filter((task) => !isTaskComplete(task)).length,
+        checklistTotal: byTemplate.reduce((sum, row) => sum + row.checklistTotal, 0),
+        checklistDone: byTemplate.reduce((sum, row) => sum + row.checklistDone, 0),
+        checklistCompletionRate: (() => {
+          const total = byTemplate.reduce((sum, row) => sum + row.checklistTotal - row.checklistSkipped, 0);
+          const done = byTemplate.reduce((sum, row) => sum + row.checklistDone, 0);
+          return total > 0 ? Number(((done / total) * 100).toFixed(1)) : 0;
+        })(),
+      },
+      byTemplate,
+      byCategory: countMapToRows(categoryMap),
+      byStep: countMapToRows(stepMap),
+      recent: recent
+        .sort((a, b) => (b.createdAt?.getTime?.() || 0) - (a.createdAt?.getTime?.() || 0))
+        .slice(0, 8),
+    };
+  }, [datasetAll, filterPredicate, normalizedCostById, contaminationLogsByGrow, tasks]);
 
 
   const {
@@ -1044,6 +1630,16 @@ for (let i = weeksBack - 1; i >= 0; i--) {
       ),
       ...stageTransitions.map((d) => ["StageTransition", d.month, d.count, ""].join(",")),
       ...contamRate.map((d) => ["ContamRate(" + groupMode + ")", d.name, d.rate.toFixed(1) + "%", `${d.bad}/${d.total}`].join(",")),
+      ...contaminationAnalytics.byStage.map((d) => ["ContamByStage", d.name, d.count, ""].join(",")),
+      ...contaminationAnalytics.byCause.map((d) => ["ContamByCause", d.name, d.count, ""].join(",")),
+      ...contaminationAnalytics.byStrain.map((d) => ["ContamByStrain", d.name, d.count, ""].join(",")),
+      ...contaminationAnalytics.byGrowType.map((d) => ["ContamByGrowType", d.name, d.count, ""].join(",")),
+      ...contaminationAnalytics.byCleanup.map((d) => ["ContamCleanup", d.name, d.count, ""].join(",")),
+      ...contaminationAnalytics.bySanitation.map((d) => ["ContamSanitation", d.name, d.count, ""].join(",")),
+      ...contaminationAnalytics.byDisposal.map((d) => ["ContamDisposal", d.name, d.count, ""].join(",")),
+      ...sopWorkflowAnalytics.byTemplate.map((d) => ["SOPWorkflow", d.name, d.total, `contam ${d.contaminationRate}% | harvested ${d.harvestRate}% | checklist ${d.checklistCompletionRate}% | open tasks ${d.taskOpen}`].join(",")),
+      ...sopWorkflowAnalytics.byCategory.map((d) => ["SOPWorkflowCategory", d.name, d.count, ""].join(",")),
+      ...sopWorkflowAnalytics.byStep.map((d) => ["SOPWorkflowStep", d.name, d.count, ""].join(",")),
       ...ttsSeries.map((d) => ["TimeToStage(" + groupMode + ")", d.name, d.Inoc_to_Colonized, d.Colonized_to_Fruiting + "|" + d.Fruiting_to_Harvested].join(",")),
       ...burnRateSeries.map((row) => ["BurnRate", row.week, JSON.stringify({ ...row, week: undefined }), ""].join(",")),
       ...yieldVsCost.map((p) => ["YieldVsCost", p.name, p.x, p.y].join(",")),
@@ -1090,6 +1686,8 @@ for (let i = weeksBack - 1; i >= 0; i--) {
         recipeUseCounts,
         mostUsedSupplies,
         contamRate,
+        contamination: contaminationAnalytics,
+        sopWorkflow: sopWorkflowAnalytics,
         ttsSeries,
         burnTopSupplies,
         throughputSeries,
@@ -1103,6 +1701,61 @@ for (let i = weeksBack - 1; i >= 0; i--) {
     a.click();
     URL.revokeObjectURL(a.href);
   };
+
+  const exportContaminationReport = () => {
+    const a = contaminationAnalytics;
+    const lines = [
+      "Chaotic Neutral Myco Tracker — Contamination Analytics Report",
+      textExportLine("Exported", new Date().toLocaleString()),
+      textExportLine("Matching grows", a.scopeGrowCount),
+      textExportLine("Total contamination logs", a.logCount),
+      textExportLine("Impacted grows", a.summary.impactedGrows),
+      textExportLine("Confirmed logs", a.summary.confirmedLogs),
+      textExportLine("Suspected logs", a.summary.suspectedLogs),
+      textExportLine("Cleanup follow-ups", a.summary.cleanupFollowUps),
+      textExportLine("Cleared for reuse", a.summary.clearedForReuse),
+      textExportLine("Evidence photos", a.summary.evidencePhotoCount),
+      textExportLine("Top suspected cause", a.summary.topCause),
+      textExportLine("Most affected stage", a.summary.mostAffectedStage),
+      "",
+      "By Stage",
+      ...a.byStage.map((row) => `- ${row.name}: ${row.count}`),
+      "",
+      "By Suspected Cause",
+      ...a.byCause.map((row) => `- ${row.name}: ${row.count}`),
+      "",
+      "By Visual Sign",
+      ...(a.byVisualSign.length ? a.byVisualSign.map((row) => `- ${row.name}: ${row.count}`) : ["- No visual signs logged yet."]),
+      "",
+      "Cleanup Checklist Items",
+      ...(a.byCleanup.length ? a.byCleanup.map((row) => `- ${row.name}: ${row.count}`) : ["- No cleanup checklist items logged yet."]),
+      "",
+      "Sanitation Methods",
+      ...(a.bySanitation.length ? a.bySanitation.map((row) => `- ${row.name}: ${row.count}`) : ["- No sanitation methods logged yet."]),
+      "",
+      "Recent Events",
+      ...(a.recentEvents.length
+        ? a.recentEvents.map((log) => {
+            const date = log.observedDate ? log.observedDate.toLocaleDateString() : "No date";
+            return `- ${date} · ${log.growName} · ${log.stage} · ${log.severity} · ${log.suspectedCause}`;
+          })
+        : ["- No contamination events logged yet."]),
+      "",
+      "Prevention / Follow-up Notes",
+      ...(a.preventionNotes.length
+        ? a.preventionNotes.map((note) => `- ${note.growName} (${note.stage}, ${note.cause}): ${note.text}`)
+        : ["- No prevention notes logged yet."]),
+      "",
+      "Cleanup / Reuse Notes",
+      ...(a.cleanupNotes.length
+        ? a.cleanupNotes.map((note) => `- ${note.growName} (${note.stage}): ${note.cleanupNotes || note.checklist.join(", ") || "Cleanup tracked"}${note.followUpRequired ? " [follow-up]" : ""}${note.clearedForReuse ? " [cleared]" : ""}`)
+        : ["- No cleanup notes logged yet."]),
+      "",
+    ];
+
+    downloadTextFile(`myco-contamination-report-${new Date().toISOString().slice(0, 10)}.txt`, lines.join("\n"));
+  };
+
 
   const axisProps = { stroke: PALETTE.axis, tick: { fill: PALETTE.axis, fontSize: 12 } };
   const gridProps = { stroke: PALETTE.grid, strokeDasharray: "3 3" };
@@ -1254,6 +1907,387 @@ for (let i = weeksBack - 1; i >= 0; i--) {
               </BarChart>
             </ResponsiveContainer>
           </>
+        );
+
+      case "contamInsights":
+        return (
+          <div className="space-y-4">
+            <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-red-200 bg-red-50 p-4 text-red-950 dark:border-red-900/60 dark:bg-red-950/20 dark:text-red-100">
+              <div>
+                <h3 className="text-lg font-semibold">Contamination summary</h3>
+                <p className="text-sm opacity-80">
+                  Uses detailed grow contamination logs when available, with grow-level summary fallbacks for older records.
+                </p>
+                {contaminationAnalytics.readErrorCount > 0 && (
+                  <p className="mt-1 text-xs text-amber-700 dark:text-amber-200">
+                    {contaminationAnalytics.readErrorCount} grow log source(s) could not be read. Check Firestore rules if this persists.
+                  </p>
+                )}
+              </div>
+              <button type="button" onClick={exportContaminationReport} className="btn btn-accent">
+                Export Report
+              </button>
+            </div>
+
+            <div className="grid grid-cols-2 md:grid-cols-4 xl:grid-cols-8 gap-3">
+              <StatCard label="Matching Grows" value={contaminationAnalytics.scopeGrowCount} />
+              <StatCard label="Contam Logs" value={contaminationAnalytics.logCount} />
+              <StatCard label="Impacted Grows" value={contaminationAnalytics.summary.impactedGrows} />
+              <StatCard label="Confirmed Logs" value={contaminationAnalytics.summary.confirmedLogs} />
+              <StatCard label="Follow-ups" value={contaminationAnalytics.summary.cleanupFollowUps} />
+              <StatCard label="Cleared" value={contaminationAnalytics.summary.clearedForReuse} />
+              <StatCard label="Evidence Photos" value={contaminationAnalytics.summary.evidencePhotoCount} />
+              <StatCard label="Top Cause" value={contaminationAnalytics.summary.topCause} />
+            </div>
+
+            <div className="grid gap-4 xl:grid-cols-2">
+              <div className="rounded-2xl border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-950/40">
+                <div className="mb-3 font-semibold">Logs by stage</div>
+                {contaminationAnalytics.byStage.length ? (
+                  <ResponsiveContainer width="100%" height={300}>
+                    <BarChart data={contaminationAnalytics.byStage}>
+                      <CartesianGrid {...gridProps} />
+                      <XAxis dataKey="name" {...axisProps} interval={0} angle={-25} textAnchor="end" height={70} />
+                      <YAxis {...axisProps} tickFormatter={fmtInt} />
+                      <Tooltip formatter={(v) => fmtInt(v)} contentStyle={{ background: "#0b0f19", border: "1px solid #334155", color: "#e5e7eb" }} />
+                      <Bar dataKey="count" fill="#f87171">
+                        {showValues && <LabelList dataKey="count" position="top" formatter={fmtInt} />}
+                      </Bar>
+                    </BarChart>
+                  </ResponsiveContainer>
+                ) : (
+                  <EmptyState message="No contamination stages logged yet." />
+                )}
+              </div>
+
+              <div className="rounded-2xl border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-950/40">
+                <div className="mb-3 font-semibold">Logs by suspected cause</div>
+                {contaminationAnalytics.byCause.length ? (
+                  <ResponsiveContainer width="100%" height={300}>
+                    <BarChart data={contaminationAnalytics.byCause}>
+                      <CartesianGrid {...gridProps} />
+                      <XAxis dataKey="name" {...axisProps} interval={0} angle={-25} textAnchor="end" height={90} />
+                      <YAxis {...axisProps} tickFormatter={fmtInt} />
+                      <Tooltip formatter={(v) => fmtInt(v)} contentStyle={{ background: "#0b0f19", border: "1px solid #334155", color: "#e5e7eb" }} />
+                      <Bar dataKey="count" fill="#fb923c">
+                        {showValues && <LabelList dataKey="count" position="top" formatter={fmtInt} />}
+                      </Bar>
+                    </BarChart>
+                  </ResponsiveContainer>
+                ) : (
+                  <EmptyState message="No suspected causes logged yet." />
+                )}
+              </div>
+
+              <div className="rounded-2xl border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-950/40">
+                <div className="mb-3 font-semibold">Logs by strain</div>
+                {contaminationAnalytics.byStrain.length ? (
+                  <ResponsiveContainer width="100%" height={300}>
+                    <BarChart data={contaminationAnalytics.byStrain}>
+                      <CartesianGrid {...gridProps} />
+                      <XAxis dataKey="name" {...axisProps} interval={0} angle={-25} textAnchor="end" height={70} />
+                      <YAxis {...axisProps} tickFormatter={fmtInt} />
+                      <Tooltip formatter={(v) => fmtInt(v)} contentStyle={{ background: "#0b0f19", border: "1px solid #334155", color: "#e5e7eb" }} />
+                      <Bar dataKey="count" fill="#a78bfa">
+                        {showValues && <LabelList dataKey="count" position="top" formatter={fmtInt} />}
+                      </Bar>
+                    </BarChart>
+                  </ResponsiveContainer>
+                ) : (
+                  <EmptyState message="No strain-level contamination data yet." />
+                )}
+              </div>
+
+              <div className="rounded-2xl border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-950/40">
+                <div className="mb-3 font-semibold">Visual signs</div>
+                {contaminationAnalytics.byVisualSign.length ? (
+                  <div className="flex flex-wrap gap-2">
+                    {contaminationAnalytics.byVisualSign.map((row) => (
+                      <span key={row.name} className="rounded-full border border-zinc-200 px-3 py-1 text-sm dark:border-zinc-700">
+                        {row.name} <span className="opacity-60">×{row.count}</span>
+                      </span>
+                    ))}
+                  </div>
+                ) : (
+                  <EmptyState message="No visual signs have been entered yet." />
+                )}
+              </div>
+
+              <div className="rounded-2xl border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-950/40">
+                <div className="mb-3 font-semibold">Cleanup checklist items</div>
+                {contaminationAnalytics.byCleanup.length ? (
+                  <div className="flex flex-wrap gap-2">
+                    {contaminationAnalytics.byCleanup.map((row) => (
+                      <span key={row.name} className="rounded-full border border-amber-200 bg-amber-50 px-3 py-1 text-sm text-amber-900 dark:border-amber-900/60 dark:bg-amber-950/30 dark:text-amber-100">
+                        {row.name} <span className="opacity-60">×{row.count}</span>
+                      </span>
+                    ))}
+                  </div>
+                ) : (
+                  <EmptyState message="No cleanup checklist items logged yet." />
+                )}
+              </div>
+
+              <div className="rounded-2xl border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-950/40">
+                <div className="mb-3 font-semibold">Sanitation / disposal</div>
+                {contaminationAnalytics.bySanitation.length || contaminationAnalytics.byDisposal.length ? (
+                  <div className="space-y-3">
+                    <div>
+                      <div className="mb-2 text-xs uppercase tracking-wide text-zinc-500">Sanitation</div>
+                      <div className="flex flex-wrap gap-2">
+                        {contaminationAnalytics.bySanitation.map((row) => (
+                          <span key={row.name} className="rounded-full border border-zinc-200 px-3 py-1 text-sm dark:border-zinc-700">
+                            {row.name} <span className="opacity-60">×{row.count}</span>
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+                    <div>
+                      <div className="mb-2 text-xs uppercase tracking-wide text-zinc-500">Disposal</div>
+                      <div className="flex flex-wrap gap-2">
+                        {contaminationAnalytics.byDisposal.map((row) => (
+                          <span key={row.name} className="rounded-full border border-zinc-200 px-3 py-1 text-sm dark:border-zinc-700">
+                            {row.name} <span className="opacity-60">×{row.count}</span>
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+                ) : (
+                  <EmptyState message="No sanitation or disposal methods logged yet." />
+                )}
+              </div>
+            </div>
+
+            <div className="grid gap-4 xl:grid-cols-2">
+              <div className="rounded-2xl border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-950/40">
+                <div className="mb-3 font-semibold">Recent contamination events</div>
+                {contaminationAnalytics.recentEvents.length ? (
+                  <div className="space-y-3">
+                    {contaminationAnalytics.recentEvents.map((log) => (
+                      <div key={`${log.growId}-${log.id}`} className="rounded-xl border border-zinc-200 p-3 text-sm dark:border-zinc-800">
+                        <div className="flex flex-wrap items-center justify-between gap-2">
+                          <div className="font-semibold">{log.growName}</div>
+                          <div className="text-xs text-zinc-500">
+                            {log.observedDate ? log.observedDate.toLocaleDateString() : "No date"}
+                          </div>
+                        </div>
+                        <div className="mt-1 text-zinc-600 dark:text-zinc-300">
+                          {log.strain} · {log.growType} · {log.stage}
+                        </div>
+                        <div className="mt-2 flex flex-wrap gap-2">
+                          <span className="rounded-full bg-red-100 px-2 py-1 text-xs text-red-800 dark:bg-red-950/40 dark:text-red-200">
+                            {log.severity}
+                          </span>
+                          <span className="rounded-full bg-amber-100 px-2 py-1 text-xs text-amber-800 dark:bg-amber-950/40 dark:text-amber-200">
+                            {log.suspectedCause}
+                          </span>
+                          <span className="rounded-full bg-zinc-100 px-2 py-1 text-xs text-zinc-700 dark:bg-zinc-800 dark:text-zinc-200">
+                            {log.outcome}
+                          </span>
+                          {log.followUpRequired ? (
+                            <span className="rounded-full bg-amber-100 px-2 py-1 text-xs text-amber-800 dark:bg-amber-950/40 dark:text-amber-200">
+                              Cleanup follow-up
+                            </span>
+                          ) : null}
+                          {log.clearedForReuse ? (
+                            <span className="rounded-full bg-emerald-100 px-2 py-1 text-xs text-emerald-800 dark:bg-emerald-950/40 dark:text-emerald-200">
+                              Cleared
+                            </span>
+                          ) : null}
+                          {log.evidencePhotoCount ? (
+                            <span className="rounded-full bg-sky-100 px-2 py-1 text-xs text-sky-800 dark:bg-sky-950/40 dark:text-sky-200">
+                              {log.evidencePhotoCount} photo{log.evidencePhotoCount === 1 ? "" : "s"}
+                            </span>
+                          ) : null}
+                        </div>
+                        {log.notes && <p className="mt-2 text-xs text-zinc-500 dark:text-zinc-400">{log.notes}</p>}
+                        {log.cleanupNotes && <p className="mt-2 text-xs text-amber-700 dark:text-amber-200">Cleanup: {log.cleanupNotes}</p>}
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <EmptyState message="No contamination events match the current filters." />
+                )}
+              </div>
+
+              <div className="rounded-2xl border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-950/40">
+                <div className="mb-3 font-semibold">Prevention notes and follow-up ideas</div>
+                {contaminationAnalytics.preventionNotes.length ? (
+                  <div className="space-y-3">
+                    {contaminationAnalytics.preventionNotes.map((note) => (
+                      <div key={`${note.growId}-${note.id}`} className="rounded-xl border border-zinc-200 p-3 text-sm dark:border-zinc-800">
+                        <div className="font-semibold">{note.growName}</div>
+                        <div className="text-xs text-zinc-500">
+                          {note.strain} · {note.stage} · {note.cause}
+                        </div>
+                        <p className="mt-2 text-zinc-700 dark:text-zinc-300">{note.text}</p>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <EmptyState message="No prevention notes logged yet. Add notes in Grow Detail contamination logs to make this report useful." />
+                )}
+              </div>
+
+              <div className="rounded-2xl border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-950/40">
+                <div className="mb-3 font-semibold">Cleanup follow-ups and reuse clearance</div>
+                {contaminationAnalytics.cleanupNotes.length ? (
+                  <div className="space-y-3">
+                    {contaminationAnalytics.cleanupNotes.map((note) => (
+                      <div key={`${note.growId}-${note.id}`} className="rounded-xl border border-zinc-200 p-3 text-sm dark:border-zinc-800">
+                        <div className="flex flex-wrap items-center justify-between gap-2">
+                          <div className="font-semibold">{note.growName}</div>
+                          <div className="flex flex-wrap gap-2 text-xs">
+                            {note.followUpRequired ? <span className="rounded-full bg-amber-100 px-2 py-1 text-amber-800 dark:bg-amber-950/40 dark:text-amber-200">Follow-up {note.followUpDate ? `· ${String(note.followUpDate).slice(0, 10)}` : ""}</span> : null}
+                            {note.clearedForReuse ? <span className="rounded-full bg-emerald-100 px-2 py-1 text-emerald-800 dark:bg-emerald-950/40 dark:text-emerald-200">Cleared {note.clearedForReuseDate ? `· ${String(note.clearedForReuseDate).slice(0, 10)}` : ""}</span> : null}
+                            {note.evidencePhotoCount ? <span className="rounded-full bg-sky-100 px-2 py-1 text-sky-800 dark:bg-sky-950/40 dark:text-sky-200">{note.evidencePhotoCount} photo{note.evidencePhotoCount === 1 ? "" : "s"}</span> : null}
+                          </div>
+                        </div>
+                        <div className="mt-1 text-xs text-zinc-500">{note.strain} · {note.stage}</div>
+                        {note.checklist.length ? (
+                          <div className="mt-2 flex flex-wrap gap-2">
+                            {note.checklist.map((item) => (
+                              <span key={item} className="rounded-full border border-zinc-200 px-2 py-1 text-xs dark:border-zinc-700">{item}</span>
+                            ))}
+                          </div>
+                        ) : null}
+                        {note.cleanupNotes ? <p className="mt-2 text-zinc-700 dark:text-zinc-300">{note.cleanupNotes}</p> : null}
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <EmptyState message="No cleanup metadata logged yet. Add checklist items in Grow Detail contamination logs." />
+                )}
+              </div>
+            </div>
+          </div>
+        );
+
+
+
+      case "sopWorkflow":
+        return (
+          <div className="space-y-4">
+            <div className="rounded-2xl border border-indigo-200 bg-indigo-50 p-4 text-indigo-950 dark:border-indigo-900/60 dark:bg-indigo-950/20 dark:text-indigo-100">
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <div>
+                  <h3 className="text-lg font-semibold">SOP / Workflow performance</h3>
+                  <p className="text-sm opacity-80">
+                    Tracks grows started from SOP templates and connects outcomes back to the workflow that created them.
+                  </p>
+                </div>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-6 gap-3">
+              <StatCard label="SOP Grows" value={sopWorkflowAnalytics.sopGrowCount} />
+              <StatCard label="Templates" value={sopWorkflowAnalytics.summary.templatesTracked} />
+              <StatCard label="SOP Harvested" value={sopWorkflowAnalytics.summary.sopHarvested} />
+              <StatCard label="SOP Contam" value={sopWorkflowAnalytics.summary.sopContaminated} />
+              <StatCard label="SOP Tasks" value={sopWorkflowAnalytics.summary.sopTaskTotal} />
+              <StatCard label="Checklist" value={`${sopWorkflowAnalytics.summary.checklistCompletionRate}%`} />
+            </div>
+
+            {sopWorkflowAnalytics.byTemplate.length ? (
+              <div className="rounded-2xl border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-900">
+                <div className="mb-3 font-semibold">Grows by SOP template</div>
+                <ResponsiveContainer width="100%" height={360}>
+                  <BarChart data={sopWorkflowAnalytics.byTemplate}>
+                    <CartesianGrid {...gridProps} />
+                    <XAxis dataKey="name" {...axisProps} interval={0} angle={-25} textAnchor="end" height={90} />
+                    <YAxis {...axisProps} tickFormatter={fmtInt} />
+                    <Tooltip contentStyle={{ background: "#0b0f19", border: "1px solid #334155", color: "#e5e7eb" }} />
+                    <Legend />
+                    <Bar dataKey="total" name="Total" fill={PALETTE.line}>
+                      {showValues && <LabelList dataKey="total" position="top" formatter={fmtInt} />}
+                    </Bar>
+                    <Bar dataKey="harvested" name="Harvested" fill={PALETTE.wet} />
+                    <Bar dataKey="contaminated" name="Contam" fill="#f87171" />
+                  </BarChart>
+                </ResponsiveContainer>
+              </div>
+            ) : (
+              <EmptyState message="No SOP-started grows match the current filters yet." />
+            )}
+
+            {sopWorkflowAnalytics.byTemplate.length ? (
+              <div className="overflow-x-auto rounded-2xl border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-900">
+                <div className="mb-3 font-semibold">SOP outcome table</div>
+                <table className="w-full min-w-[760px] text-left text-sm">
+                  <thead className="text-xs uppercase text-zinc-500">
+                    <tr>
+                      <th className="py-2 pr-3">Template</th>
+                      <th className="py-2 pr-3">Category</th>
+                      <th className="py-2 pr-3">Total</th>
+                      <th className="py-2 pr-3">Active</th>
+                      <th className="py-2 pr-3">Harvested</th>
+                      <th className="py-2 pr-3">Contam %</th>
+                      <th className="py-2 pr-3">Avg Dry</th>
+                      <th className="py-2 pr-3">Avg Cost</th>
+                      <th className="py-2 pr-3">Checklist</th>
+                      <th className="py-2 pr-3">Open Tasks</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {sopWorkflowAnalytics.byTemplate.map((row) => (
+                      <tr key={row.templateId || row.name} className="border-t border-zinc-200 dark:border-zinc-800">
+                        <td className="py-2 pr-3 font-medium">{row.name}</td>
+                        <td className="py-2 pr-3">{row.category || "Workflow"}</td>
+                        <td className="py-2 pr-3">{row.total}</td>
+                        <td className="py-2 pr-3">{row.active}</td>
+                        <td className="py-2 pr-3">{row.harvested}</td>
+                        <td className="py-2 pr-3">{row.contaminationRate}%</td>
+                        <td className="py-2 pr-3">{row.avgDry ? fmtG(row.avgDry) : "—"}</td>
+                        <td className="py-2 pr-3">{row.avgCost ? fmt$(row.avgCost) : "—"}</td>
+                        <td className="py-2 pr-3">{row.checklistTotal ? `${row.checklistCompletionRate}%` : "—"}</td>
+                        <td className="py-2 pr-3">{row.taskOpen || 0}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            ) : null}
+
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+              <div className="rounded-2xl border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-900">
+                <div className="mb-3 font-semibold">Workflow categories</div>
+                {sopWorkflowAnalytics.byCategory.length ? (
+                  <div className="space-y-2">
+                    {sopWorkflowAnalytics.byCategory.map((row) => (
+                      <div key={row.name} className="flex items-center justify-between rounded-xl bg-zinc-50 px-3 py-2 dark:bg-zinc-800/60">
+                        <span>{row.name}</span>
+                        <span className="font-semibold">{row.count}</span>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <EmptyState message="No SOP categories tracked yet." />
+                )}
+              </div>
+
+              <div className="rounded-2xl border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-900">
+                <div className="mb-3 font-semibold">Recent SOP-started grows</div>
+                {sopWorkflowAnalytics.recent.length ? (
+                  <div className="space-y-2">
+                    {sopWorkflowAnalytics.recent.map((grow) => (
+                      <div key={grow.id || `${grow.name}-${grow.template}`} className="rounded-xl bg-zinc-50 p-3 text-sm dark:bg-zinc-800/60">
+                        <div className="font-medium">{grow.name} · {grow.strain}</div>
+                        <div className="mt-1 text-xs text-zinc-500 dark:text-zinc-400">
+                          {grow.template} · {grow.category} · {grow.stage}
+                          {grow.checklistPct ? ` · checklist ${grow.checklistPct}%` : ""}
+                          {grow.taskOpen ? ` · ${grow.taskOpen} open SOP task${grow.taskOpen === 1 ? "" : "s"}` : ""}
+                          {grow.contaminated ? " · contamination logged" : ""}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <EmptyState message="No recent SOP-started grows match the current filters." />
+                )}
+              </div>
+            </div>
+          </div>
         );
 
       case "timeToStage":
@@ -1511,6 +2545,27 @@ for (let i = weeksBack - 1; i >= 0; i--) {
       </div>
 
       <div className="grid grid-cols-2 md:grid-cols-4 xl:grid-cols-8 gap-4">
+        <StatCard label="Contam Logs" value={contaminationAnalytics.logCount} />
+        <StatCard label="Impacted Grows" value={contaminationAnalytics.summary.impactedGrows} />
+        <StatCard label="Confirmed Issues" value={contaminationAnalytics.summary.confirmedLogs} />
+        <StatCard label="Top Cause" value={contaminationAnalytics.summary.topCause} />
+      </div>
+
+      <div className="grid grid-cols-2 md:grid-cols-4 xl:grid-cols-8 gap-4">
+        <StatCard label="SOP Grows" value={sopWorkflowAnalytics.sopGrowCount} />
+        <StatCard label="SOP Templates" value={sopWorkflowAnalytics.summary.templatesTracked} />
+        <StatCard label="Top SOP" value={sopWorkflowAnalytics.summary.topTemplate} />
+        <StatCard
+          label="Highest SOP Contam"
+          value={
+            sopWorkflowAnalytics.summary.highestContamTemplate === "—"
+              ? "—"
+              : `${sopWorkflowAnalytics.summary.highestContamRate}%`
+          }
+        />
+      </div>
+
+      <div className="grid grid-cols-2 md:grid-cols-4 xl:grid-cols-8 gap-4">
         <StatCard label="PP Active Finished" value={postProcessAnalytics.summary.activeFinished} />
         <StatCard label="PP Blocked" value={postProcessAnalytics.summary.blockedFinished} />
         <StatCard label="PP Released" value={postProcessAnalytics.summary.releasedFinished} />
@@ -1523,6 +2578,7 @@ for (let i = weeksBack - 1; i >= 0; i--) {
 
       <div className="flex flex-wrap items-center gap-2">
         <select
+          data-testid="analytics-chart-select"
           className="rounded-lg border border-gray-300 dark:border-zinc-700 bg-white dark:bg-zinc-800 text-gray-900 dark:text-white px-3 py-2"
           value={chartKey}
           onChange={(e) => setChartKey(e.target.value)}
@@ -1534,6 +2590,8 @@ for (let i = weeksBack - 1; i >= 0; i--) {
           <option value="recipeUseCounts">Recipe Usage Count</option>
           <option value="recipeUsage">Most Used Supplies</option>
           <option value="contamRate">Contamination Rate</option>
+          <option value="contamInsights">Contamination Analytics Report</option>
+          <option value="sopWorkflow">SOP / Workflow Performance</option>
           <option value="timeToStage">Time to Stage (median)</option>
           <option value="burnRate">Top Supplies: Weekly Usage &amp; Days Until Empty</option>
           <option value="yieldVsCost">Yield vs Cost</option>
@@ -1654,6 +2712,14 @@ for (let i = weeksBack - 1; i >= 0; i--) {
       </div>
 
       {renderChart()}
+    </div>
+  );
+}
+
+function EmptyState({ message }) {
+  return (
+    <div className="rounded-xl border border-dashed border-zinc-300 bg-zinc-50 p-4 text-sm text-zinc-500 dark:border-zinc-700 dark:bg-zinc-900/50 dark:text-zinc-400">
+      {message}
     </div>
   );
 }

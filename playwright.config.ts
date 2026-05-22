@@ -50,7 +50,7 @@ const authStatePath = path.join("tests", "e2e", ".auth", "user.json");
 
 export default defineConfig({
   testDir: "tests/e2e",
-  testMatch: [/.*\/setup\.auth\.ts$/, /.*\/grow-lifecycle\.spec\.ts$/],
+  testMatch: [/.*\/setup\.auth\.ts$/, /.*\.spec\.ts$/],
   fullyParallel: false,
   workers: 1,
   retries: isCI ? 1 : 0,
@@ -78,7 +78,7 @@ export default defineConfig({
     {
       name: "chromium",
       dependencies: ["setup"],
-      testMatch: /.*\/grow-lifecycle\.spec\.ts$/,
+      testMatch: /.*\.spec\.ts$/,
       use: {
         ...devices["Desktop Chrome"],
         storageState: authStatePath,

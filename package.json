@@ -25,7 +25,9 @@
     "test:e2e:ui": "playwright test --ui",
     "test:e2e:list": "playwright test --list",
     "test:e2e:install": "playwright install",
-    "test:e2e:lifecycle": "playwright test tests/e2e/grow-lifecycle.spec.ts"
+    "test:e2e:lifecycle": "playwright test tests/e2e/grow-lifecycle.spec.ts",
+    "test:e2e:sop": "playwright test tests/e2e/sop-workflow.spec.ts",
+    "test:e2e:regression": "playwright test tests/e2e/grow-lifecycle.spec.ts tests/e2e/sop-workflow.spec.ts --workers=1"
   },
   "dependencies": {
     "@capacitor/core": "^7.4.3",

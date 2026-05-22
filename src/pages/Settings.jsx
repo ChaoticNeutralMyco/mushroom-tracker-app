@@ -10,6 +10,12 @@ import { deleteAllUserData, clearAllLocalCaches, deleteGrowDataOnly } from "../l
 import { useConfirm } from "../components/ui/ConfirmDialog";
 import { canonicalUnit } from "../lib/units";
 import { allowedStagesForType, normalizeType } from "../lib/growFilters";
+import {
+  DEFAULT_ENVIRONMENT_TARGETS,
+  ENVIRONMENT_TARGET_STAGES,
+  formatTargetRange,
+  normalizeEnvironmentTargets,
+} from "../lib/environmentTargets";
 
 /** Accent palette */
 const ACCENTS = [
@@ -48,6 +54,7 @@ const defaultPrefs = {
   stageMaxDays: { Inoculated: 0, Fruiting: 0 },
   temperatureUnit: "F",
   autoConvertEnvNotes: true,
+  environmentTargets: normalizeEnvironmentTargets({}),
   guideEnabled: true,
 };
 
@@ -332,6 +339,38 @@ export default function Settings({
   // Units
   const setTempUnit = (u) => savePrefs({ ...prefs, temperatureUnit: u === "C" ? "C" : "F" });
   const setAutoConvert = (en) => savePrefs({ ...prefs, autoConvertEnvNotes: !!en });
+
+  // Environmental targets
+  const environmentTargets = useMemo(
+    () => normalizeEnvironmentTargets(prefs.environmentTargets || {}),
+    [prefs.environmentTargets]
+  );
+
+  const updateEnvironmentTarget = (stage, key, value) => {
+    const cleanStage = ENVIRONMENT_TARGET_STAGES.includes(stage) ? stage : "General";
+    const nextTargets = normalizeEnvironmentTargets({
+      ...environmentTargets,
+      [cleanStage]: {
+        ...(environmentTargets[cleanStage] || {}),
+        [key]: value,
+      },
+    });
+    savePrefs({ ...prefs, environmentTargets: nextTargets });
+  };
+
+  const resetEnvironmentTargets = async () => {
+    if (
+      !(await confirm({
+        title: "Reset environment targets?",
+        message: "This will restore the default stage temperature and humidity targets. Saved grow logs will not be changed.",
+        confirmLabel: "Reset targets",
+        tone: "warning",
+      }))
+    ) {
+      return;
+    }
+    savePrefs({ ...prefs, environmentTargets: normalizeEnvironmentTargets(DEFAULT_ENVIRONMENT_TARGETS) });
+  };
 
   // Reminders
   const setRemindersEnabled = (en) => savePrefs({ ...prefs, stageReminders: !!en });
@@ -889,6 +928,80 @@ export default function Settings({
             <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">
               Notes always save a canonical Fahrenheit value. Enabling this also saves a converted Celsius value.
             </p>
+          </div>
+
+          {/* Environment targets */}
+          <div className="rounded-2xl border border-zinc-200 bg-white/70 p-4 shadow-sm dark:border-zinc-800 dark:bg-zinc-950/50">
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+              <div>
+                <h2 className="text-lg font-medium">Environmental Targets by Stage</h2>
+                <p className="mt-1 text-sm text-slate-500 dark:text-slate-400">
+                  Global defaults used by grow detail environment logs. Strain profile targets can override these on a specific grow.
+                </p>
+              </div>
+              <button type="button" className="btn-outline text-xs" onClick={resetEnvironmentTargets}>
+                Reset defaults
+              </button>
+            </div>
+
+            <div className="mt-4 overflow-x-auto rounded-xl border border-zinc-200 dark:border-zinc-800">
+              <table className="min-w-full text-left text-sm">
+                <thead className="bg-zinc-100 text-xs uppercase tracking-wide text-zinc-600 dark:bg-zinc-900 dark:text-zinc-400">
+                  <tr>
+                    <th className="px-3 py-2">Stage</th>
+                    <th className="px-3 py-2">Temp min °F</th>
+                    <th className="px-3 py-2">Temp max °F</th>
+                    <th className="px-3 py-2">RH min %</th>
+                    <th className="px-3 py-2">RH max %</th>
+                    <th className="px-3 py-2">Target summary</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-zinc-200 dark:divide-zinc-800">
+                  {ENVIRONMENT_TARGET_STAGES.map((stage) => {
+                    const target = environmentTargets[stage] || {};
+                    return (
+                      <tr key={stage} className="align-top">
+                        <td className="px-3 py-2 font-semibold text-zinc-800 dark:text-zinc-100">{stage}</td>
+                        {["tempMinF", "tempMaxF", "humidityMin", "humidityMax"].map((key) => (
+                          <td key={key} className="px-3 py-2">
+                            <input
+                              type="number"
+                              inputMode="decimal"
+                              value={target[key] || ""}
+                              onChange={(e) => updateEnvironmentTarget(stage, key, e.target.value)}
+                              className="w-24 rounded-lg border border-zinc-300 bg-white px-2 py-1 text-sm dark:border-zinc-700 dark:bg-zinc-900"
+                              aria-label={`${stage} ${key}`}
+                            />
+                          </td>
+                        ))}
+                        <td className="px-3 py-2 text-xs text-zinc-600 dark:text-zinc-400">
+                          <div>{formatTargetRange(target.tempMinF, target.tempMaxF, "°F")}</div>
+                          <div>{formatTargetRange(target.humidityMin, target.humidityMax, "% RH")}</div>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+
+            <div className="mt-4 grid grid-cols-1 gap-3 md:grid-cols-2">
+              {ENVIRONMENT_TARGET_STAGES.map((stage) => {
+                const target = environmentTargets[stage] || {};
+                return (
+                  <label key={`${stage}-notes`} className="block text-sm">
+                    <span className="mb-1 block font-medium text-zinc-700 dark:text-zinc-200">{stage} notes</span>
+                    <textarea
+                      rows={2}
+                      value={target.notes || ""}
+                      onChange={(e) => updateEnvironmentTarget(stage, "notes", e.target.value)}
+                      className="w-full rounded-lg border border-zinc-300 bg-white px-3 py-2 text-sm dark:border-zinc-700 dark:bg-zinc-900"
+                      placeholder="Clean-work, airflow, moisture, or observation notes for this stage"
+                    />
+                  </label>
+                );
+              })}
+            </div>
           </div>
 
           {/* Reminders */}

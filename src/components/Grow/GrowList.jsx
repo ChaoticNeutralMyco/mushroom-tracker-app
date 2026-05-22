@@ -106,6 +106,36 @@ function getCreatedMs(grow) {
   return 0;
 }
 
+
+function getSopWorkflowMeta(grow = {}) {
+  const templateId = String(grow?.workflowTemplateId || grow?.sopTemplateId || "").trim();
+  const title = String(
+    grow?.workflowTemplateTitle ||
+      grow?.sopTemplateTitle ||
+      grow?.workflowTitle ||
+      ""
+  ).trim();
+  const category = String(
+    grow?.workflowTemplateCategory ||
+      grow?.sopTemplateCategory ||
+      grow?.workflowCategory ||
+      ""
+  ).trim();
+  const step = String(grow?.workflowStep || category || "").trim();
+  const source = String(grow?.workflowSource || grow?.sopSource || "").trim();
+  const summary = String(grow?.workflowTemplateSummary || grow?.sopTemplateSummary || "").trim();
+
+  return {
+    hasWorkflow: !!(templateId || title || category || step || source),
+    templateId,
+    title: title || "Workflow SOP",
+    category,
+    step,
+    source: source || (templateId || title ? "sop-template" : ""),
+    summary,
+  };
+}
+
 // ---------- Remaining helper (handles new & legacy fields) ----------
 function calcRemaining(g) {
   const total = Number(g?.amountTotal);
@@ -665,6 +695,15 @@ export default function GrowList({
         .includes(qq) ||
       String(g.abbreviation || g.abbr || "")
         .toLowerCase()
+        .includes(qq) ||
+      String(g.workflowTemplateTitle || g.sopTemplateTitle || "")
+        .toLowerCase()
+        .includes(qq) ||
+      String(g.workflowTemplateCategory || g.sopTemplateCategory || "")
+        .toLowerCase()
+        .includes(qq) ||
+      String(g.workflowStep || "")
+        .toLowerCase()
         .includes(qq);
 
     const matchType = (g) =>
@@ -938,6 +977,8 @@ export default function GrowList({
       const stage = localStage[grow.id] || grow.stage || "—";
       const status = localStatus[grow.id] || grow.status || "—";
 
+      const workflowMeta = getSopWorkflowMeta(grow);
+
       const computed = computedCosts.get(grow.id);
       const costNumber =
         Number.isFinite(computed) && computed >= 0
@@ -974,6 +1015,9 @@ export default function GrowList({
             <span data-testid="grow-row-type">{type || "Other"}</span>
             <span data-testid="grow-row-stage">{stage}</span>
             <span data-testid="grow-row-status">{status}</span>
+            {workflowMeta.hasWorkflow ? (
+              <span data-testid="grow-row-workflow">{workflowMeta.title}</span>
+            ) : null}
           </div>
 
           <input
@@ -1001,12 +1045,26 @@ export default function GrowList({
               <span className="chip">{type || "Other"}</span>
               <span className="chip">{stage}</span>
               <span className="chip">{status}</span>
+              {workflowMeta.hasWorkflow && (
+                <span
+                  className="chip border-indigo-200 bg-indigo-50 text-indigo-800 dark:border-indigo-900/60 dark:bg-indigo-950/30 dark:text-indigo-200"
+                  title={workflowMeta.summary || workflowMeta.title}
+                >
+                  SOP: {workflowMeta.step || workflowMeta.category || workflowMeta.title}
+                </span>
+              )}
               {costNumber !== null && (
                 <span className="chip">${Number(costNumber).toFixed(2)}</span>
               )}
             </div>
             <div className="text-xs opacity-70">
               Stage date: {dateTxt} • Strain: {strain}
+              {workflowMeta.hasWorkflow ? (
+                <>
+                  {" "}• SOP: {workflowMeta.title}
+                  {workflowMeta.category ? ` (${workflowMeta.category})` : ""}
+                </>
+              ) : null}
             </div>
           </div>
 

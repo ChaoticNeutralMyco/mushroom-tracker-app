@@ -38,6 +38,7 @@ import DashboardStats from "./components/ui/DashboardStats";
 import OnboardingModal from "./components/ui/OnboardingModal";
 import SplashScreen from "./components/ui/SplashScreen";
 import { isActiveGrow, isArchivedish } from "./lib/growFilters";
+import { normalizeEnvironmentTargets } from "./lib/environmentTargets";
 import CameraProbe from "./CameraProbe";
 import FabQuickActions from "./components/ui/FabQuickActions";
 import LocalReminders from "./components/ui/LocalReminders";
@@ -147,6 +148,7 @@ const PERSISTED_PREF_KEYS = [
   "guideEnabled",
   "temperatureUnit",
   "autoConvertEnvNotes",
+  "environmentTargets",
 ];
 
 function buildPersistedPrefs(input = {}) {
@@ -166,6 +168,7 @@ function buildPersistedPrefs(input = {}) {
     guideEnabled: input.guideEnabled,
     temperatureUnit: input.temperatureUnit,
     autoConvertEnvNotes: input.autoConvertEnvNotes,
+    environmentTargets: normalizeEnvironmentTargets(input.environmentTargets || {}),
   };
 }
 
@@ -173,6 +176,71 @@ function persistedPrefsChanged(cloud = {}, next = {}) {
   return PERSISTED_PREF_KEYS.some(
     (key) => JSON.stringify(cloud?.[key]) !== JSON.stringify(next?.[key])
   );
+}
+
+function localDateFromOffset(baseDate, offsetDays = 0) {
+  const base = baseDate instanceof Date && !Number.isNaN(baseDate.getTime()) ? baseDate : new Date();
+  const d = new Date(base.getFullYear(), base.getMonth(), base.getDate());
+  d.setDate(d.getDate() + Number(offsetDays || 0));
+  const yyyy = d.getFullYear();
+  const mm = String(d.getMonth() + 1).padStart(2, "0");
+  const dd = String(d.getDate()).padStart(2, "0");
+  return `${yyyy}-${mm}-${dd}`;
+}
+
+function parseDateForTasks(value) {
+  if (!value) return new Date();
+  if (value instanceof Date) return Number.isNaN(value.getTime()) ? new Date() : value;
+  if (typeof value?.toDate === "function") {
+    const d = value.toDate();
+    return Number.isNaN(d?.getTime?.()) ? new Date() : d;
+  }
+  const d = new Date(value);
+  return Number.isNaN(d.getTime()) ? new Date() : d;
+}
+
+function buildSopTaskPayloadsForGrow({ growId, grow = {}, taskTemplates = [] } = {}) {
+  if (!growId || !Array.isArray(taskTemplates) || taskTemplates.length === 0) return [];
+
+  const baseDate = parseDateForTasks(grow.createdAt);
+  const now = new Date().toISOString();
+  const growName = grow.abbr || grow.subName || grow.strain || grow.name || growId;
+  const templateTitle = grow.workflowTemplateTitle || grow.sopTemplateTitle || "Workflow SOP";
+  const templateId = grow.workflowTemplateId || grow.sopTemplateId || "";
+
+  return taskTemplates
+    .filter((task) => task && String(task.title || "").trim())
+    .map((task, index) => {
+      const dueDate = localDateFromOffset(baseDate, Number(task.dueOffsetDays ?? index + 1));
+      const title = String(task.title || `SOP task ${index + 1}`).trim();
+      const notes = String(task.notes || task.description || "").trim();
+
+      return {
+        title,
+        name: title,
+        description: notes,
+        notes,
+        growId,
+        growName,
+        strain: grow.strain || grow.strainName || "",
+        stage: task.stage || grow.stage || "General",
+        dueDate,
+        date: dueDate,
+        status: "incomplete",
+        completed: false,
+        source: "sop-template",
+        taskSource: "sop-template",
+        workflowTemplateId: templateId,
+        sopTemplateId: templateId,
+        workflowTemplateTitle: templateTitle,
+        sopTemplateTitle: templateTitle,
+        workflowTemplateCategory: grow.workflowTemplateCategory || "Workflow",
+        workflowStep: task.workflowStep || grow.workflowStep || grow.workflowTemplateCategory || "Workflow",
+        sopTaskTemplateId: task.id || `sop-task-${index + 1}`,
+        createdAt: now,
+        updatedAt: now,
+      };
+    });
 }
 
 (function applyInitialTheme() {
@@ -238,6 +306,7 @@ const DEFAULT_PREFS = {
   devMode: false,
   temperatureUnit: "F",
   autoConvertEnvNotes: true,
+  environmentTargets: normalizeEnvironmentTargets({}),
   guideEnabled: true,
 };
 
@@ -749,6 +818,66 @@ export default function App() {
     return ref.id;
   };
 
+  const onStartGrowFromWorkflowTemplate = (template = {}) => {
+    const defaults = template?.growDefaults || {};
+    const type = normalizeType(defaults.type || defaults.growType || template.category || "Agar");
+    const isBulk = type === "Bulk";
+    const unit = defaults.volumeUnit || defaults.amountUnit || (type === "Grain Jar" || isBulk ? "g" : type === "Agar" ? "pcs" : "ml");
+    const amountTotal = Number(defaults.amountTotal ?? defaults.initialVolume ?? 0);
+    const bulkVolume = Number(defaults.bulkVolume ?? defaults.amountTotal ?? 0);
+    const parentSourceRaw = String(defaults.parentSource || (type === "Agar" ? "Direct" : "grow")).toLowerCase();
+    const parentSource = parentSourceRaw === "direct" || parentSourceRaw === "none"
+      ? "Direct"
+      : parentSourceRaw === "library"
+        ? "Library"
+        : "Grow";
+
+    setEditingGrow({
+      workflowSource: "sop-template",
+      workflowTemplateId: template.id || "",
+      workflowTemplateTitle: template.title || template.recipeName || "Workflow SOP",
+      workflowTemplateCategory: template.category || "Workflow",
+      workflowTemplateSummary: template.summary || "",
+      workflowStep: defaults.workflowStep || template.category || "Workflow",
+      workflowChecklistTemplate: Array.isArray(template.checklistItems) ? template.checklistItems : [],
+      workflowTaskTemplates: Array.isArray(template.taskTemplates) ? template.taskTemplates : [],
+      sopTemplateId: template.id || "",
+      sopTemplateTitle: template.title || template.recipeName || "Workflow SOP",
+      parentSource,
+      type,
+      growType: type,
+      stage: defaults.stage || "Inoculated",
+      status: defaults.status || "Active",
+      createdAt: new Date(),
+      ...(isBulk
+        ? {
+            bulkGrainParts: Number(defaults.bulkGrainParts ?? 1),
+            bulkSubstrateParts: Number(defaults.bulkSubstrateParts ?? 3),
+            bulkVolume: Number.isFinite(bulkVolume) && bulkVolume > 0 ? bulkVolume : "",
+            bulkVolumeUnit: defaults.bulkVolumeUnit || unit || "g",
+            amountTotal: Number.isFinite(bulkVolume) && bulkVolume > 0 ? bulkVolume : "",
+            amountUnit: defaults.bulkVolumeUnit || unit || "g",
+          }
+        : {
+            initialVolume: Number.isFinite(amountTotal) && amountTotal > 0 ? amountTotal : "",
+            amountTotal: Number.isFinite(amountTotal) && amountTotal > 0 ? amountTotal : "",
+            amountUnit: unit,
+            volumeUnit: unit,
+          }),
+    });
+    setActiveTab("dashboard");
+  };
+
+  const onCreateTasksForGrow = async ({ growId, grow = {}, taskTemplates = [] } = {}) => {
+    if (!user?.uid || !growId) return [];
+    const payloads = buildSopTaskPayloadsForGrow({ growId, grow, taskTemplates });
+    const refs = [];
+    for (const payload of payloads) {
+      refs.push(await addDoc(collection(db, "users", user.uid, "tasks"), payload));
+    }
+    return refs.map((ref) => ref.id);
+  };
+
   const onCreateTask = async (payload) => {
     if (user) await addDoc(collection(db, "users", user.uid, "tasks"), payload);
   };
@@ -787,6 +916,11 @@ export default function App() {
       text,
       timestamp: new Date().toISOString(),
     };
+
+    ["category", "noteCategory", "noteKind", "workflowStep", "cleanWork", "needsFollowUp", "followUpDate"].forEach((key) => {
+      const value = extras?.[key];
+      if (value !== undefined && value !== null && value !== "") payload[key] = value;
+    });
 
     if (Number.isFinite(Number(extras.humidityPct))) {
       payload.humidityPct = Number(extras.humidityPct);
@@ -931,6 +1065,7 @@ export default function App() {
             supplies={Array.isArray(supplies) ? supplies : []}
             onCreateGrow={onCreateGrow}
             onUpdateGrow={onUpdateGrow}
+            onCreateTasksForGrow={onCreateTasksForGrow}
             onClose={() => setEditingGrow(null)}
           />
         </Modal>
@@ -1173,7 +1308,7 @@ export default function App() {
                   {activeTab === "recipes" && (
                     <>
                       <div className="bg-white dark:bg-zinc-900 rounded-2xl shadow p-4">
-                        <RecipeManager />
+                        <RecipeManager onStartGrowFromTemplate={onStartGrowFromWorkflowTemplate} />
                       </div>
                       <Suspense
                         fallback={

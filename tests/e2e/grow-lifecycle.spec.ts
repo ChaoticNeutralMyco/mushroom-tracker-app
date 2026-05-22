@@ -490,7 +490,7 @@ async function addRecipe(
 ) {
   await clickAppTab(page, "Recipes");
   await expect(page.getByText(/Recipes/i).first()).toBeVisible();
-  await page.getByRole("button", { name: /New Recipe/i }).click();
+  await page.getByRole("button", { name: "New Recipe", exact: true }).click();
   await expect(
     page.getByRole("heading", { name: /New Recipe/i })
   ).toBeVisible();
