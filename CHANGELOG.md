@@ -2,6 +2,33 @@
 
 All notable public-facing changes for Chaotic Neutral Myco Tracker are tracked here.
 
+## v1.1.3 - 2026-05-23
+
+### Changed
+
+- Refreshed GitHub Actions release automation for desktop and Android builds.
+- Updated workflow Node setup to Node 24 while allowing local/project Node engines from Node 20 through Node 24.
+- Fixed Tauri release automation by using a valid CI value instead of `CI=1`.
+- Fixed Android CI by using Java 21 for Capacitor/Android source compatibility.
+- Added Android release asset attachment to GitHub Releases when tag builds produce APK/AAB files.
+- Moved E2E to manual workflow dispatch until the GitHub Actions Playwright hang is fully diagnosed.
+
+### Notes
+
+- This is a release automation maintenance update.
+- No app behavior or cultivation logic was intentionally changed in this version.
+
+## v1.1.2 - 2026-05-23
+
+### Changed
+
+- Added a release automation validation tag after the v1.1.1 public metadata cleanup.
+- Confirmed release workflow issues that were fixed in v1.1.3.
+
+### Notes
+
+- No app behavior or cultivation logic was intentionally changed in this version.
+
 ## v1.1.1 - 2026-05-23
 
 ### Changed

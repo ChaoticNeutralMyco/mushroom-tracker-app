@@ -18,15 +18,18 @@ jobs:
   web:
     name: Web build & checks
     runs-on: ubuntu-latest
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+      CI: "true"
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Setup Node.js
+      - name: Setup Node 24
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: "24"
           cache: "npm"
 
       - name: Detect package manager
@@ -42,14 +45,14 @@ jobs:
           fi
           echo "Detected package manager: ${{ steps.pm.outputs.pm }}"
 
-      - name: Setup pnpm (if used)
+      - name: Setup pnpm if used
         if: steps.pm.outputs.pm == 'pnpm'
         uses: pnpm/action-setup@v4
         with:
           version: 9
           run_install: false
 
-      - name: Enable Corepack (yarn)
+      - name: Enable Corepack for yarn
         if: steps.pm.outputs.pm == 'yarn'
         shell: bash
         run: corepack enable
@@ -65,7 +68,7 @@ jobs:
             npm ci
           fi
 
-      - name: Lint (if script exists)
+      - name: Lint if script exists
         shell: bash
         run: |
           has_script() {
@@ -84,7 +87,7 @@ jobs:
             echo "No lint script; skipping."
           fi
 
-      - name: Typecheck (if script exists)
+      - name: Typecheck if script exists
         shell: bash
         run: |
           has_script() {
@@ -103,9 +106,7 @@ jobs:
             echo "No typecheck script; skipping."
           fi
 
-      - name: Unit or component tests (if script exists)
-        env:
-          CI: "true"
+      - name: Unit or component tests if script exists
         shell: bash
         run: |
           has_script() {

@@ -2,10 +2,6 @@
 name: E2E
 
 on:
-  push:
-    branches: [main]
-  pull_request:
-    branches: [main]
   workflow_dispatch:
 
 concurrency:
@@ -18,9 +14,10 @@ permissions:
 jobs:
   web-e2e:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 20
     env:
-      CI: "1"
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+      CI: "true"
       BASE_PATH: "/mushroom-tracker-app/"
       TEST_ACCOUNT: ${{ secrets.TEST_ACCOUNT }}
 
@@ -28,10 +25,10 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Setup Node
+      - name: Setup Node 24
         uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          node-version: "24"
           cache: "npm"
 
       - name: Install deps
@@ -41,14 +38,14 @@ jobs:
         run: npx playwright install --with-deps chromium
 
       - name: Run Playwright regression tests
-        timeout-minutes: 25
-        run: npm run test:e2e:regression
+        timeout-minutes: 15
+        run: npm run test:e2e:regression:ci
 
       - name: Upload Playwright artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: playwright-artifacts
+          name: playwright-artifacts-${{ github.run_id }}
           path: |
             playwright-report
             test-results

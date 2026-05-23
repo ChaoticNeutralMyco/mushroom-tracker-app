@@ -2,16 +2,18 @@
 
 # Chaotic Neutral Myco Tracker
 
-**Current version:** v1.1.1  
+**Current version:** v1.1.3  
 **Latest feature milestone:** v1.1.0 SOP Workflow Operations  
-**Status:** Web build, desktop build configuration, and Playwright regression coverage are active.
+**Latest release maintenance:** v1.1.3 release automation refresh  
+**Status:** Web build, desktop build configuration, Android build configuration, and manual Playwright regression coverage are active.
 
-Chaotic Neutral Myco Tracker is a full-stack cultivation notebook for mushroom growers. It combines **grow tracking, SOP/workflow tools, inventory/COG, strain profiles, tasks, analytics, photos, contamination logging, printable SOPs, and backups** into one app built with React, Firebase, and a Tauri Windows client.
+Chaotic Neutral Myco Tracker is a full-stack cultivation notebook for mushroom growers. It combines **grow tracking, SOP/workflow tools, inventory/COG, strain profiles, tasks, analytics, photos, contamination logging, printable SOPs, and backups** into one app built with React, Firebase, Capacitor Android tooling, and a Tauri Windows client.
 
-This repo powers both:
+This repo powers:
 
 - The **web app** deployed from GitHub through Vercel.
 - The **Windows desktop app** built with Tauri v2 and NSIS.
+- The **Android build pipeline** built with Capacitor and Gradle.
 
 > **Compliance note:** This project is a recordkeeping, workflow, and inventory tool. Users are responsible for following all local, state, and federal laws that apply to their cultivation, research, business, or personal use.
 
@@ -19,7 +21,21 @@ This repo powers both:
 
 ## What changed in v1.1.x
 
-The v1.1.x line completed the SOP/workflow operations milestone and cleaned up public project metadata.
+The v1.1.x line completed the SOP/workflow operations milestone and cleaned up public project metadata and release automation.
+
+### v1.1.3
+
+- Refreshed GitHub Actions release automation for desktop and Android builds.
+- Updated workflow Node setup to Node 24 while allowing local/project Node engines from Node 20 through Node 24.
+- Fixed Tauri release automation by using a valid CI value instead of `CI=1`.
+- Fixed Android CI by using Java 21 for Capacitor/Android source compatibility.
+- Added Android release asset attachment to GitHub Releases when tag builds produce APK/AAB files.
+- Moved E2E to manual workflow dispatch until the GitHub Actions Playwright hang is fully diagnosed.
+
+### v1.1.2
+
+- Added a release automation validation tag after the v1.1.1 metadata cleanup.
+- Confirmed release workflow issues that were fixed in v1.1.3.
 
 ### v1.1.1
 
@@ -126,6 +142,7 @@ The v1.1.x line completed the SOP/workflow operations milestone and cleaned up p
 - **Frontend:** React 18, Vite, Tailwind CSS, Recharts.
 - **Backend:** Firebase Auth, Firestore, and Storage.
 - **Desktop:** Tauri v2, WebView2, NSIS installer.
+- **Android:** Capacitor, Gradle, Android SDK.
 - **Testing:** Playwright E2E regression coverage.
 - **Deployment:** GitHub main branch to Vercel production.
 
@@ -135,11 +152,12 @@ The v1.1.x line completed the SOP/workflow operations milestone and cleaned up p
 
 ### Prerequisites
 
-- Node.js 20.x
+- Node.js 20, 22, or 24
 - npm
 - Git
 - Rust toolchain and Cargo for desktop builds
 - Tauri CLI for desktop builds
+- Java 21 and Android SDK for Android builds
 - Windows 10/11 with WebView2 runtime for the Windows desktop app
 
 ### Install dependencies
@@ -180,10 +198,16 @@ Install browsers first if needed:
 npm run test:e2e:install
 ```
 
-Run the full regression suite:
+Run the full regression suite locally:
 
 ```bash
 npm run test:e2e:regression
+```
+
+Run the CI-style regression command:
+
+```bash
+npm run test:e2e:regression:ci
 ```
 
 Run individual suites:
@@ -205,6 +229,12 @@ npm run tauri:dev
 npm run desktop:build
 ```
 
+### Android sync
+
+```bash
+npm run android:sync
+```
+
 ---
 
 ## Current Regression Coverage
@@ -214,12 +244,14 @@ The current regression suite includes:
 - `tests/e2e/grow-lifecycle.spec.ts`
 - `tests/e2e/sop-workflow.spec.ts`
 
-The v1.1.0 baseline was verified with:
+The v1.1.x baseline has been verified locally with:
 
 ```bash
 npm run build
 npm run test:e2e:regression
 ```
+
+E2E in GitHub Actions is currently manual-dispatch only while the Playwright CI hang is investigated.
 
 ---
 
@@ -245,6 +277,10 @@ src-tauri/tauri.conf.json
 ```
 
 The updater endpoint is configured to read the latest release metadata from GitHub Releases.
+
+### Android
+
+The Android workflow builds through Capacitor and Gradle with Java 21. Tag builds attach Android artifacts to the GitHub Release when APK/AAB files are produced.
 
 ---
 
