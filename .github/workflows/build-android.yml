@@ -7,6 +7,13 @@ on:
     tags:
       - "v*.*.*"
 
+concurrency:
+  group: android-release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
 jobs:
   build-android:
     runs-on: ubuntu-latest
@@ -61,9 +68,17 @@ jobs:
 
           npx cap sync android
 
+          if [ ! -f android/gradlew ]; then
+            echo "android/gradlew was not found after Capacitor sync."
+            exit 1
+          fi
+
+          chmod +x android/gradlew
+
       - name: Assemble Android outputs
         working-directory: android
         run: |
+          chmod +x ./gradlew
           ./gradlew :app:assembleDebug
           ./gradlew :app:assembleRelease
           ./gradlew :app:bundleRelease

@@ -7,6 +7,10 @@ on:
     tags:
       - "v*.*.*"
 
+concurrency:
+  group: tauri-release-${{ github.ref }}
+  cancel-in-progress: false
+
 permissions:
   contents: write
 
@@ -16,6 +20,8 @@ jobs:
     env:
       CI: "1"
       NODE_OPTIONS: --max-old-space-size=4096
+      CARGO_INCREMENTAL: "0"
+      CARGO_TERM_COLOR: always
 
     steps:
       - name: Checkout
@@ -29,6 +35,12 @@ jobs:
 
       - name: Install frontend deps
         run: npm ci
+
+      - name: Install Tauri CLI for release action
+        shell: pwsh
+        run: |
+          npm install -g @tauri-apps/cli@2.8.4
+          tauri --version
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
