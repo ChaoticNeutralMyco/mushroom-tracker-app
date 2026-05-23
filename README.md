@@ -1,8 +1,8 @@
-<!-- README.md -->
+﻿<!-- README.md -->
 
 # Chaotic Neutral Myco Tracker
 
-**Current version:** v1.1.3  
+**Current version:** v1.1.4  
 **Latest feature milestone:** v1.1.0 SOP Workflow Operations  
 **Latest release maintenance:** v1.1.3 release automation refresh  
 **Status:** Web build, desktop build configuration, Android build configuration, and manual Playwright regression coverage are active.
@@ -68,11 +68,11 @@ The v1.1.x line completed the SOP/workflow operations milestone and cleaned up p
 ### Grow Management
 
 - Multi-stage grow tracking:
-  - Agar / LC / Grain: `Inoculated → Colonizing → Colonized`
-  - Bulk: `Inoculated → Colonizing → Colonized → Fruiting → Harvesting → Harvested`
+  - Agar / LC / Grain: `Inoculated â†’ Colonizing â†’ Colonized`
+  - Bulk: `Inoculated â†’ Colonizing â†’ Colonized â†’ Fruiting â†’ Harvesting â†’ Harvested`
 - Per-grow timeline with stage dates and history.
 - Wet and dry yield tracking per flush.
-- Lineage system for agar → LC → grain → bulk workflows.
+- Lineage system for agar â†’ LC â†’ grain â†’ bulk workflows.
 - Parent cost roll-up for true cost from source material to harvest.
 - Per-grow notes, structured lab notes, and exportable logbook context.
 - Photo uploads and grow photo timeline.
@@ -295,3 +295,4 @@ See [`CHANGELOG.md`](./CHANGELOG.md).
 ```text
 ChaoticNeutralMyco/mushroom-tracker-app
 ```
+

@@ -1,6 +1,20 @@
-# Changelog
+﻿# Changelog
 
 All notable public-facing changes for Chaotic Neutral Myco Tracker are tracked here.
+
+## v1.1.4 - 2026-05-23
+
+### Changed
+
+- Fixed Android release automation so missing signing secrets no longer fail the workflow.
+- Android workflow now always builds and uploads a debug APK.
+- Signed release APK/AAB builds now run only when Android keystore secrets are configured.
+- Kept Node 24 and Java 21 workflow updates from v1.1.3.
+
+### Notes
+
+- Desktop installer automation was already validated in v1.1.3.
+- No app behavior or cultivation logic was intentionally changed in this version.
 
 ## v1.1.3 - 2026-05-23
 
@@ -85,3 +99,4 @@ All notable public-facing changes for Chaotic Neutral Myco Tracker are tracked h
 - Analytics and exports.
 - Backup/import/export tooling.
 - Tauri desktop build configuration.
+
