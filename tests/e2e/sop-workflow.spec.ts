@@ -237,8 +237,8 @@ async function waitForSopTasks(session: NodeAuthSession) {
         return tasks.length;
       },
       {
-        timeout: 30_000,
-        intervals: [500, 750, 1000, 1500],
+        timeout: 60_000,
+        intervals: [2000, 3000, 5000, 8000],
       }
     )
     .toBeGreaterThan(0);
