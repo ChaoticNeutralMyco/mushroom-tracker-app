@@ -103,23 +103,7 @@ const FIREBASE_WEB_DEFAULTS = {
   apiKey: "AIzaSyAk1paC3CBjU1RH2cXf_8m6xOnZkH_xYWg",
 };
 
-const FIRESTORE_REST_TIMEOUT_MS = 20_000;
-const FIRESTORE_REST_MAX_ATTEMPTS = 7;
-const FIRESTORE_REST_RETRY_STATUS_CODES = new Set([408, 429, 500, 502, 503, 504]);
-
-function sleep(ms: number) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-function retryDelayMs(attempt: number) {
-  const base = Math.min(10_000, 750 * 2 ** attempt);
-  const jitter = Math.floor(Math.random() * 250);
-  return base + jitter;
-}
-
-function shouldRetryFirestoreRest(status: number) {
-  return FIRESTORE_REST_RETRY_STATUS_CODES.has(status);
-}
+const FIRESTORE_REST_TIMEOUT_MS = 15_000;
 
 function randomFirestoreId(length = 20) {
   const alphabet =
@@ -239,64 +223,42 @@ async function firestoreRestJson<T>(
   init?: RequestInit,
   label = "Firestore REST request"
 ): Promise<T> {
-  let lastError: unknown;
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), FIRESTORE_REST_TIMEOUT_MS);
 
-  for (let attempt = 0; attempt < FIRESTORE_REST_MAX_ATTEMPTS; attempt += 1) {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), FIRESTORE_REST_TIMEOUT_MS);
+  try {
+    const response = await fetch(url, {
+      ...init,
+      signal: controller.signal,
+      headers: {
+        Authorization: `Bearer ${session.idToken}`,
+        "Content-Type": "application/json",
+        ...(init?.headers || {}),
+      },
+    });
 
-    try {
-      const response = await fetch(url, {
-        ...init,
-        signal: controller.signal,
-        headers: {
-          Authorization: `Bearer ${session.idToken}`,
-          "Content-Type": "application/json",
-          ...(init?.headers || {}),
-        },
-      });
-
-      if (!response.ok) {
-        const body = await response.text();
-        const error = new Error(`${label} failed (${response.status}): ${body}`);
-        lastError = error;
-
-        if (shouldRetryFirestoreRest(response.status) && attempt < FIRESTORE_REST_MAX_ATTEMPTS - 1) {
-          await sleep(retryDelayMs(attempt));
-          continue;
-        }
-
-        throw error;
-      }
-
-      if (response.status === 204) {
-        return null as T;
-      }
-
-      return (await response.json()) as T;
-    } catch (error: any) {
-      if (error?.name === "AbortError") {
-        lastError = new Error(`${label} timed out after ${FIRESTORE_REST_TIMEOUT_MS}ms.`);
-      } else {
-        lastError = error;
-      }
-
-      if (attempt < FIRESTORE_REST_MAX_ATTEMPTS - 1) {
-        await sleep(retryDelayMs(attempt));
-        continue;
-      }
-
-      throw lastError;
-    } finally {
-      clearTimeout(timeout);
+    if (!response.ok) {
+      const body = await response.text();
+      throw new Error(`${label} failed (${response.status}): ${body}`);
     }
-  }
 
-  throw lastError;
+    if (response.status === 204) {
+      return null as T;
+    }
+
+    return (await response.json()) as T;
+  } catch (error: any) {
+    if (error?.name === "AbortError") {
+      throw new Error(`${label} timed out after ${FIRESTORE_REST_TIMEOUT_MS}ms.`);
+    }
+    throw error;
+  } finally {
+    clearTimeout(timeout);
+  }
 }
 
 async function listFirestoreDocuments(session: NodeAuthSession, collectionPath: string) {
-  const url = `${firestoreDocumentsBaseUrl(session, collectionPath)}?pageSize=100`;
+  const url = `${firestoreDocumentsBaseUrl(session, collectionPath)}?pageSize=1000`;
   const payload = await firestoreRestJson<any>(
     session,
     url,
