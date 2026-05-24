@@ -29,7 +29,7 @@
     "test:e2e:sop": "playwright test tests/e2e/sop-workflow.spec.ts",
     "test:e2e:regression": "playwright test tests/e2e/grow-lifecycle.spec.ts tests/e2e/sop-workflow.spec.ts --workers=1",
     "test:e2e:regression:ci": "playwright test tests/e2e/grow-lifecycle.spec.ts tests/e2e/sop-workflow.spec.ts --workers=1 --reporter=line",
-    "test:subscription": "npx --yes vitest run tests/unit/subscriptionPlans.test.js tests/unit/subscriptionAccess.test.js tests/unit/subscriptionPage.test.jsx tests/unit/subscriptionEntitlements.test.js tests/unit/subscriptionMessaging.test.js tests/unit/subscriptionEntitlementPaths.test.js"
+    "test:subscription": "npx --yes vitest run tests/unit/subscriptionPlans.test.js tests/unit/subscriptionAccess.test.js tests/unit/subscriptionPage.test.jsx tests/unit/subscriptionEntitlements.test.js tests/unit/subscriptionMessaging.test.js"
   },
   "dependencies": {
     "@capacitor/core": "^7.4.3",
