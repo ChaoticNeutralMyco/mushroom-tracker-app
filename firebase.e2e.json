@@ -1,0 +1,22 @@
+{
+  "firestore": {
+    "rules": "tests/e2e/firestore.rules"
+  },
+  "storage": {
+    "rules": "tests/e2e/storage.rules"
+  },
+  "emulators": {
+    "firestore": {
+      "host": "127.0.0.1",
+      "port": 8080
+    },
+    "storage": {
+      "host": "127.0.0.1",
+      "port": 9199
+    },
+    "ui": {
+      "enabled": false
+    },
+    "singleProjectMode": true
+  }
+}
