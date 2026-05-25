@@ -209,6 +209,7 @@ export const E2E_USER_COLLECTIONS = [
   "supplies",
   "recipes",
   "strains",
+  "library",
   "settings",
   "notes",
   "materialLots",
