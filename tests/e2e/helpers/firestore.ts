@@ -18,8 +18,25 @@ const FIRESTORE_REST_TIMEOUT_MS = 15_000;
 export async function captureNodeAuthSession(page: Page): Promise<NodeAuthSession> {
   return page.evaluate(async (defaults) => {
     const mod = await import("/src/firebase-config.js");
-    const currentUser = mod.auth.currentUser;
-    if (!currentUser) throw new Error("No authenticated Firebase user found in page context.");
+
+    const currentUser =
+      mod.auth.currentUser ||
+      (await new Promise<any>((resolve) => {
+        const timeout = setTimeout(() => {
+          unsubscribe();
+          resolve(null);
+        }, 30_000);
+
+        const unsubscribe = mod.auth.onAuthStateChanged((user: any) => {
+          clearTimeout(timeout);
+          unsubscribe();
+          resolve(user);
+        });
+      }));
+
+    if (!currentUser) {
+      throw new Error("No authenticated Firebase user found in page context after waiting.");
+    }
 
     const idToken = await currentUser.getIdToken();
     return {
@@ -33,6 +50,12 @@ export async function captureNodeAuthSession(page: Page): Promise<NodeAuthSessio
 
 function firestoreDocumentsBaseUrl(session: NodeAuthSession, path = "") {
   const suffix = path ? `/${path}` : "";
+  const emulatorHost = process.env.FIRESTORE_EMULATOR_HOST;
+
+  if (emulatorHost) {
+    return `http://${emulatorHost}/v1/projects/${session.projectId}/databases/(default)/documents${suffix}`;
+  }
+
   return `https://firestore.googleapis.com/v1/projects/${session.projectId}/databases/(default)/documents${suffix}`;
 }
 
@@ -178,4 +201,69 @@ export async function setFirestoreDocument(
     },
     `Set ${path}`
   );
+}
+
+export const E2E_USER_COLLECTIONS = [
+  "grows",
+  "tasks",
+  "supplies",
+  "recipes",
+  "strains",
+  "library",
+  "settings",
+  "notes",
+  "materialLots",
+  "extractionBatches",
+  "extractLots",
+  "productionBatches",
+  "finishedProducts",
+  "outboundLogs",
+  "activityLog",
+  "calendarEvents",
+  "environmentLogs",
+  "photos",
+  "trash",
+];
+
+export async function deleteFirestoreDocument(
+  session: NodeAuthSession,
+  path: string
+) {
+  const url = firestoreDocumentsBaseUrl(session, path);
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), FIRESTORE_REST_TIMEOUT_MS);
+
+  try {
+    const response = await fetch(url, {
+      method: "DELETE",
+      signal: controller.signal,
+      headers: {
+        Authorization: `Bearer ${session.idToken}`,
+        "Content-Type": "application/json",
+      },
+    });
+
+    if (!response.ok && response.status !== 404) {
+      const body = await response.text();
+      throw new Error(`Delete ${path} failed (${response.status}): ${body}`);
+    }
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+async function deleteKnownCollection(session: NodeAuthSession, collectionPath: string) {
+  const docs = await listFirestoreDocuments(session, collectionPath);
+
+  for (const doc of docs) {
+    await deleteFirestoreDocument(session, `${collectionPath}/${doc.id}`);
+  }
+}
+
+export async function deleteE2eUserData(session: NodeAuthSession) {
+  for (const collectionId of E2E_USER_COLLECTIONS) {
+    await deleteKnownCollection(session, `users/${session.userId}/${collectionId}`);
+  }
+
+  await deleteFirestoreDocument(session, `users/${session.userId}`);
 }

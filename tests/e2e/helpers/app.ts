@@ -57,15 +57,41 @@ function tabNameMatcher(tabName: string) {
   return new RegExp(`^${escapeRegExp(tabName)}$`, "i");
 }
 
-async function dismissTutorialIfPresent(page: Page) {
-  const tutorialHeading = page.getByText(/Welcome to your Dashboard/i);
-  const tutorialSkip = page.getByRole("button", { name: /^Skip$/i });
+async function markGuideToursSeen(page: Page) {
+  await page
+    .evaluate(() => {
+      const routeKeys = [
+        "dashboard",
+        "tasks",
+        "analytics",
+        "calendar",
+        "timeline",
+        "postprocess",
+        "cog",
+        "recipes",
+        "strains",
+        "labels",
+        "archive",
+        "settings",
+      ];
 
-  if (await safeVisible(tutorialHeading)) {
-    if (await safeVisible(tutorialSkip)) {
-      await tutorialSkip.click();
-      await expect(tutorialHeading).toBeHidden({ timeout: 15_000 });
-    }
+      for (const routeKey of routeKeys) {
+        localStorage.setItem(`tour.seen:${routeKey}`, "1");
+      }
+    })
+    .catch(() => {});
+}
+
+async function dismissTutorialIfPresent(page: Page) {
+  const guideDialog = page
+    .getByRole("dialog")
+    .filter({ has: page.getByRole("button", { name: /^Skip$/i }) })
+    .last();
+  const guideSkip = guideDialog.getByRole("button", { name: /^Skip$/i });
+
+  if (await safeVisible(guideSkip)) {
+    await guideSkip.click();
+    await expect(guideDialog).toBeHidden({ timeout: 15_000 });
   }
 }
 
@@ -124,6 +150,7 @@ export async function waitForAppShell(page: Page) {
     )
     .toBe(true);
 
+  await markGuideToursSeen(page);
   await dismissTutorialIfPresent(page);
   await expect(dashboardTab).toBeVisible({ timeout: 15_000 });
 }
@@ -148,6 +175,8 @@ export async function clickAppTab(page: Page, tabName: string) {
   await expect(tab).toHaveAttribute("aria-selected", "true", {
     timeout: 20_000,
   });
+  await markGuideToursSeen(page);
+  await dismissTutorialIfPresent(page);
 }
 
 export async function confirmDialog(
