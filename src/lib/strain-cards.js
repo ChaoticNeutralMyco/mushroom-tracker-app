@@ -1,4 +1,5 @@
 // src/lib/strain-cards.js
+// assets-v49-default-dark-remove-broken-reishi
 // Resolve strain card artwork (front/back) and normalize custom card-builder data.
 
 const UPPER = (s) => String(s || "").trim().toUpperCase();
@@ -9,7 +10,7 @@ export const STRAIN_CARD_ART_OFFSET_MIN = -20;
 export const STRAIN_CARD_ART_OFFSET_MAX = 20;
 export const STRAIN_CARD_ART_SCALE_MIN = 0.75;
 export const STRAIN_CARD_ART_SCALE_MAX = 1.35;
-const DEFAULT_CARD_FRONT_URL = "/images/cards/fronts/default-front.png";
+const DEFAULT_CARD_FRONT_URL = "/images/cards/fronts/builder-base-dark.png";
 
 const DEFAULT_MUSHROOM_ART_LAYOUT = {
   scale: 1,
@@ -220,7 +221,6 @@ export const BUILDER_MUSHROOM_ARTS = [
   { key: "enigma", label: "Enigma", url: "/images/cards/art/enigma.png", family: "mutation" },
   { key: "cordyceps", label: "Cordyceps", url: "/images/cards/art/Cordyceps.png", family: "medicinal" },
   { key: "lions-mane", label: "Lion's Mane", url: "/images/cards/art/Lions%20Mane.png", family: "medicinal" },
-  { key: "reishi", label: "Reishi", url: "/images/cards/art/Reishi.png", family: "medicinal" },
   { key: "pink-oyster", label: "Pink Oyster", url: "/images/cards/art/Pink%20Oyster.png", family: "oyster" },
   { key: "golden-oyster", label: "Golden Oyster", url: "/images/cards/art/Golden%20Oyster.png", family: "oyster" },
   { key: "blue-oyster", label: "Blue Oyster", url: "/images/cards/art/Blue%20Oyster.png", family: "oyster" },

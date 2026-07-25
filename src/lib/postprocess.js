@@ -1,4 +1,8 @@
 // src/lib/postprocess.js
+// postprocess-v38-fefo-rotation-and-audit
+// postprocess-v37-accurate-packaged-dose-and-sku
+// postprocess-v29-production-parent-output-finalize
+// postprocess-v24-packaging-sales-separation
 import {
   collection,
   doc,
@@ -11,7 +15,7 @@ import { db } from "../firebase-config";
 
 
 const FINISHED_GOODS_LOT_TYPES = ["capsules", "gummies", "chocolates", "tinctures"];
-const OUTBOUND_FINISHED_MOVEMENT_TYPES = ["sell", "donate", "sample", "waste", "adjustment"];
+const OUTBOUND_FINISHED_MOVEMENT_TYPES = ["sell", "donate", "sample", "waste", "destroy", "adjustment"];
 const MSRP_DEFAULT_MARGIN_PERCENT = 60;
 
 function roundNumber(value, digits = 3) {
@@ -257,6 +261,7 @@ function movementLabel(movementType = "") {
     donate: "Donated",
     sample: "Sampled",
     waste: "Wasted",
+    destroy: "Destroyed",
     adjustment: "Adjusted",
   }[normalizeFinishedMovementType(movementType)] || "Adjusted";
 }
@@ -267,6 +272,7 @@ function buildOutboundSnapshot(previous = {}, movementType = "", direction = "ou
     donated: sanitizePositiveNumber(previous?.donated),
     sampled: sanitizePositiveNumber(previous?.sampled),
     wasted: sanitizePositiveNumber(previous?.wasted),
+    destroyed: sanitizePositiveNumber(previous?.destroyed),
     adjustedOut: sanitizePositiveNumber(previous?.adjustedOut),
     adjustedIn: sanitizePositiveNumber(previous?.adjustedIn),
     revenue: sanitizeCurrency(previous?.revenue),
@@ -285,6 +291,8 @@ function buildOutboundSnapshot(previous = {}, movementType = "", direction = "ou
     next.sampled = sanitizePositiveNumber(next.sampled + normalizedQty);
   } else if (normalizedType === "waste" && direction === "out") {
     next.wasted = sanitizePositiveNumber(next.wasted + normalizedQty);
+  } else if (normalizedType === "destroy" && direction === "out") {
+    next.destroyed = sanitizePositiveNumber(next.destroyed + normalizedQty);
   } else if (direction === "in") {
     next.adjustedIn = sanitizePositiveNumber(next.adjustedIn + normalizedQty);
   } else {
@@ -327,6 +335,18 @@ export function toLocalYYYYMMDD(raw = new Date()) {
   } catch {
     return "";
   }
+}
+
+function addYearsToLocalDate(value, years = 1) {
+  const parsed = parseAnyDate(value);
+  if (!parsed) return "";
+  const next = new Date(parsed);
+  next.setFullYear(next.getFullYear() + years);
+  return toLocalYYYYMMDD(next);
+}
+
+function defaultBestByDate(madeOn = "") {
+  return addYearsToLocalDate(madeOn || new Date(), 1);
 }
 
 export function normalizePostProcessGrowType(type = "") {
@@ -463,6 +483,13 @@ export function buildExtractLotName({ batchName = "", extractionType = "", date 
   return `Extract Lot ${String(extractionType || "Extract")} ${safeDate}`.trim();
 }
 
+function getCanonicalExtractionOutputUnit(extractionType = "", fallback = "mL") {
+  const normalized = safeString(extractionType).toLowerCase();
+  if (["powder", "dry_powder", "resin"].includes(normalized)) return "g";
+  if (["dual", "dual_extract", "hot_water", "ethanol"].includes(normalized)) return "mL";
+  return safeString(fallback) || "mL";
+}
+
 
 export function getProductTypeMeta(productType = "") {
   const key = String(productType || "").trim().toLowerCase();
@@ -496,10 +523,10 @@ export function getProductTypeMeta(productType = "") {
       label: "Tincture",
       pluralLabel: "Tinctures",
       lotType: "tinctures",
-      outputUnit: "count",
-      pieceLabel: "bottle",
-      pieceLabelPlural: "bottles",
-      finishedInventoryLabel: "Tincture Inventory",
+      outputUnit: "mL",
+      pieceLabel: "mL",
+      pieceLabelPlural: "mL",
+      finishedInventoryLabel: "Bulk Tincture Inventory",
     };
   }
   return {
@@ -895,6 +922,79 @@ function nextLotStatus(nextRemaining, initial) {
   return "available";
 }
 
+function normalizePackageUnitValue(unit = "") {
+  const raw = safeString(unit).toLowerCase();
+  if (!raw) return "unit";
+  if (["g", "gram", "grams"].includes(raw)) return "g";
+  if (["oz", "ounce", "ounces"].includes(raw)) return "oz";
+  if (["ml", "milliliter", "milliliters"].includes(raw)) return "mL";
+  if (["capsule", "capsules", "cap", "caps"].includes(raw)) return "capsules";
+  if (["piece", "pieces", "count", "unit", "units"].includes(raw)) return "unit";
+  return raw;
+}
+
+function normalizeSkuTypeValue(value = "") {
+  const raw = safeString(value).toLowerCase();
+  if (["sample", "samples"].includes(raw)) return "sample";
+  if (["promo", "promotion", "event"].includes(raw)) return "promo";
+  if (["internal", "internal_use", "testing", "retention"].includes(raw)) return "internal";
+  return "retail";
+}
+
+function getAverageSourceItemWeightGForPackaging(source = {}) {
+  const direct = sanitizePositiveNumber(valueOrFallback(
+    source?.package?.averageWeightPerItemG,
+    source?.gramsPerUnit,
+    source?.labelMetadata?.perUnitGrams
+  ));
+  if (direct > 0) return direct;
+
+  const mg = sanitizePositiveNumber(valueOrFallback(source?.mgPerUnit, source?.potency?.mgPerUnit));
+  if (mg > 0) return roundNumber(mg / 1000, 3);
+
+  const totalWeightRaw = safeString(valueOrFallback(source?.totalWeight, source?.labelMetadata?.totalWeight));
+  const totalMatch = totalWeightRaw.match(/([0-9]+(?:\.[0-9]+)?)/);
+  const capsuleRaw = safeString(valueOrFallback(source?.capsuleCount, source?.labelMetadata?.capsuleCount, source?.initialQuantity));
+  const capsuleMatch = capsuleRaw.match(/([0-9]+(?:\.[0-9]+)?)/);
+  const totalWeight = totalMatch ? sanitizePositiveNumber(totalMatch[1]) : 0;
+  const capsuleCount = capsuleMatch ? sanitizePositiveNumber(capsuleMatch[1]) : 0;
+  if (totalWeight > 0 && capsuleCount > 0) return roundNumber(totalWeight / capsuleCount, 3);
+
+  return 0;
+}
+
+function estimatePackagingSourceQuantity({ packageSize = 0, packageSizeUnit = "", packageCount = 0, sourceUnit = "", capsulesPerPackage = 0, averageItemWeightG = 0 } = {}) {
+  const size = sanitizePositiveNumber(packageSize);
+  const count = sanitizePositiveNumber(packageCount);
+  const capsuleCount = sanitizePositiveNumber(capsulesPerPackage);
+  const avgG = sanitizePositiveNumber(averageItemWeightG);
+  const packageUnit = normalizePackageUnitValue(packageSizeUnit || "g");
+  const source = normalizePackageUnitValue(sourceUnit);
+  if (count <= 0) return 0;
+
+  if ((source === "unit" || source === "capsules") && capsuleCount > 0) return roundNumber(capsuleCount * count, 3);
+  if (size <= 0) return 0;
+  if (packageUnit === "g" && (source === "unit" || source === "capsules")) return 0;
+  if (packageUnit === "oz" && source === "g") return roundNumber(size * count * 28.349523125, 3);
+  if (packageUnit === "g" && source === "oz") return roundNumber((size * count) / 28.349523125, 3);
+  if (packageUnit === source) return roundNumber(size * count, 3);
+  if ((packageUnit === "capsules" || packageUnit === "unit") && (source === "unit" || source === "capsules")) {
+    return roundNumber(size * count, 3);
+  }
+
+  return roundNumber(size * count, 3);
+}
+function buildPackageLotCode({ baseCode = "", date = "", size = "", unit = "", count = "", suffix = "", skuType = "retail" } = {}) {
+  const safeBase = safeString(baseCode).replace(/[^a-z0-9-]/gi, "").replace(/^-+|-+$/g, "");
+  const safeDate = safeString(date || toLocalYYYYMMDD(new Date())).replaceAll("-", "").slice(4);
+  const safeSize = safeString(size).replace(".", "P").replace(/[^a-z0-9]/gi, "").toUpperCase();
+  const safeUnit = normalizePackageUnitValue(unit).replace(/[^a-z0-9]/gi, "").toUpperCase().slice(0, 3);
+  const safeCount = safeString(count).replace(/[^a-z0-9]/gi, "").toUpperCase();
+  const safeSuffix = safeString(suffix).replace(/[^a-z0-9]/gi, "").toUpperCase();
+  const safeSku = normalizeSkuTypeValue(skuType) === "sample" ? "SMP" : normalizeSkuTypeValue(skuType) === "promo" ? "PRO" : normalizeSkuTypeValue(skuType) === "internal" ? "INT" : "";
+  return [safeBase || "PKG", safeSku, safeDate, safeSize && safeUnit ? `${safeSize}${safeUnit}` : "PKG", safeCount ? `X${safeCount}` : "", safeSuffix].filter(Boolean).join("-").slice(0, 28);
+}
+
 function batchStatusValue(status = "") {
   const normalized = String(status || "").trim();
   return ["planned", "in_progress", "completed", "void", "archived"].includes(normalized)
@@ -1026,7 +1126,7 @@ export async function createExtractionBatch({
   const normalizedMethod = String(method || "").trim();
   const normalizedNotes = String(notes || "").trim();
   const normalizedOutputAmount = sanitizePositiveNumber(outputAmount);
-  const normalizedOutputUnit = String(outputUnit || "mL").trim() || "mL";
+  const normalizedOutputUnit = getCanonicalExtractionOutputUnit(normalizedExtractionType, outputUnit || "mL");
   const manualYieldPercent = sanitizePositiveNumber(outputYieldPercent);
 
   if (normalizedStatus === "completed" && normalizedOutputAmount <= 0) {
@@ -1278,7 +1378,6 @@ export async function finalizeExtractionBatchOutput({
     throw new Error("Enter an output amount greater than zero to create an extract lot.");
   }
 
-  const normalizedOutputUnit = String(outputUnit || "mL").trim() || "mL";
   const normalizedDate = date || toLocalYYYYMMDD(new Date());
   const manualYieldPercent = sanitizePositiveNumber(outputYieldPercent);
   const normalizedNotes = String(notes || "").trim();
@@ -1288,6 +1387,7 @@ export async function finalizeExtractionBatchOutput({
   if (!batchSnap.exists()) throw new Error("Extraction batch could not be found.");
 
   const batchData = batchSnap.data() || {};
+  const normalizedOutputUnit = getCanonicalExtractionOutputUnit(batchData?.extractionType, outputUnit || batchData?.outputUnit || "mL");
   if (String(batchData?.processType || "") !== "extraction") {
     throw new Error("Only extraction batches can create extract lots.");
   }
@@ -1439,6 +1539,13 @@ export async function createProductBatch({
   desiredMarginPercent,
   bottleSize,
   bottleSizeUnit,
+  packageSize,
+  packageSizeUnit,
+  packageCount,
+  packageUnitLabel,
+  totalPowderUsedG,
+  targetCapsuleFillG,
+  formulaIngredients,
 }) {
   if (!userId) throw new Error("Missing user.");
 
@@ -1459,18 +1566,71 @@ export async function createProductBatch({
   const normalizedMethod = safeString(method);
   const normalizedNotes = safeString(notes);
   const normalizedVariant = safeString(variant);
-  const normalizedOutputCount = Math.max(0, Math.floor(Number(outputCount) || 0));
+  const normalizedOutputCount = meta.outputUnit === "mL"
+    ? sanitizePositiveNumber(outputCount)
+    : Math.max(0, Math.floor(Number(outputCount) || 0));
+  const normalizedExpectedCandidate = meta.outputUnit === "mL"
+    ? sanitizePositiveNumber(expectedOutputCount)
+    : Math.floor(Number(expectedOutputCount) || 0);
   const normalizedExpectedOutputCount = Math.max(
     normalizedOutputCount,
-    Math.floor(Number(expectedOutputCount) || 0)
+    normalizedExpectedCandidate
   ) || normalizedOutputCount;
   const normalizedWasteQuantity = sanitizePositiveNumber(wasteQuantity);
   const normalizedWasteUnit = safeString(wasteUnit || meta.outputUnit) || meta.outputUnit;
   const normalizedWasteReason = safeString(wasteReason);
   const normalizedWasteNotes = safeString(wasteNotes);
-  const normalizedMgPerUnit = sanitizePositiveNumber(mgPerUnit);
+  let normalizedMgPerUnit = sanitizePositiveNumber(mgPerUnit);
   const normalizedBottleSize = sanitizePositiveNumber(bottleSize);
   const normalizedBottleSizeUnit = safeString(bottleSizeUnit || "mL") || "mL";
+  const normalizedPackageSize = sanitizePositiveNumber(packageSize);
+  const normalizedPackageSizeUnit = safeString(packageSizeUnit || (meta.key === "capsule" ? "capsules" : meta.outputUnit)) || meta.outputUnit;
+  const normalizedPackageCount = Math.max(0, Math.floor(Number(packageCount) || 0));
+  const normalizedPackageUnitLabel = safeString(packageUnitLabel || meta.pieceLabelPlural) || meta.pieceLabelPlural;
+  const normalizedTotalPowderUsedG = sanitizePositiveNumber(totalPowderUsedG);
+  const normalizedTargetCapsuleFillG = sanitizePositiveNumber(targetCapsuleFillG);
+  const normalizedFormulaIngredients = (Array.isArray(formulaIngredients) ? formulaIngredients : [])
+    .map((row) => {
+      const sourceUnit = safeString(row?.sourceUnit || row?.unit || "g") || "g";
+      const amountPerUnit = sanitizePositiveNumber(row?.amountPerUnit ?? row?.gramsPerCapsule);
+      const totalRequired = sanitizePositiveNumber(row?.totalRequired ?? row?.totalPowderG);
+      return {
+        ingredientName: safeString(row?.ingredientName || row?.name),
+        sourceLotId: safeString(row?.sourceLotId),
+        sourceLotName: safeString(row?.sourceLotName),
+        sourceUnit,
+        amountPerUnit,
+        gramsPerCapsule: meta.key === "capsule" && sourceUnit.toLowerCase() === "g" ? amountPerUnit : 0,
+        percent: sanitizePositiveNumber(row?.percent),
+        totalRequired,
+        totalPowderG: sourceUnit.toLowerCase() === "g" ? totalRequired : 0,
+        unit: sourceUnit,
+      };
+    })
+    .filter((row) => row.ingredientName || row.sourceLotId || row.amountPerUnit > 0 || row.totalRequired > 0);
+  const normalizedActualAverageCapsuleWeightG = meta.key === "capsule" && normalizedOutputCount > 0
+    ? sanitizePositiveNumber(
+        normalizedTotalPowderUsedG > 0
+          ? normalizedTotalPowderUsedG / normalizedOutputCount
+          : normalizedMgPerUnit > 0
+          ? normalizedMgPerUnit / 1000
+          : normalizedTargetCapsuleFillG
+      )
+    : 0;
+  if (meta.key === "capsule" && normalizedMgPerUnit <= 0 && normalizedActualAverageCapsuleWeightG > 0) {
+    normalizedMgPerUnit = sanitizePositiveNumber(normalizedActualAverageCapsuleWeightG * 1000);
+  }
+  const formulaPerUnitByUnit = normalizedFormulaIngredients.reduce((acc, row) => {
+    const unit = safeString(row.sourceUnit || row.unit || "g") || "g";
+    acc[unit] = roundNumber((acc[unit] || 0) + sanitizePositiveNumber(row.amountPerUnit), 5);
+    return acc;
+  }, {});
+  const formulaBatchTotalsByUnit = normalizedFormulaIngredients.reduce((acc, row) => {
+    const unit = safeString(row.sourceUnit || row.unit || "g") || "g";
+    acc[unit] = roundNumber((acc[unit] || 0) + sanitizePositiveNumber(row.totalRequired), 3);
+    return acc;
+  }, {});
+  const packageSizeLabel = normalizedPackageSize > 0 ? `${normalizedPackageSize} ${normalizedPackageSizeUnit}` : "";
   const normalizedDesiredMarginPercent =
     sanitizePositiveNumber(desiredMarginPercent) || MSRP_DEFAULT_MARGIN_PERCENT;
 
@@ -1507,6 +1667,7 @@ export async function createProductBatch({
     const sourceStrains = [];
     let totalInputQuantity = 0;
     let inputMaterialCostTotal = 0;
+    const lotUpdates = [];
 
     for (const entry of lotSnapshots) {
       const lot = entry.snap.data() || {};
@@ -1523,12 +1684,15 @@ export async function createProductBatch({
 
       const nextRemaining = sanitizePositiveNumber(remaining - entry.quantity);
       const nextAllocated = sanitizePositiveNumber((Number(lot?.allocatedQuantity) || 0) + entry.quantity);
-      tx.update(entry.ref, {
-        remainingQuantity: nextRemaining,
-        allocatedQuantity: nextAllocated,
-        status: nextLotStatus(nextRemaining, lotInitial(lot)),
-        updatedDate: normalizedDate,
-        updatedAt: serverTimestamp(),
+      lotUpdates.push({
+        ref: entry.ref,
+        patch: {
+          remainingQuantity: nextRemaining,
+          allocatedQuantity: nextAllocated,
+          status: nextLotStatus(nextRemaining, lotInitial(lot)),
+          updatedDate: normalizedDate,
+          updatedAt: serverTimestamp(),
+        },
       });
 
       const growIds = extractGrowIdsFromLot(lot);
@@ -1577,6 +1741,12 @@ export async function createProductBatch({
       productType: meta.key,
       date: normalizedDate,
     });
+    const packageLotCode = buildLotCode({
+      productType: meta.key,
+      date: normalizedDate,
+      variant: normalizedVariant || uniqueStrains[0] || meta.key,
+      lotId: outputLotRef?.id || batchRef.id,
+    });
 
     const supplyPlan = await buildRecipeSupplyUsagePlanFromTransaction({
       tx,
@@ -1592,6 +1762,11 @@ export async function createProductBatch({
         .join(", ");
       throw new Error(`Not enough supply inventory for this batch: ${labels}.`);
     }
+
+    lotUpdates.forEach((entry) => {
+      tx.update(entry.ref, entry.patch);
+    });
+
     applyRecipeSupplyUsagePlan({
       tx,
       userId,
@@ -1652,8 +1827,42 @@ export async function createProductBatch({
       method: normalizedMethod,
       notes: normalizedNotes,
       mgPerUnit: normalizedMgPerUnit,
+      capsulesMade: meta.key === "capsule" ? normalizedOutputCount : 0,
+      totalPowderUsedG: normalizedTotalPowderUsedG,
+      actualAverageCapsuleWeightG: normalizedActualAverageCapsuleWeightG,
+      targetCapsuleFillG: normalizedTargetCapsuleFillG,
+      formulaIngredients: normalizedFormulaIngredients,
+      formulaTotals: {
+        outputQuantity: normalizedOutputCount,
+        outputUnit: meta.outputUnit,
+        perUnitByUnit: formulaPerUnitByUnit,
+        batchTotalsByUnit: formulaBatchTotalsByUnit,
+        gramsPerCapsule: meta.key === "capsule" ? normalizedActualAverageCapsuleWeightG : 0,
+        totalPowderG: normalizedTotalPowderUsedG,
+        targetCapsuleFillG: meta.key === "capsule" ? normalizedTargetCapsuleFillG : 0,
+      },
+      productionMetrics: {
+        outputQuantity: normalizedOutputCount,
+        outputUnit: meta.outputUnit,
+        totalPowderUsedG: normalizedTotalPowderUsedG,
+        mgPerUnit: normalizedMgPerUnit,
+        capsulesMade: meta.key === "capsule" ? normalizedOutputCount : 0,
+        actualAverageCapsuleWeightG: normalizedActualAverageCapsuleWeightG,
+        formulaPerUnitByUnit,
+        formulaBatchTotalsByUnit,
+      },
+      analyticsHooks: {
+        actualAvgCapsuleWeightG: normalizedActualAverageCapsuleWeightG,
+        displayAvgCapsuleWeightG: normalizedActualAverageCapsuleWeightG,
+        materialCostPerCapsule: meta.key === "capsule" ? outputUnitCost : 0,
+      },
       bottleSize: normalizedBottleSize,
       bottleSizeUnit: normalizedBottleSizeUnit,
+      packageSize: normalizedPackageSize,
+      packageSizeUnit: normalizedPackageSizeUnit,
+      packageSizeLabel,
+      packageCount: normalizedPackageCount,
+      packageUnitLabel: normalizedPackageUnitLabel,
       inputLots: enrichedInputs,
       outputLots: outputLotRef
         ? [{
@@ -1662,6 +1871,11 @@ export async function createProductBatch({
             name: finalLotName,
             quantity: normalizedOutputCount,
             unit: meta.outputUnit,
+            packageSize: normalizedPackageSize,
+            packageSizeUnit: normalizedPackageSizeUnit,
+            packageSizeLabel,
+            packageCount: normalizedPackageCount,
+            packageUnitLabel: normalizedPackageUnitLabel,
           }]
         : [],
       sourceGrowIds: uniqueGrowIds,
@@ -1758,8 +1972,53 @@ export async function createProductBatch({
         remainingQuantity: normalizedOutputCount,
         yieldMetrics,
         mgPerUnit: normalizedMgPerUnit,
+        capsulesMade: meta.key === "capsule" ? normalizedOutputCount : 0,
+        totalPowderUsedG: normalizedTotalPowderUsedG,
+        actualAverageCapsuleWeightG: normalizedActualAverageCapsuleWeightG,
+        targetCapsuleFillG: normalizedTargetCapsuleFillG,
+        formulaIngredients: normalizedFormulaIngredients,
+        formulaTotals: {
+          outputQuantity: normalizedOutputCount,
+          outputUnit: meta.outputUnit,
+          perUnitByUnit: formulaPerUnitByUnit,
+          batchTotalsByUnit: formulaBatchTotalsByUnit,
+          gramsPerCapsule: meta.key === "capsule" ? normalizedActualAverageCapsuleWeightG : 0,
+          totalPowderG: normalizedTotalPowderUsedG,
+          targetCapsuleFillG: meta.key === "capsule" ? normalizedTargetCapsuleFillG : 0,
+        },
+        productionMetrics: {
+          outputQuantity: normalizedOutputCount,
+          outputUnit: meta.outputUnit,
+          totalPowderUsedG: normalizedTotalPowderUsedG,
+          mgPerUnit: normalizedMgPerUnit,
+          capsulesMade: meta.key === "capsule" ? normalizedOutputCount : 0,
+          actualAverageCapsuleWeightG: normalizedActualAverageCapsuleWeightG,
+          formulaPerUnitByUnit,
+          formulaBatchTotalsByUnit,
+        },
+        analyticsHooks: {
+          actualAvgCapsuleWeightG: normalizedActualAverageCapsuleWeightG,
+          displayAvgCapsuleWeightG: normalizedActualAverageCapsuleWeightG,
+          materialCostPerCapsule: meta.key === "capsule" ? outputUnitCost : 0,
+        },
         bottleSize: normalizedBottleSize,
         bottleSizeUnit: normalizedBottleSizeUnit,
+        packageSize: normalizedPackageSize,
+        packageSizeUnit: normalizedPackageSizeUnit,
+        packageSizeLabel,
+        packageCount: normalizedPackageCount,
+        packageUnitLabel: normalizedPackageUnitLabel,
+        sellableUnitLabel: normalizedPackageUnitLabel,
+        salesSkuKey: [meta.key, uniqueStrains.join("+"), normalizedVariant, packageSizeLabel || normalizedPackageUnitLabel].filter(Boolean).join("|").toLowerCase(),
+        lotCode: packageLotCode,
+        batchLot: packageLotCode,
+        shelfLife: {
+          madeOn: normalizedDate,
+          bestBy: defaultBestByDate(normalizedDate),
+          expirationDate: defaultBestByDate(normalizedDate),
+          storageCondition: "cool_dry_dark",
+          storageNotes: "Store in a cool, dry place away from heat, light, and moisture.",
+        },
         pricing,
         unitCost: outputUnitCost,
         costPerUnit: outputUnitCost,
@@ -1831,6 +2090,756 @@ export async function createProductBatch({
   });
 }
 
+
+export async function finalizeProductBatchOutput({
+  userId,
+  batchId,
+  date,
+  notes,
+  outputCount: outputCountOverride,
+  totalPowderUsedG: totalPowderUsedGOverride,
+  targetCapsuleFillG: targetCapsuleFillGOverride,
+  mgPerUnit: mgPerUnitOverride,
+} = {}) {
+  if (!userId) throw new Error("Missing user.");
+  if (!batchId) throw new Error("Missing production batch.");
+
+  const normalizedDate = safeString(date) || toLocalYYYYMMDD(new Date());
+  const normalizedNotes = safeString(notes);
+
+  const batchRef = doc(db, "users", userId, "processBatches", batchId);
+  const batchSnap = await getDoc(batchRef);
+    if (!batchSnap.exists()) throw new Error("Production batch could not be found.");
+
+    const batchData = batchSnap.data() || {};
+    if (!isProductionBatch(batchData)) {
+      throw new Error("Only production batches can create finished inventory output.");
+    }
+    if (batchData?.outputLotId) {
+      throw new Error("This production batch already has a finished inventory lot.");
+    }
+
+    const meta = getProductTypeMeta(batchData?.productType || "capsule");
+    const parsedNameOutputCount = Math.floor(
+      Number(String(batchData?.name || "").match(/(\d+)\s*(?:count|capsule|capsules)/i)?.[1]) || 0
+    );
+    const rawOutputQuantity = sanitizePositiveNumber(
+      valueOrFallback(
+        outputCountOverride,
+        batchData?.outputCount,
+        batchData?.actualOutputCount,
+        batchData?.capsulesMade,
+        batchData?.expectedOutputCount,
+        batchData?.yieldMetrics?.actualQuantity,
+        batchData?.yieldMetrics?.expectedQuantity,
+        parsedNameOutputCount
+      )
+    );
+    const outputCount = Math.max(
+      0,
+      meta.outputUnit === "mL" ? roundNumber(rawOutputQuantity, 3) : Math.floor(rawOutputQuantity)
+    );
+    if (outputCount <= 0) {
+      throw new Error("Enter the finished output quantity before creating finished inventory output.");
+    }
+
+    const inputLots = safeArray(batchData?.inputLots);
+    const sourceLotIds = uniqueStrings(inputLots.map((input) => input?.lotId));
+    const sourceGrowIds = uniqueStrings([
+      ...safeArray(batchData?.sourceGrowIds),
+      ...inputLots.flatMap((input) => safeArray(input?.originGrowIds)),
+      ...inputLots.map((input) => input?.sourceGrowId),
+    ]);
+    const originGrowIds = uniqueStrings([
+      ...safeArray(batchData?.originGrowIds),
+      ...inputLots.flatMap((input) => safeArray(input?.originGrowIds)),
+    ]);
+    const strains = uniqueStrings([
+      ...safeArray(batchData?.strains),
+      ...inputLots.map((input) => input?.strain),
+    ]);
+
+    const inferredPowderFromInputs = safeArray(batchData?.inputLots)
+      .filter((lot) => normalizePackageUnitValue(lot?.unit || "g") === "g")
+      .reduce((sum, lot) => sum + sanitizePositiveNumber(lot?.quantity), 0);
+    const totalPowderUsedG = sanitizePositiveNumber(
+      valueOrFallback(totalPowderUsedGOverride, batchData?.totalPowderUsedG, inferredPowderFromInputs)
+    );
+    const actualAverageCapsuleWeightG =
+      meta.key === "capsule" && outputCount > 0 && totalPowderUsedG > 0
+        ? roundNumber(totalPowderUsedG / outputCount, 3)
+        : sanitizePositiveNumber(batchData?.actualAverageCapsuleWeightG);
+    const targetCapsuleFillG = sanitizePositiveNumber(
+      valueOrFallback(targetCapsuleFillGOverride, batchData?.targetCapsuleFillG, actualAverageCapsuleWeightG)
+    );
+    const mgPerUnit = sanitizePositiveNumber(
+      valueOrFallback(
+        mgPerUnitOverride,
+        batchData?.mgPerUnit,
+        actualAverageCapsuleWeightG > 0 ? actualAverageCapsuleWeightG * 1000 : null
+      )
+    );
+
+    const totalBatchCost = sanitizeCurrency(
+      valueOrFallback(batchData?.batchTotalCost, batchData?.totalCost, batchData?.costs?.batchTotalCost)
+    );
+    const outputUnitCost = outputCount > 0 ? roundCurrency(totalBatchCost / outputCount) : 0;
+    const outputLotRef = doc(collection(db, "users", userId, "materialLots"));
+    const finalBatchName = safeString(batchData?.name) || buildProductBatchName({
+      productType: meta.key,
+      date: normalizedDate,
+      lots: inputLots,
+    });
+    const finalLotName = buildProductLotName({
+      batchName: finalBatchName,
+      productType: meta.key,
+      date: normalizedDate,
+    });
+    const lotCode = buildLotCode({
+      productType: meta.key,
+      date: normalizedDate,
+      variant: batchData?.variant || strains[0] || meta.key,
+      lotId: outputLotRef.id,
+    });
+
+    const yieldMetrics = buildYieldMetricsSnapshot({
+      expectedQuantity: valueOrFallback(batchData?.expectedOutputCount, outputCount),
+      expectedUnit: meta.outputUnit,
+      actualQuantity: outputCount,
+      actualUnit: meta.outputUnit,
+      wasteQuantity: batchData?.yieldMetrics?.wasteQuantity,
+      wasteUnit: batchData?.yieldMetrics?.wasteUnit || meta.outputUnit,
+      wasteReason: batchData?.yieldMetrics?.wasteReason,
+      wasteNotes: batchData?.yieldMetrics?.wasteNotes,
+    });
+
+    const finishedLot = {
+      lotType: meta.lotType,
+      inventoryCategory: "finished_goods",
+      processType: "production",
+      processCategory: "production",
+      manufacturingStage: "production",
+      status: "available",
+      sourceType: "batch",
+      sourceBatchId: batchRef.id,
+      sourceLotIds,
+      sourceGrowId: sourceGrowIds[0] || null,
+      sourceGrowIds,
+      originGrowIds,
+      name: finalLotName,
+      batchName: finalBatchName,
+      productType: meta.key,
+      finishedGoodType: meta.key,
+      variant: safeString(batchData?.variant),
+      method: safeString(batchData?.method),
+      strain: strains.join(", "),
+      strains,
+      species: safeString(batchData?.species),
+      unit: meta.outputUnit,
+      unitLabel: meta.pieceLabelPlural,
+      initialQuantity: outputCount,
+      allocatedQuantity: 0,
+      remainingQuantity: outputCount,
+      yieldMetrics,
+      mgPerUnit,
+      gramsPerUnit: actualAverageCapsuleWeightG || sanitizePositiveNumber(batchData?.gramsPerUnit),
+      capsulesMade: meta.key === "capsule" ? outputCount : sanitizePositiveNumber(batchData?.capsulesMade),
+      totalPowderUsedG,
+      actualAverageCapsuleWeightG,
+      displayAverageCapsuleWeightG: sanitizePositiveNumber(valueOrFallback(batchData?.displayAverageCapsuleWeightG, actualAverageCapsuleWeightG)),
+      targetCapsuleFillG,
+      formulaIngredients: safeArray(batchData?.formulaIngredients).map((row) => ({ ...row })),
+      formulaTotals: {
+        ...(batchData?.formulaTotals && typeof batchData.formulaTotals === "object" ? batchData.formulaTotals : {}),
+        ...(meta.key === "capsule"
+          ? {
+              gramsPerCapsule: actualAverageCapsuleWeightG,
+              totalPowderG: totalPowderUsedG,
+              targetCapsuleFillG,
+            }
+          : {}),
+      },
+      productionMetrics: {
+        ...(batchData?.productionMetrics && typeof batchData.productionMetrics === "object" ? batchData.productionMetrics : {}),
+        totalPowderUsedG,
+        capsulesMade: meta.key === "capsule" ? outputCount : sanitizePositiveNumber(batchData?.capsulesMade),
+        actualAverageCapsuleWeightG,
+        displayAverageCapsuleWeightG: sanitizePositiveNumber(valueOrFallback(batchData?.displayAverageCapsuleWeightG, actualAverageCapsuleWeightG)),
+        targetCapsuleFillG,
+        materialCostPerCapsule: meta.key === "capsule" ? outputUnitCost : 0,
+      },
+      analyticsHooks: {
+        ...(batchData?.analyticsHooks && typeof batchData.analyticsHooks === "object" ? batchData.analyticsHooks : {}),
+        actualAvgCapsuleWeightG: actualAverageCapsuleWeightG,
+        displayAvgCapsuleWeightG: sanitizePositiveNumber(valueOrFallback(batchData?.displayAverageCapsuleWeightG, actualAverageCapsuleWeightG)),
+        materialCostPerCapsule: meta.key === "capsule" ? outputUnitCost : 0,
+      },
+      lotCode,
+      batchLot: lotCode,
+      shelfLife: {
+        madeOn: normalizedDate,
+        bestBy: defaultBestByDate(normalizedDate),
+        expirationDate: defaultBestByDate(normalizedDate),
+        storageCondition: "cool_dry_dark",
+        storageNotes: "Store in a cool, dry place away from heat, light, and moisture.",
+      },
+      unitCost: outputUnitCost,
+      costPerUnit: outputUnitCost,
+      batchTotalCost: totalBatchCost,
+      inputMaterialCostTotal: sanitizeCurrency(batchData?.inputMaterialCostTotal),
+      recipeId: batchData?.recipeId || null,
+      recipeName: batchData?.recipeName || null,
+      recipeYield: sanitizePositiveNumber(batchData?.recipeYield),
+      recipeItems: safeArray(batchData?.recipeItems).map((row) => ({ ...row })),
+      recipeCost: sanitizeCurrency(valueOrFallback(batchData?.recipeCost, batchData?.costs?.recipeCost)),
+      recipeCostBreakdown: batchData?.recipeCostBreakdown || null,
+      recipeSupplyUsage: safeArray(batchData?.recipeSupplyUsage).map((row) => ({ ...row })),
+      recipeSupplySummary: batchData?.recipeSupplySummary || null,
+      packagingCost: sanitizeCurrency(batchData?.packagingCost),
+      laborCost: sanitizeCurrency(batchData?.laborCost),
+      overheadCost: sanitizeCurrency(batchData?.overheadCost),
+      otherCost: sanitizeCurrency(batchData?.otherCost),
+      directCost: sanitizeCurrency(batchData?.directCost),
+      traceability: buildTraceabilitySnapshot({
+        sourceLotIds,
+        sourceBatchIds: [batchRef.id],
+        sourceGrowIds,
+        originGrowIds,
+        rootLotId: outputLotRef.id,
+        operationType: "production_output",
+        processType: "production",
+      }),
+      costs: {
+        ...(batchData?.costs && typeof batchData.costs === "object" ? batchData.costs : {}),
+        batchTotalCost: totalBatchCost,
+        totalCost: totalBatchCost,
+        unitCost: outputUnitCost,
+      },
+      notes: [safeString(batchData?.notes), normalizedNotes].filter(Boolean).join("\n\n"),
+      createdDate: normalizedDate,
+      updatedDate: normalizedDate,
+      createdAt: serverTimestamp(),
+      updatedAt: serverTimestamp(),
+    };
+
+  const batchWriter = writeBatch(db);
+
+  batchWriter.update(batchRef, {
+      status: "completed",
+      outputCount,
+      actualOutputCount: outputCount,
+      expectedOutputCount: outputCount,
+      outputUnit: meta.outputUnit,
+      mgPerUnit,
+      capsulesMade: meta.key === "capsule" ? outputCount : sanitizePositiveNumber(batchData?.capsulesMade),
+      totalPowderUsedG,
+      actualAverageCapsuleWeightG,
+      displayAverageCapsuleWeightG: sanitizePositiveNumber(valueOrFallback(batchData?.displayAverageCapsuleWeightG, actualAverageCapsuleWeightG)),
+      targetCapsuleFillG,
+      formulaTotals: {
+        ...(batchData?.formulaTotals && typeof batchData.formulaTotals === "object" ? batchData.formulaTotals : {}),
+        ...(meta.key === "capsule"
+          ? {
+              gramsPerCapsule: actualAverageCapsuleWeightG,
+              totalPowderG: totalPowderUsedG,
+              targetCapsuleFillG,
+            }
+          : {}),
+      },
+      productionMetrics: {
+        ...(batchData?.productionMetrics && typeof batchData.productionMetrics === "object" ? batchData.productionMetrics : {}),
+        totalPowderUsedG,
+        capsulesMade: meta.key === "capsule" ? outputCount : sanitizePositiveNumber(batchData?.capsulesMade),
+        actualAverageCapsuleWeightG,
+        displayAverageCapsuleWeightG: sanitizePositiveNumber(valueOrFallback(batchData?.displayAverageCapsuleWeightG, actualAverageCapsuleWeightG)),
+        targetCapsuleFillG,
+        materialCostPerCapsule: meta.key === "capsule" ? outputUnitCost : 0,
+      },
+      analyticsHooks: {
+        ...(batchData?.analyticsHooks && typeof batchData.analyticsHooks === "object" ? batchData.analyticsHooks : {}),
+        actualAvgCapsuleWeightG: actualAverageCapsuleWeightG,
+        displayAvgCapsuleWeightG: sanitizePositiveNumber(valueOrFallback(batchData?.displayAverageCapsuleWeightG, actualAverageCapsuleWeightG)),
+        materialCostPerCapsule: meta.key === "capsule" ? outputUnitCost : 0,
+      },
+      outputLotId: outputLotRef.id,
+      outputLots: [{
+        lotId: outputLotRef.id,
+        lotType: meta.lotType,
+        name: finalLotName,
+        quantity: outputCount,
+        unit: meta.outputUnit,
+      }],
+      batchTotalCost: totalBatchCost,
+      unitCost: outputUnitCost,
+      yieldMetrics,
+      updatedDate: normalizedDate,
+      updatedAt: serverTimestamp(),
+    });
+
+  batchWriter.set(outputLotRef, finishedLot);
+
+  const movementRef = doc(collection(db, "users", userId, "inventoryMovements"));
+  batchWriter.set(movementRef, {
+      movementType: "produce_lot",
+      lotId: outputLotRef.id,
+      batchId: batchRef.id,
+      processType: "production",
+      direction: "in",
+      sourceGrowId: sourceGrowIds[0] || null,
+      sourceType: "batch",
+      quantity: outputCount,
+      unit: meta.outputUnit,
+      date: normalizedDate,
+      note: normalizedNotes || `${meta.label} lot created from completed production batch ${finalBatchName}.`,
+      createdAt: serverTimestamp(),
+    });
+
+  await batchWriter.commit();
+
+  return {
+    created: true,
+    batchId: batchRef.id,
+    outputLotId: outputLotRef.id,
+    name: finalBatchName,
+    outputCount,
+    productType: meta.key,
+  };
+}
+
+export async function createPackagedFinishedLot({
+  userId,
+  sourceLotId,
+  skuType,
+  packageSize,
+  packageSizeUnit,
+  packageCount,
+  sourceQuantity,
+  capsulesPerPackage,
+  packageUnitLabel,
+  lotCode,
+  pricePerUnit,
+  msrpPerUnit,
+  desiredMarginPercent,
+  packageRecipeId,
+  packageRecipeName,
+  packageRecipeCostPerPackage,
+  packageRecipeCostTotal,
+  packagingCostPerPackage,
+  laborCostPerPackage,
+  otherCostPerPackage,
+  date,
+  notes,
+}) {
+  if (!userId) throw new Error("Missing user.");
+  if (!sourceLotId) throw new Error("Select a finished source lot to package.");
+
+  const normalizedDate = safeString(date) || toLocalYYYYMMDD(new Date());
+  const normalizedSkuType = normalizeSkuTypeValue(skuType);
+  const normalizedPackageSize = sanitizePositiveNumber(packageSize);
+  const normalizedPackageUnit = normalizePackageUnitValue(packageSizeUnit || "g");
+  const normalizedPackageCount = Math.floor(sanitizePositiveNumber(packageCount));
+  const normalizedCapsulesPerPackage = Math.floor(sanitizePositiveNumber(capsulesPerPackage));
+  const normalizedLabel = safeString(packageUnitLabel) || "packages";
+  const normalizedNotes = safeString(notes);
+  const normalizedPrice = sanitizeCurrency(pricePerUnit);
+  const normalizedMsrp = sanitizeCurrency(msrpPerUnit);
+  const normalizedDesiredMarginPercent = sanitizePositiveNumber(desiredMarginPercent) || MSRP_DEFAULT_MARGIN_PERCENT;
+  const normalizedPackageRecipeId = safeString(packageRecipeId);
+  const normalizedPackageRecipeName = safeString(packageRecipeName);
+  const normalizedPackageRecipeCostPerPackage = sanitizeCurrency(packageRecipeCostPerPackage);
+  const normalizedPackageRecipeCostTotal = sanitizeCurrency(packageRecipeCostTotal);
+  const normalizedPackagingCostPerPackage = sanitizeCurrency(packagingCostPerPackage);
+  const normalizedLaborCostPerPackage = sanitizeCurrency(laborCostPerPackage);
+  const normalizedOtherCostPerPackage = sanitizeCurrency(otherCostPerPackage);
+
+  if (normalizedPackageSize <= 0) throw new Error("Enter a package size greater than zero.");
+  if (normalizedPackageCount <= 0) throw new Error("Enter how many packages to create.");
+
+  return runTransaction(db, async (tx) => {
+    const sourceRef = doc(db, "users", userId, "materialLots", sourceLotId);
+    const sourceSnap = await tx.get(sourceRef);
+    if (!sourceSnap.exists()) throw new Error("Finished source lot could not be found.");
+
+    const source = sourceSnap.data() || {};
+    if (!isFinishedGoodsLot(source)) {
+      throw new Error("Only finished inventory lots can be packaged for sale.");
+    }
+
+    const available = getLotAvailableQuantity(source);
+    const averageItemWeightG = getAverageSourceItemWeightGForPackaging(source);
+    const sourceUnit = normalizePackageUnitValue(source?.unit || "count");
+    const countBasedSource = sourceUnit === "unit" || sourceUnit === "capsules";
+
+    if (countBasedSource && normalizedPackageUnit === "g" && normalizedCapsulesPerPackage <= 0) {
+      throw new Error("Enter capsules per package so packaging can calculate source capsules used and approximate dose per capsule.");
+    }
+
+    const estimatedSourceQty = estimatePackagingSourceQuantity({
+      packageSize: normalizedPackageSize,
+      packageSizeUnit: normalizedPackageUnit,
+      packageCount: normalizedPackageCount,
+      sourceUnit: source?.unit || "count",
+      capsulesPerPackage: normalizedCapsulesPerPackage,
+      averageItemWeightG,
+    });
+    const requestedSourceQty = countBasedSource && normalizedPackageUnit === "g"
+      ? estimatedSourceQty
+      : sanitizePositiveNumber(sourceQuantity) > 0
+        ? sanitizePositiveNumber(sourceQuantity)
+        : estimatedSourceQty;
+
+    if (requestedSourceQty <= 0) {
+      throw new Error("Enter package count and capsules per package so the source quantity can be calculated.");
+    }
+    if (requestedSourceQty > available) {
+      throw new Error(`${source?.name || sourceLotId} only has ${formatQty(available, source?.unit || "count", getQtyDigitsForUnit(source?.unit || "count"))} available.`);
+    }
+
+    const meta = getProductTypeMeta(source?.productType || source?.finishedGoodType || source?.lotType);
+    const childRef = doc(collection(db, "users", userId, "materialLots"));
+    const remainingBefore = lotRemaining(source);
+    const nextRemaining = sanitizePositiveNumber(remainingBefore - requestedSourceQty);
+    const nextAllocated = sanitizePositiveNumber((Number(source?.allocatedQuantity) || 0) + requestedSourceQty);
+    const unitCost = getLotUnitCost(source);
+    const packageMaterialCostPerPackage = normalizedPackageCount > 0 ? roundCurrency((unitCost * requestedSourceQty) / normalizedPackageCount) : 0;
+    const packageRecipeCostPerPackageResolved = normalizedPackageRecipeCostPerPackage > 0
+      ? normalizedPackageRecipeCostPerPackage
+      : normalizedPackageRecipeCostTotal > 0 && normalizedPackageCount > 0
+        ? roundCurrency(normalizedPackageRecipeCostTotal / normalizedPackageCount)
+        : 0;
+    const packagingRecipeCostTotal = roundCurrency(packageRecipeCostPerPackageResolved * normalizedPackageCount);
+    const extraCostPerPackage = roundCurrency(normalizedPackagingCostPerPackage + normalizedLaborCostPerPackage + normalizedOtherCostPerPackage + packageRecipeCostPerPackageResolved);
+    const packageUnitCost = roundCurrency(packageMaterialCostPerPackage + extraCostPerPackage);
+    const packageMaterialCostTotal = roundCurrency(packageMaterialCostPerPackage * normalizedPackageCount);
+    const packagingCostTotal = roundCurrency(normalizedPackagingCostPerPackage * normalizedPackageCount);
+    const laborCostTotal = roundCurrency(normalizedLaborCostPerPackage * normalizedPackageCount);
+    const otherCostTotal = roundCurrency(normalizedOtherCostPerPackage * normalizedPackageCount);
+    const baseCode = safeString(source?.lotCode || source?.batchLot || buildLotCode({ productType: meta.key, date: normalizedDate, variant: source?.variant || source?.variantTag, lotId: sourceLotId }));
+    const targetPackageSizeLabel = `${normalizedPackageSize} ${normalizedPackageUnit}`.trim();
+    tx.update(sourceRef, {
+      remainingQuantity: nextRemaining,
+      allocatedQuantity: nextAllocated,
+      status: nextLotStatus(nextRemaining, lotInitial(source)),
+      updatedDate: normalizedDate,
+      updatedAt: serverTimestamp(),
+    });
+
+    const childSourceGrowIds = uniqueStrings([
+      ...safeArray(source?.sourceGrowIds),
+      ...extractGrowIdsFromLot(source),
+    ]);
+    const childOriginGrowIds = uniqueStrings([
+      ...safeArray(source?.originGrowIds),
+      ...extractGrowIdsFromLot(source),
+    ]);
+    const parentTraceability = getTraceabilitySnapshot(source) || {};
+    const sourceLotIds = uniqueStrings([sourceLotId, ...safeArray(parentTraceability.sourceLotIds), ...safeArray(source?.sourceLotIds)]);
+    const sourceBatchIds = uniqueStrings([source?.sourceBatchId, ...safeArray(parentTraceability.sourceBatchIds)]);
+
+    const sourceLabelMetadata = source?.labelMetadata && typeof source.labelMetadata === "object" ? source.labelMetadata : {};
+    const gramsPerUnit = averageItemWeightG;
+    const estimatedCapsulesPerPackage = normalizedCapsulesPerPackage > 0
+      ? normalizedCapsulesPerPackage
+      : normalizedPackageUnit === "g" && gramsPerUnit > 0
+        ? Math.ceil(normalizedPackageSize / gramsPerUnit)
+        : (normalizedPackageUnit === "capsules" || normalizedPackageUnit === "unit")
+          ? normalizedPackageSize
+          : 0;
+    const isCapsulePackage = meta.key === "capsule";
+    const actualPackageWeightG = isCapsulePackage && estimatedCapsulesPerPackage > 0 && gramsPerUnit > 0
+      ? roundNumber(estimatedCapsulesPerPackage * gramsPerUnit, 3)
+      : normalizedPackageUnit === "g"
+        ? roundNumber(normalizedPackageSize, 3)
+        : 0;
+    const effectivePackageSize = isCapsulePackage && actualPackageWeightG > 0
+      ? actualPackageWeightG
+      : normalizedPackageSize;
+    const effectivePackageUnit = isCapsulePackage && actualPackageWeightG > 0
+      ? "g"
+      : normalizedPackageUnit;
+    const packageSizeLabel = isCapsulePackage && estimatedCapsulesPerPackage > 0 && actualPackageWeightG > 0
+      ? `${estimatedCapsulesPerPackage} capsules · ≈ ${actualPackageWeightG} g`
+      : `${effectivePackageSize} ${effectivePackageUnit}`.trim();
+    const finalLotCode = safeString(lotCode) || buildPackageLotCode({
+      baseCode,
+      date: normalizedDate,
+      size: effectivePackageSize,
+      unit: effectivePackageUnit,
+      count: normalizedPackageCount,
+      suffix: childRef.id.slice(-4),
+      skuType: normalizedSkuType,
+    });
+    const skuTypeLabel = normalizedSkuType === "sample" ? "Sample" : normalizedSkuType === "promo" ? "Promo" : normalizedSkuType === "internal" ? "Internal" : "Retail";
+    const childName = `${source?.name || source?.batchName || meta.label} ${skuTypeLabel} ${packageSizeLabel} Package Run ${normalizedDate}`.trim();
+    let packageTotalWeightLabel = safeString(source?.totalWeight);
+    if (actualPackageWeightG > 0) packageTotalWeightLabel = `${actualPackageWeightG} g`;
+    else if (normalizedPackageUnit === "g") packageTotalWeightLabel = `${normalizedPackageSize} g`;
+    else if (normalizedPackageUnit === "oz") packageTotalWeightLabel = `${normalizedPackageSize} oz`;
+    const packageCapsuleCountLabel = estimatedCapsulesPerPackage > 0
+      ? `${estimatedCapsulesPerPackage} capsules`
+      : safeString(source?.capsuleCount);
+    const averagePackageUnitWeightG = isCapsulePackage && gramsPerUnit > 0
+      ? roundNumber(gramsPerUnit, 3)
+      : estimatedCapsulesPerPackage > 0 && actualPackageWeightG > 0
+        ? roundNumber(actualPackageWeightG / estimatedCapsulesPerPackage, 3)
+        : gramsPerUnit;
+    const approximatePerCapsuleLabel = isCapsulePackage && averagePackageUnitWeightG > 0
+      ? `≈ ${roundNumber(averagePackageUnitWeightG, 3)} g`
+      : safeString(sourceLabelMetadata?.perCapsule || source?.perCapsule);
+    const sourceMaterialCostTotal = roundCurrency(unitCost * requestedSourceQty);
+    const suggestedMsrpPerPackage = normalizedMsrp > 0 ? normalizedMsrp : deriveMsrpFromUnitCost(packageUnitCost, normalizedDesiredMarginPercent);
+    const defaultSalePricePerPackage = normalizedPrice > 0
+      ? normalizedPrice
+      : normalizedSkuType === "retail"
+        ? suggestedMsrpPerPackage
+        : 0;
+    const pricing = buildPricingSnapshot({
+      unitCost: packageUnitCost,
+      quantity: normalizedPackageCount,
+      pricePerUnit: defaultSalePricePerPackage,
+      msrpPerUnit: suggestedMsrpPerPackage,
+      desiredMarginPercent: normalizedDesiredMarginPercent,
+    });
+
+    const sourceWorkflow = source?.workflow && typeof source.workflow === "object" ? source.workflow : {};
+    const sourceReleaseRequired = Boolean(sourceWorkflow?.releaseRequired ?? source?.releaseRequired ?? true);
+    const sourceReleaseStatus = safeString(sourceWorkflow?.releaseStatus || source?.releaseStatus || (sourceReleaseRequired ? "pending" : "released")).toLowerCase() || (sourceReleaseRequired ? "pending" : "released");
+    const packageReleaseStatus = sourceReleaseRequired ? (sourceReleaseStatus === "released" ? "released" : "pending") : "released";
+    const packageReleasedAt = packageReleaseStatus === "released" ? safeString(sourceWorkflow?.releasedAt || source?.releasedAt || normalizedDate) : "";
+    const packageReleasedBy = packageReleaseStatus === "released" ? safeString(sourceWorkflow?.releasedBy || source?.releasedBy || "Source finished batch") : "";
+    const packageWorkflow = {
+      ...sourceWorkflow,
+      releaseRequired: true,
+      releaseStatus: packageReleaseStatus,
+      releasedAt: packageReleasedAt,
+      releasedBy: packageReleasedBy,
+      notes: sourceWorkflow?.notes || (packageReleaseStatus === "released" ? "Package run inherited release from source finished batch." : "Package run needs release before retail sale."),
+    };
+
+    const childLabelMetadata = {
+      ...sourceLabelMetadata,
+      lotCode: finalLotCode,
+      packDate: normalizedDate,
+      skuType: normalizedSkuType,
+      packageSkuType: normalizedSkuType,
+      packageSize: effectivePackageSize,
+      packageSizeUnit: effectivePackageUnit,
+      packageSizeLabel,
+      targetPackageSize: normalizedPackageSize,
+      targetPackageSizeUnit: normalizedPackageUnit,
+      targetPackageSizeLabel,
+      actualPackageWeightG,
+      packageCount: normalizedPackageCount,
+      packageUnitLabel: normalizedLabel,
+      capsulesPerPackage: estimatedCapsulesPerPackage,
+      averageWeightPerCapsuleG: averagePackageUnitWeightG,
+      perCapsule: approximatePerCapsuleLabel,
+      approximatePerCapsule: isCapsulePackage,
+      approximateTotalWeight: false,
+      totalWeight: packageTotalWeightLabel,
+      capsuleCount: packageCapsuleCountLabel,
+      sourceMaterialCostTotal,
+      materialCostPerPackage: packageMaterialCostPerPackage,
+      packageRecipeId: normalizedPackageRecipeId,
+      packageRecipeName: normalizedPackageRecipeName,
+      packageRecipeCostPerPackage: packageRecipeCostPerPackageResolved,
+      packageRecipeCostTotal: packagingRecipeCostTotal,
+      packagingCostPerPackage: normalizedPackagingCostPerPackage,
+      laborCostPerPackage: normalizedLaborCostPerPackage,
+      otherCostPerPackage: normalizedOtherCostPerPackage,
+      costPerPackage: packageUnitCost,
+      targetMarginPercent: normalizedDesiredMarginPercent,
+      suggestedMsrpPerPackage,
+      defaultSalePricePerPackage,
+      sourceLotCode: baseCode,
+      sourceLotId,
+    };
+
+    const childLot = {
+      ...source,
+      id: undefined,
+      lotType: meta.lotType,
+      inventoryCategory: "finished_goods",
+      processType: "packaging",
+      processCategory: "packaging",
+      manufacturingStage: "packaged_inventory",
+      status: "available",
+      releaseRequired: true,
+      releaseStatus: packageReleaseStatus,
+      releasedAt: packageReleasedAt,
+      releasedBy: packageReleasedBy,
+      workflow: packageWorkflow,
+      sourceType: "finished_package",
+      sourceLotId,
+      parentLotId: sourceLotId,
+      sourceLotIds,
+      sourceBatchId: source?.sourceBatchId || null,
+      sourceGrowId: childSourceGrowIds[0] || source?.sourceGrowId || null,
+      sourceGrowIds: childSourceGrowIds,
+      originGrowIds: childOriginGrowIds,
+      name: childName,
+      batchName: source?.batchName || source?.name || childName,
+      lotCode: finalLotCode,
+      batchLot: finalLotCode,
+      packageRunId: childRef.id,
+      skuType: normalizedSkuType,
+      packageSkuType: normalizedSkuType,
+      packageSize: effectivePackageSize,
+      packageSizeUnit: effectivePackageUnit,
+      packageSizeLabel,
+      targetPackageSize: normalizedPackageSize,
+      targetPackageSizeUnit: normalizedPackageUnit,
+      targetPackageSizeLabel,
+      actualPackageWeightG,
+      packageCount: normalizedPackageCount,
+      packageUnitLabel: normalizedLabel,
+      sellableUnitLabel: normalizedLabel,
+      capsulesPerPackage: estimatedCapsulesPerPackage,
+      averageWeightPerCapsuleG: averagePackageUnitWeightG,
+      perCapsule: approximatePerCapsuleLabel,
+      approximatePerCapsule: isCapsulePackage,
+      approximateTotalWeight: false,
+      materialCostPerPackage: packageMaterialCostPerPackage,
+      packageRecipeId: normalizedPackageRecipeId,
+      packageRecipeName: normalizedPackageRecipeName,
+      packageRecipeCostPerPackage: packageRecipeCostPerPackageResolved,
+      packageRecipeCostTotal: packagingRecipeCostTotal,
+      packagingCostPerPackage: normalizedPackagingCostPerPackage,
+      laborCostPerPackage: normalizedLaborCostPerPackage,
+      otherCostPerPackage: normalizedOtherCostPerPackage,
+      targetMarginPercent: normalizedDesiredMarginPercent,
+      suggestedMsrpPerPackage,
+      defaultSalePricePerPackage,
+      sourceMaterialCostTotal,
+      package: {
+        isPackaged: true,
+        skuType: normalizedSkuType,
+        sourceLotId,
+        size: effectivePackageSize,
+        unit: effectivePackageUnit,
+        label: packageSizeLabel,
+        targetSize: normalizedPackageSize,
+        targetUnit: normalizedPackageUnit,
+        targetLabel: targetPackageSizeLabel,
+        actualWeightG: actualPackageWeightG,
+        count: normalizedPackageCount,
+        capsulesPerPackage: estimatedCapsulesPerPackage,
+        averageWeightPerCapsuleG: averagePackageUnitWeightG,
+        sourceQuantity: requestedSourceQty,
+        sourceUnit: source?.unit || "count",
+        materialCostTotal: sourceMaterialCostTotal,
+        materialCostPerPackage: packageMaterialCostPerPackage,
+        packageRecipeId: normalizedPackageRecipeId,
+        packageRecipeName: normalizedPackageRecipeName,
+        packageRecipeCostPerPackage: packageRecipeCostPerPackageResolved,
+        packageRecipeCostTotal: packagingRecipeCostTotal,
+        packagingCostPerPackage: normalizedPackagingCostPerPackage,
+        laborCostPerPackage: normalizedLaborCostPerPackage,
+        otherCostPerPackage: normalizedOtherCostPerPackage,
+        extraCostPerPackage,
+        costPerPackage: packageUnitCost,
+        targetMarginPercent: normalizedDesiredMarginPercent,
+        suggestedMsrpPerPackage,
+        defaultSalePricePerPackage,
+        packagedDate: normalizedDate,
+      },
+      unit: "count",
+      unitLabel: normalizedLabel,
+      totalWeight: packageTotalWeightLabel,
+      capsuleCount: packageCapsuleCountLabel,
+      initialQuantity: normalizedPackageCount,
+      allocatedQuantity: 0,
+      remainingQuantity: normalizedPackageCount,
+      reservationQuantity: 0,
+      reservations: [],
+      outboundSummary: {},
+      pricePerUnit: defaultSalePricePerPackage,
+      msrpPerUnit: suggestedMsrpPerPackage,
+      unitCost: packageUnitCost,
+      costPerUnit: packageUnitCost,
+      batchTotalCost: roundCurrency(packageUnitCost * normalizedPackageCount),
+      pricing,
+      labelMetadata: childLabelMetadata,
+      traceability: buildTraceabilitySnapshot({
+        sourceLotIds,
+        sourceBatchIds,
+        sourceGrowIds: childSourceGrowIds,
+        originGrowIds: childOriginGrowIds,
+        parentLotId: sourceLotId,
+        rootLotId: safeString(source?.rootLotId || source?.parentLotId || sourceLotId),
+        operationType: "package",
+        processType: "packaging",
+      }),
+      costs: {
+        ...(source?.costs && typeof source.costs === "object" ? source.costs : {}),
+        sourceMaterialCostTotal,
+        packageMaterialCostTotal,
+        packagingRecipeCost: packagingRecipeCostTotal,
+        materialCostPerPackage: packageMaterialCostPerPackage,
+        packageRecipeCostPerPackage: packageRecipeCostPerPackageResolved,
+        packagingCost: packagingCostTotal,
+        laborCost: laborCostTotal,
+        otherCost: otherCostTotal,
+        packagingCostPerPackage: normalizedPackagingCostPerPackage,
+        laborCostPerPackage: normalizedLaborCostPerPackage,
+        otherCostPerPackage: normalizedOtherCostPerPackage,
+        batchTotalCost: roundCurrency(packageUnitCost * normalizedPackageCount),
+        totalCost: roundCurrency(packageUnitCost * normalizedPackageCount),
+        unitCost: packageUnitCost,
+      },
+      packageNote: normalizedNotes,
+      notes: [safeString(source?.notes), normalizedNotes].filter(Boolean).join("\n\n"),
+      createdDate: normalizedDate,
+      updatedDate: normalizedDate,
+      createdAt: serverTimestamp(),
+      updatedAt: serverTimestamp(),
+    };
+    delete childLot.id;
+
+    tx.set(childRef, childLot);
+
+    const outMovementRef = doc(collection(db, "users", userId, "inventoryMovements"));
+    tx.set(outMovementRef, {
+      movementType: "package_out",
+      lotId: sourceLotId,
+      relatedLotId: childRef.id,
+      processType: "packaging",
+      processCategory: "packaging",
+      direction: "out",
+      sourceType: "lot",
+      quantity: requestedSourceQty,
+      unit: source?.unit || "count",
+      date: normalizedDate,
+      note: normalizedNotes || `Packaged ${formatQty(requestedSourceQty, source?.unit || "count", getQtyDigitsForUnit(source?.unit || "count"))} from ${source?.name || sourceLotId}.`,
+      createdAt: serverTimestamp(),
+    });
+
+    const inMovementRef = doc(collection(db, "users", userId, "inventoryMovements"));
+    tx.set(inMovementRef, {
+      movementType: "package_in",
+      lotId: childRef.id,
+      relatedLotId: sourceLotId,
+      processType: "packaging",
+      processCategory: "packaging",
+      direction: "in",
+      sourceType: "lot",
+      quantity: normalizedPackageCount,
+      unit: "count",
+      date: normalizedDate,
+      note: normalizedNotes || `Created ${normalizedPackageCount} ${normalizedLabel} at ${packageSizeLabel} each.`,
+      createdAt: serverTimestamp(),
+    });
+
+    return {
+      created: true,
+      lotId: childRef.id,
+      name: childName,
+      lotCode: finalLotCode,
+      remainingSourceQuantity: nextRemaining,
+    };
+  });
+}
+
 export async function recordFinishedInventoryMovement({
   userId,
   lotId,
@@ -1840,6 +2849,15 @@ export async function recordFinishedInventoryMovement({
   note,
   revenue,
   pricePerUnit,
+  defaultPricePerUnit,
+  priceOverrideType,
+  priceOverrideReason,
+  fefoOverride,
+  fefoOverrideReason,
+  fefoSkippedLotId,
+  fefoSkippedLotCode,
+  fefoSkippedBestBy,
+  fefoSelectedBestBy,
   counterparty,
   destinationType,
   destinationName,
@@ -1847,6 +2865,7 @@ export async function recordFinishedInventoryMovement({
   referenceType,
   referenceId,
   reason,
+  destroyMethod,
 }) {
   if (!userId) throw new Error("Missing user.");
   if (!lotId) throw new Error("Missing lot.");
@@ -1865,6 +2884,24 @@ export async function recordFinishedInventoryMovement({
   const normalizedReferenceType = safeString(referenceType);
   const normalizedReferenceId = safeString(referenceId);
   const normalizedReason = safeString(reason);
+  const normalizedPriceOverrideType = safeString(priceOverrideType);
+  const normalizedPriceOverrideReason = safeString(priceOverrideReason);
+  const normalizedFefoOverride = Boolean(fefoOverride) && normalizedType === "sell";
+  const normalizedFefoOverrideReason = safeString(fefoOverrideReason);
+  const normalizedFefoSkippedLotId = safeString(fefoSkippedLotId);
+  const normalizedFefoSkippedLotCode = safeString(fefoSkippedLotCode);
+  const normalizedFefoSkippedBestBy = safeString(fefoSkippedBestBy);
+  const normalizedFefoSelectedBestBy = safeString(fefoSelectedBestBy);
+  const normalizedDestroyMethod = safeString(destroyMethod);
+  if (normalizedType === "destroy" && !normalizedReason) {
+    throw new Error("Enter a reason before destroying finished inventory.");
+  }
+  if (normalizedFefoOverride && !normalizedFefoOverrideReason) {
+    throw new Error("Enter a FEFO override reason before selling a later-expiring package lot.");
+  }
+  if (normalizedFefoOverride && !normalizedFefoSkippedLotId) {
+    throw new Error("A FEFO override must identify the earlier-expiring package lot being skipped.");
+  }
 
   return runTransaction(db, async (tx) => {
     const lotRef = doc(db, "users", userId, "materialLots", lotId);
@@ -1873,7 +2910,7 @@ export async function recordFinishedInventoryMovement({
 
     const lot = lotSnap.data() || {};
     if (!isFinishedGoodsLot(lot)) {
-      throw new Error("Only finished inventory lots can be sold, donated, sampled, or wasted.");
+      throw new Error("Only finished inventory lots can be sold, donated, sampled, wasted, destroyed, or adjusted.");
     }
 
     const remaining = lotRemaining(lot);
@@ -1883,12 +2920,23 @@ export async function recordFinishedInventoryMovement({
     }
 
     const nextRemaining = sanitizePositiveNumber(remaining - normalizedQuantity);
-    const nextStatus = nextLotStatus(nextRemaining, lotInitial(lot));
+    const nextStatus = normalizedType === "destroy" && nextRemaining <= 0 ? "destroyed" : nextLotStatus(nextRemaining, lotInitial(lot));
 
+    const packageDefaultPrice = sanitizeCurrency(defaultPricePerUnit) > 0
+      ? sanitizeCurrency(defaultPricePerUnit)
+      : sanitizeCurrency(valueOrFallback(lot?.pricePerUnit, lot?.pricing?.pricePerUnit, lot?.package?.defaultSalePricePerPackage));
+    const packageMsrp = sanitizeCurrency(valueOrFallback(lot?.msrpPerUnit, lot?.pricing?.suggestedMsrpPerUnit, lot?.package?.suggestedMsrpPerPackage));
+    const packageUnitCost = getLotUnitCost(lot);
     const resolvedPricePerUnit =
       sanitizeCurrency(pricePerUnit) > 0
         ? sanitizeCurrency(pricePerUnit)
-        : sanitizeCurrency(valueOrFallback(lot?.pricing?.pricePerUnit, lot?.pricePerUnit));
+        : packageDefaultPrice;
+    const hasPriceOverride = normalizedType === "sell" && Math.abs(resolvedPricePerUnit - packageDefaultPrice) >= 0.01;
+    const belowCost = normalizedType === "sell" && packageUnitCost > 0 && resolvedPricePerUnit > 0 && resolvedPricePerUnit < packageUnitCost;
+    const nonRetailSale = normalizedType === "sell" && normalizeSkuTypeValue(valueOrFallback(lot?.skuType, lot?.packageSkuType, lot?.package?.skuType)) !== "retail";
+    if ((hasPriceOverride || belowCost || nonRetailSale) && !normalizedPriceOverrideReason) {
+      throw new Error("Enter a price override memo before recording this sale.");
+    }
 
     const resolvedRevenue =
       normalizedType === "sell"
@@ -1907,13 +2955,26 @@ export async function recordFinishedInventoryMovement({
       resolvedRevenue
     );
 
-    tx.update(lotRef, {
+    const lotUpdate = {
       remainingQuantity: nextRemaining,
       status: nextStatus,
       outboundSummary,
+      lastOutboundMovementType: normalizedType,
+      lastOutboundMovementDate: normalizedDate,
       updatedDate: normalizedDate,
       updatedAt: serverTimestamp(),
-    });
+    };
+    if (normalizedType === "destroy") {
+      lotUpdate.destructionSummary = {
+        destroyedQuantity: sanitizePositiveNumber((lot?.destructionSummary?.destroyedQuantity || 0) + normalizedQuantity),
+        lastDestroyedQuantity: normalizedQuantity,
+        lastDestroyedAt: normalizedDate,
+        lastDestroyReason: normalizedReason,
+        lastDestroyMethod: normalizedDestroyMethod || null,
+      };
+      if (nextRemaining <= 0) lotUpdate.destroyedAt = normalizedDate;
+    }
+    tx.update(lotRef, lotUpdate);
 
     const movementRef = doc(collection(db, "users", userId, "inventoryMovements"));
     tx.set(movementRef, {
@@ -1928,12 +2989,56 @@ export async function recordFinishedInventoryMovement({
       date: normalizedDate,
       revenue: resolvedRevenue,
       pricePerUnit: resolvedPricePerUnit,
+      defaultPricePerUnit: packageDefaultPrice,
+      msrpPerUnit: packageMsrp,
+      priceDifferencePerUnit: normalizedType === "sell" ? roundCurrency(resolvedPricePerUnit - packageDefaultPrice) : 0,
+      priceOverride: normalizedType === "sell"
+        ? {
+            hasOverride: hasPriceOverride,
+            belowCost,
+            nonRetailSale,
+            type: normalizedPriceOverrideType || null,
+            reason: normalizedPriceOverrideReason || null,
+            defaultPricePerUnit: packageDefaultPrice,
+            actualPricePerUnit: resolvedPricePerUnit,
+            msrpPerUnit: packageMsrp,
+            packageUnitCost,
+            differencePerUnit: roundCurrency(resolvedPricePerUnit - packageDefaultPrice),
+          }
+        : null,
+      fefoOverride: normalizedType === "sell"
+        ? {
+            applied: normalizedFefoOverride,
+            policy: "FEFO",
+            reason: normalizedFefoOverrideReason || null,
+            skippedLotId: normalizedFefoSkippedLotId || null,
+            skippedLotCode: normalizedFefoSkippedLotCode || null,
+            skippedBestBy: normalizedFefoSkippedBestBy || null,
+            selectedLotId: lotId,
+            selectedLotCode: safeString(lot?.lotCode || lot?.batchLot || lot?.name) || lotId,
+            selectedBestBy: normalizedFefoSelectedBestBy || null,
+          }
+        : null,
+      inventoryRotation: normalizedType === "sell"
+        ? {
+            policy: "FEFO",
+            overrideApplied: normalizedFefoOverride,
+            overrideReason: normalizedFefoOverrideReason || null,
+            skippedLotId: normalizedFefoSkippedLotId || null,
+            skippedLotCode: normalizedFefoSkippedLotCode || null,
+            skippedBestBy: normalizedFefoSkippedBestBy || null,
+            selectedLotId: lotId,
+            selectedLotCode: safeString(lot?.lotCode || lot?.batchLot || lot?.name) || lotId,
+            selectedBestBy: normalizedFefoSelectedBestBy || null,
+          }
+        : null,
       destinationType: normalizedDestinationType || null,
       destinationName: normalizedDestinationName || null,
       destinationLocation: normalizedDestinationLocation || null,
       referenceType: normalizedReferenceType || null,
       referenceId: normalizedReferenceId || null,
       reason: normalizedReason || null,
+      destroyMethod: normalizedDestroyMethod || null,
       counterparty: normalizedCounterparty || normalizedDestinationName || null,
       note:
         normalizedNote ||
@@ -2593,6 +3698,7 @@ export function buildFinishedInventorySalesSnapshot({
     donatedUnits: 0,
     sampledUnits: 0,
     wastedUnits: 0,
+    destroyedUnits: 0,
     adjustedInUnits: 0,
     adjustedOutUnits: 0,
     realizedRevenue: 0,
@@ -2617,6 +3723,7 @@ export function buildFinishedInventorySalesSnapshot({
         donatedUnits: 0,
         sampledUnits: 0,
         wastedUnits: 0,
+        destroyedUnits: 0,
         adjustedInUnits: 0,
         adjustedOutUnits: 0,
         realizedRevenue: 0,
@@ -2637,6 +3744,9 @@ export function buildFinishedInventorySalesSnapshot({
     } else if (movementType === "waste" && direction === "out") {
       totals.wastedUnits = roundNumber(totals.wastedUnits + quantity, 3);
       byDestination[destinationKey].wastedUnits = roundNumber(byDestination[destinationKey].wastedUnits + quantity, 3);
+    } else if (movementType === "destroy" && direction === "out") {
+      totals.destroyedUnits = roundNumber(totals.destroyedUnits + quantity, 3);
+      byDestination[destinationKey].destroyedUnits = roundNumber(byDestination[destinationKey].destroyedUnits + quantity, 3);
     } else if (direction === "in") {
       totals.adjustedInUnits = roundNumber(totals.adjustedInUnits + quantity, 3);
       byDestination[destinationKey].adjustedInUnits = roundNumber(byDestination[destinationKey].adjustedInUnits + quantity, 3);
@@ -3475,8 +4585,7 @@ export function getShelfLifeAction(record = {}) {
   return "normal";
 }
 
-export function buildLotCode({ prefix = "CNM", productType = "", date = "", variant = "", lotId = "" } = {}) {
-  const safePrefix = safeString(prefix || "CNM") || "CNM";
+export function buildLotCode({ prefix = "", productType = "", date = "", variant = "", lotId = "" } = {}) {
   const key = safeString(productType).toLowerCase();
   const productCode = {
     capsule: "CAP",
@@ -3490,10 +4599,20 @@ export function buildLotCode({ prefix = "CNM", productType = "", date = "", vari
     extract: "EXT",
     dry_material: "DRY",
   }[key] || (key ? key.slice(0, 3).toUpperCase() : "LOT");
-  const safeDate = safeString(date || toLocalYYYYMMDD(new Date())).replaceAll("-", "");
-  const variantCode = safeString(variant).replace(/[^a-z0-9]/gi, "").toUpperCase().slice(0, 6);
-  const suffix = safeString(lotId).replace(/[^a-z0-9]/gi, "").toUpperCase().slice(-6) || Math.random().toString(36).slice(2, 8).toUpperCase();
-  return [safePrefix, productCode, safeDate, variantCode, suffix].filter(Boolean).join("-");
+
+  const rawDate = safeString(date || toLocalYYYYMMDD(new Date()));
+  const digits = rawDate.replace(/[^0-9]/g, "");
+  const mmdd = digits.length >= 8 ? `${digits.slice(4, 6)}${digits.slice(6, 8)}` : digits.slice(0, 4);
+  const variantCode = safeString(variant)
+    .replace(/[^a-z0-9]/gi, "")
+    .toUpperCase()
+    .slice(0, 6);
+  const fallbackCode = productCode || "LOT";
+  const suffix =
+    safeString(lotId).replace(/[^a-z0-9]/gi, "").toUpperCase().slice(-2) ||
+    Math.random().toString(36).slice(2, 4).toUpperCase();
+
+  return [variantCode || fallbackCode, mmdd, suffix].filter(Boolean).join("-");
 }
 
 export function getLabelMetadataSnapshot(record = {}) {
@@ -3661,7 +4780,7 @@ export async function createReworkBatch({
   const normalizedWasteUnit = safeString(wasteUnit || meta.outputUnit) || meta.outputUnit;
   const normalizedWasteReason = safeString(wasteReason);
   const normalizedWasteNotes = safeString(wasteNotes);
-  const normalizedMgPerUnit = sanitizePositiveNumber(mgPerUnit);
+  let normalizedMgPerUnit = sanitizePositiveNumber(mgPerUnit);
   const normalizedBottleSize = sanitizePositiveNumber(bottleSize);
   const normalizedBottleSizeUnit = safeString(bottleSizeUnit || "mL") || "mL";
   const normalizedDesiredMarginPercent = sanitizePositiveNumber(desiredMarginPercent) || MSRP_DEFAULT_MARGIN_PERCENT;

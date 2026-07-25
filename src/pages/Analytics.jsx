@@ -1,12 +1,20 @@
 // src/pages/Analytics.jsx
+// sop-v52-reconnect-workflow-toolkit
+// analytics-v44-workspace-overhaul-and-readable-charts
 import React, { useEffect, useMemo, useState } from "react";
 import {
   PieChart, Pie, BarChart, Bar, LineChart, Line, ScatterChart, Scatter,
-  XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, LabelList, Cell, ZAxis
+  XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, LabelList, Cell, ZAxis
 } from "recharts";
 
 import { db, auth } from "../firebase-config";
 import { collection, onSnapshot } from "firebase/firestore";
+import {
+  getLotAvailableQuantity,
+  isActiveMaterialLot,
+  isArchivedOrDepletedMaterialLot,
+  isFinishedGoodsLot,
+} from "../lib/postprocess";
 
 /* ---------- helpers ---------- */
 function isActiveGrow(g) {
@@ -57,230 +65,19 @@ const isContaminated = (g) => {
   );
 };
 
-
-function cleanLabel(value, fallback = "Unknown") {
-  const text = String(value ?? "").trim();
-  return text || fallback;
-}
-
-function shortGrowName(g = {}) {
-  return (
-    g?.abbreviation ||
-    g?.subName ||
-    g?.strain ||
-    g?.name ||
-    (g?.id ? String(g.id).slice(0, 8) : "Grow")
+const isSopWorkflowGrow = (g = {}) =>
+  Boolean(
+    g?.workflowTemplateId ||
+      g?.sopTemplateId ||
+      String(g?.source || "").toLowerCase() === "sop-template" ||
+      String(g?.workflowSource || "").toLowerCase() === "sop-template" ||
+      String(g?.parentSource || "").toLowerCase() === "sop"
   );
-}
 
-
-function getSopWorkflowMeta(grow = {}) {
-  const templateId = String(grow?.workflowTemplateId || grow?.sopTemplateId || "").trim();
-  const title = String(
-    grow?.workflowTemplateTitle ||
-      grow?.sopTemplateTitle ||
-      grow?.workflowTitle ||
-      ""
-  ).trim();
-  const category = String(
-    grow?.workflowTemplateCategory ||
-      grow?.sopTemplateCategory ||
-      grow?.workflowCategory ||
-      ""
-  ).trim();
-  const step = String(grow?.workflowStep || category || "").trim();
-  const source = String(grow?.workflowSource || grow?.sopSource || "").trim();
-  const summary = String(grow?.workflowTemplateSummary || grow?.sopTemplateSummary || "").trim();
-
-  return {
-    hasWorkflow: !!(templateId || title || category || step || source),
-    templateId,
-    title: title || "Workflow SOP",
-    category,
-    step,
-    source: source || (templateId || title ? "sop-template" : ""),
-    summary,
-  };
-}
-
-function workflowKey(meta = {}) {
-  return meta.templateId || meta.title || meta.category || meta.step || "Workflow SOP";
-}
-
-function getSopChecklistStats(grow = {}) {
-  const items = Array.isArray(grow?.sopChecklist) ? grow.sopChecklist : [];
-  const total = items.length;
-  const done = items.filter((item) => {
-    const status = String(item?.status || "").toLowerCase();
-    return item?.completed === true || status === "done" || status === "complete" || status === "completed";
-  }).length;
-  const skipped = items.filter((item) => {
-    const status = String(item?.status || "").toLowerCase();
-    return item?.skipped === true || status === "skipped";
-  }).length;
-  const pending = Math.max(0, total - done - skipped);
-  const actionable = Math.max(0, total - skipped);
-  const completionRate = actionable > 0 ? Number(((done / actionable) * 100).toFixed(1)) : total > 0 ? 100 : 0;
-  return { total, done, skipped, pending, actionable, completionRate };
-}
-
-function isSopTask(task = {}) {
-  const source = String(task?.source || task?.taskSource || task?.origin || "").toLowerCase();
-  return source === "sop-template" || !!task?.workflowTemplateId || !!task?.sopTemplateId || !!task?.sopTaskTemplateId;
-}
-
-function isTaskComplete(task = {}) {
-  const status = String(task?.status || "").toLowerCase();
-  return task?.completed === true || status === "complete" || status === "completed" || status === "done";
-}
-
-function getGrowTypeLabel(g = {}) {
-  return cleanLabel(g?.type || g?.growType || g?.kind || g?.category, "Unknown type");
-}
-
-function getLogDate(log = {}, grow = {}) {
-  return (
-    toDateMaybe(log?.observedAt) ||
-    toDateMaybe(log?.timestamp) ||
-    toDateMaybe(log?.createdAt) ||
-    toDateMaybe(log?.updatedAt) ||
-    toDateMaybe(grow?.contaminationLastAt) ||
-    toDateMaybe(grow?.archivedAt) ||
-    toDateMaybe(grow?.updatedAt) ||
-    getRefDate(grow)
-  );
-}
-
-function isConfirmedContaminationLog(log = {}) {
-  const severity = String(log?.severity || "").toLowerCase();
-  const outcome = String(log?.outcome || "").toLowerCase();
-  const status = String(log?.status || "").toLowerCase();
-  return (
-    severity.includes("confirmed") ||
-    status.includes("confirmed") ||
-    outcome.includes("disposed") ||
-    outcome.includes("archived") ||
-    log?.confirmed === true ||
-    log?.markGrowContaminated === true
-  );
-}
-
-function splitContaminationTokens(value) {
-  return String(value || "")
-    .split(/[\n,;|]+/g)
-    .map((item) => item.trim())
-    .filter(Boolean);
-}
-
-function normalizeContaminationList(value) {
-  if (Array.isArray(value)) {
-    return value.map((item) => String(item || "").trim()).filter(Boolean);
-  }
-  if (value && typeof value === "object") {
-    return Object.entries(value)
-      .filter(([, checked]) => !!checked)
-      .map(([key]) => String(key || "").trim())
-      .filter(Boolean);
-  }
-  return splitContaminationTokens(value);
-}
-
-function cleanupLabel(id = "") {
-  return String(id || "")
-    .replace(/[-_]+/g, " ")
-    .replace(/\b\w/g, (letter) => letter.toUpperCase());
-}
-
-function incrementCount(map, key, amount = 1) {
-  const clean = cleanLabel(key);
-  map[clean] = (map[clean] || 0) + amount;
-}
-
-function countMapToRows(map, limit = 12) {
-  return Object.entries(map || {})
-    .map(([name, count]) => ({ name, count }))
-    .sort((a, b) => b.count - a.count || a.name.localeCompare(b.name))
-    .slice(0, limit);
-}
-
-function normalizeContaminationLog(raw = {}, grow = {}) {
-  const observedDate = getLogDate(raw, grow);
-  const severity =
-    raw?.severity ||
-    grow?.contaminationLastSeverity ||
-    (isContaminated(grow) ? "Confirmed" : "Suspected");
-
-  return {
-    id: raw?.id || `summary-${grow?.id || Math.random().toString(36).slice(2)}`,
-    growId: raw?.growId || grow?.id || "",
-    growName: shortGrowName(grow),
-    strain: cleanLabel(grow?.strain, "Unknown strain"),
-    growType: getGrowTypeLabel(grow),
-    stage: cleanLabel(raw?.stage || grow?.contaminationLastStage || grow?.stage, "Unknown stage"),
-    observedAt: raw?.observedAt || raw?.timestamp || grow?.contaminationLastAt || "",
-    observedDate,
-    observedTime: observedDate ? observedDate.getTime() : 0,
-    severity: cleanLabel(severity, "Suspected"),
-    suspectedCause: cleanLabel(raw?.suspectedCause || grow?.contaminationLastCause, "Unknown / investigating"),
-    visualSigns: String(raw?.visualSigns || raw?.signs || "").trim(),
-    actionTaken: cleanLabel(raw?.actionTaken || raw?.action || "", "Not recorded"),
-    outcome: cleanLabel(raw?.outcome || "", "Monitoring"),
-    notes: String(raw?.notes || raw?.note || "").trim(),
-    preventionNotes: String(raw?.preventionNotes || raw?.prevention || "").trim(),
-    cleanupChecklist: normalizeContaminationList(raw?.cleanupChecklist),
-    cleanupNotes: String(raw?.cleanupNotes || "").trim(),
-    quarantineLocation: String(raw?.quarantineLocation || "").trim(),
-    disposalMethod: cleanLabel(raw?.disposalMethod || "", "Not recorded"),
-    sanitationMethod: cleanLabel(raw?.sanitationMethod || "", "Not recorded"),
-    clearedForReuse: !!raw?.clearedForReuse,
-    clearedForReuseDate: raw?.clearedForReuseDate || "",
-    followUpRequired: !!raw?.followUpRequired,
-    followUpDate: raw?.followUpDate || "",
-    evidencePhotoCount: normalizeContaminationList(raw?.evidencePhotoIds).length || (Array.isArray(raw?.evidencePhotos) ? raw.evidencePhotos.length : 0),
-    confirmed: isConfirmedContaminationLog({ ...raw, severity }),
-    summaryFallback: raw?.summaryFallback === true,
-  };
-}
-
-function buildSummaryContaminationLog(grow = {}) {
-  if (!grow?.id) return null;
-  const hasSummary =
-    Number(grow?.contaminationLogCount || 0) > 0 ||
-    !!grow?.contaminationLastAt ||
-    !!grow?.contaminationLastCause ||
-    !!grow?.contaminationLastSeverity ||
-    isContaminated(grow);
-
-  if (!hasSummary) return null;
-
-  return normalizeContaminationLog(
-    {
-      id: `summary-${grow.id}`,
-      growId: grow.id,
-      stage: grow?.contaminationLastStage || grow?.stage || "Unknown stage",
-      observedAt: grow?.contaminationLastAt || grow?.archivedAt || grow?.updatedAt || "",
-      severity: grow?.contaminationLastSeverity || (isContaminated(grow) ? "Confirmed" : "Suspected"),
-      suspectedCause: grow?.contaminationLastCause || "Unknown / investigating",
-      outcome: isContaminated(grow) ? "Archived" : "Monitoring",
-      summaryFallback: true,
-    },
-    grow
-  );
-}
-
-function textExportLine(label, value) {
-  return `${label}: ${value === null || value === undefined || value === "" ? "—" : value}`;
-}
-
-function downloadTextFile(filename, text) {
-  const blob = new Blob([text], { type: "text/plain;charset=utf-8" });
-  const a = document.createElement("a");
-  a.href = URL.createObjectURL(blob);
-  a.download = filename;
-  a.click();
-  URL.revokeObjectURL(a.href);
-}
-
+const getSopChecklist = (g = {}) => {
+  const value = g?.sopChecklist || g?.sopChecklistItems || g?.workflowChecklist || [];
+  return Array.isArray(value) ? value : [];
+};
 
 const PALETTE = {
   wet: "#60a5fa",
@@ -323,6 +120,438 @@ function KeyLegend({ items }) {
     </div>
   );
 }
+
+
+const TOOLTIP_STYLE = {
+  background: "#0b0f19",
+  border: "1px solid #334155",
+  color: "#e5e7eb",
+  borderRadius: "12px",
+  boxShadow: "0 14px 40px rgba(0,0,0,0.35)",
+};
+
+function getHorizontalChartHeight(rowCount = 0) {
+  return Math.min(1400, Math.max(320, rowCount * 62 + 90));
+}
+
+function wrapAxisLabel(value, maxChars = 34, maxLines = 4) {
+  const text = String(value || "").trim();
+  if (!text) return [""];
+
+  const pieces = [];
+  text.split(/\s+/).forEach((word) => {
+    if (word.length <= maxChars) {
+      pieces.push(word);
+      return;
+    }
+    for (let index = 0; index < word.length; index += maxChars) {
+      pieces.push(word.slice(index, index + maxChars));
+    }
+  });
+
+  const lines = [];
+  let current = "";
+  for (const piece of pieces) {
+    const candidate = current ? `${current} ${piece}` : piece;
+    if (candidate.length <= maxChars) {
+      current = candidate;
+      continue;
+    }
+    if (current) lines.push(current);
+    current = piece;
+  }
+  if (current) lines.push(current);
+
+  if (lines.length <= maxLines) return lines;
+  const visible = lines.slice(0, maxLines);
+  visible[maxLines - 1] = `${visible[maxLines - 1].replace(/[.\s]+$/, "")}…`;
+  return visible;
+}
+
+function WrappedYAxisTick({ x = 0, y = 0, payload }) {
+  const lines = wrapAxisLabel(payload?.value, 34, 4);
+  const lineHeight = 14;
+  const startY = -((lines.length - 1) * lineHeight) / 2;
+
+  return (
+    <g transform={`translate(${x},${y})`}>
+      <title>{String(payload?.value || "")}</title>
+      {lines.map((line, index) => (
+        <text
+          key={`${line}-${index}`}
+          x={-10}
+          y={startY + index * lineHeight}
+          dy="0.35em"
+          textAnchor="end"
+          fill={PALETTE.axis}
+          fontSize="12"
+        >
+          {line}
+        </text>
+      ))}
+    </g>
+  );
+}
+
+function ChartEmptyState({ message = "No matching data is available for this report." }) {
+  return (
+    <div className="min-h-52 rounded-2xl border border-dashed border-zinc-300 dark:border-zinc-700 bg-zinc-50/60 dark:bg-zinc-950/30 flex items-center justify-center p-8 text-center text-sm text-zinc-500 dark:text-zinc-400">
+      {message}
+    </div>
+  );
+}
+
+function FullDataTable({ data = [], columns = [], nameLabel = "Name" }) {
+  if (!Array.isArray(data) || data.length === 0) return null;
+
+  return (
+    <details className="mt-3 rounded-xl border border-zinc-200 dark:border-zinc-800 bg-zinc-50/70 dark:bg-zinc-950/30">
+      <summary className="cursor-pointer px-3 py-2 text-sm font-medium text-zinc-700 dark:text-zinc-200">
+        View full names and report data
+      </summary>
+      <div className="overflow-x-auto border-t border-zinc-200 dark:border-zinc-800">
+        <table className="min-w-full text-sm">
+          <thead className="bg-zinc-100 dark:bg-zinc-900 text-zinc-600 dark:text-zinc-300">
+            <tr>
+              <th className="px-3 py-2 text-left font-semibold">{nameLabel}</th>
+              {columns.map((column) => (
+                <th key={column.key} className="px-3 py-2 text-right font-semibold whitespace-nowrap">
+                  {column.label}
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {data.map((row, index) => (
+              <tr key={row?.key || row?.id || `${row?.name || "row"}-${index}`} className="border-t border-zinc-200 dark:border-zinc-800">
+                <td className="px-3 py-2 text-left min-w-72 break-words text-zinc-800 dark:text-zinc-100">
+                  {row?.name || "—"}
+                </td>
+                {columns.map((column) => {
+                  const rawValue = row?.[column.key];
+                  const formatted = column.formatter ? column.formatter(rawValue, row) : rawValue;
+                  return (
+                    <td key={column.key} className="px-3 py-2 text-right whitespace-nowrap text-zinc-600 dark:text-zinc-300">
+                      {formatted ?? "—"}
+                    </td>
+                  );
+                })}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </details>
+  );
+}
+
+function HorizontalBarChartPanel({
+  data = [],
+  series = [],
+  showValues = false,
+  valueFormatter = fmtInt,
+  axisFormatter = fmtInt,
+  tooltipFormatter = null,
+  tooltipLabelFormatter = null,
+  emptyMessage = "No matching data is available for this report.",
+  nameLabel = "Name",
+}) {
+  const rows = Array.isArray(data) ? data : [];
+  if (rows.length === 0) return <ChartEmptyState message={emptyMessage} />;
+
+  const height = getHorizontalChartHeight(rows.length);
+  const columns = series.map((item) => ({
+    key: item.key,
+    label: item.name,
+    formatter: item.tableFormatter || item.formatter || valueFormatter,
+  }));
+
+  return (
+    <>
+      <KeyLegend items={series.map((item) => ({ label: item.name, color: item.color }))} />
+      <div className="w-full overflow-x-auto">
+        <div style={{ minWidth: 760, height }}>
+          <ResponsiveContainer width="100%" height="100%">
+            <BarChart
+              layout="vertical"
+              data={rows}
+              margin={{ top: 12, right: 110, bottom: 12, left: 18 }}
+              barCategoryGap="24%"
+            >
+              <CartesianGrid stroke={PALETTE.grid} strokeDasharray="3 3" horizontal={false} />
+              <XAxis
+                type="number"
+                stroke={PALETTE.axis}
+                tick={{ fill: PALETTE.axis, fontSize: 12 }}
+                tickFormatter={axisFormatter}
+              />
+              <YAxis
+                type="category"
+                dataKey="name"
+                width={290}
+                interval={0}
+                tick={<WrappedYAxisTick />}
+                axisLine={{ stroke: PALETTE.axis }}
+                tickLine={{ stroke: PALETTE.axis }}
+              />
+              <Tooltip
+                contentStyle={TOOLTIP_STYLE}
+                formatter={(value, name, payload) => {
+                  if (tooltipFormatter) return tooltipFormatter(value, name, payload?.payload);
+                  const seriesItem = series.find((item) => item.name === name || item.key === name);
+                  const formatter = seriesItem?.formatter || valueFormatter;
+                  return [formatter(value, payload?.payload), seriesItem?.name || name];
+                }}
+                labelFormatter={(label, payload) => {
+                  if (tooltipLabelFormatter) return tooltipLabelFormatter(label, payload?.[0]?.payload);
+                  return label;
+                }}
+              />
+              {series.map((item) => (
+                <Bar
+                  key={item.key}
+                  dataKey={item.key}
+                  name={item.name}
+                  fill={item.color}
+                  radius={[0, 6, 6, 0]}
+                  maxBarSize={30}
+                >
+                  {showValues && rows.length <= 18 ? (
+                    <LabelList
+                      dataKey={item.key}
+                      position="right"
+                      formatter={(value) => (item.formatter || valueFormatter)(value)}
+                      fill={PALETTE.axis}
+                      fontSize={11}
+                    />
+                  ) : null}
+                </Bar>
+              ))}
+            </BarChart>
+          </ResponsiveContainer>
+        </div>
+      </div>
+      <FullDataTable data={rows} columns={columns} nameLabel={nameLabel} />
+    </>
+  );
+}
+
+function VerticalBarChartPanel({
+  data = [],
+  series = [],
+  showValues = false,
+  valueFormatter = fmtInt,
+  axisFormatter = fmtInt,
+  tooltipFormatter = null,
+  emptyMessage = "No matching data is available for this report.",
+  height = 360,
+}) {
+  const rows = Array.isArray(data) ? data : [];
+  if (rows.length === 0) return <ChartEmptyState message={emptyMessage} />;
+
+  return (
+    <>
+      <KeyLegend items={series.map((item) => ({ label: item.name, color: item.color }))} />
+      <div className="w-full overflow-x-auto">
+        <div style={{ minWidth: 660, height }}>
+          <ResponsiveContainer width="100%" height="100%">
+            <BarChart data={rows} margin={{ top: 20, right: 28, bottom: 24, left: 10 }}>
+              <CartesianGrid stroke={PALETTE.grid} strokeDasharray="3 3" />
+              <XAxis
+                dataKey="name"
+                stroke={PALETTE.axis}
+                tick={{ fill: PALETTE.axis, fontSize: 12 }}
+                interval={0}
+              />
+              <YAxis
+                stroke={PALETTE.axis}
+                tick={{ fill: PALETTE.axis, fontSize: 12 }}
+                tickFormatter={axisFormatter}
+              />
+              <Tooltip
+                contentStyle={TOOLTIP_STYLE}
+                formatter={(value, name, payload) => {
+                  if (tooltipFormatter) return tooltipFormatter(value, name, payload?.payload);
+                  const seriesItem = series.find((item) => item.name === name || item.key === name);
+                  const formatter = seriesItem?.formatter || valueFormatter;
+                  return [formatter(value, payload?.payload), seriesItem?.name || name];
+                }}
+              />
+              {series.map((item) => (
+                <Bar key={item.key} dataKey={item.key} name={item.name} fill={item.color} radius={[6, 6, 0, 0]} maxBarSize={58}>
+                  {showValues ? (
+                    <LabelList
+                      dataKey={item.key}
+                      position="top"
+                      formatter={(value) => (item.formatter || valueFormatter)(value)}
+                      fill={PALETTE.axis}
+                      fontSize={11}
+                    />
+                  ) : null}
+                </Bar>
+              ))}
+            </BarChart>
+          </ResponsiveContainer>
+        </div>
+      </div>
+      <FullDataTable
+        data={rows}
+        columns={series.map((item) => ({
+          key: item.key,
+          label: item.name,
+          formatter: item.tableFormatter || item.formatter || valueFormatter,
+        }))}
+      />
+    </>
+  );
+}
+
+function LineChartPanel({
+  data = [],
+  xKey = "name",
+  series = [],
+  valueFormatter = fmtInt,
+  axisFormatter = fmtInt,
+  emptyMessage = "No matching data is available for this report.",
+  height = 360,
+}) {
+  const rows = Array.isArray(data) ? data : [];
+  if (rows.length === 0) return <ChartEmptyState message={emptyMessage} />;
+
+  return (
+    <>
+      <KeyLegend items={series.map((item) => ({ label: item.name, color: item.color }))} />
+      <div className="w-full overflow-x-auto">
+        <div style={{ minWidth: 700, height }}>
+          <ResponsiveContainer width="100%" height="100%">
+            <LineChart data={rows} margin={{ top: 18, right: 30, bottom: 22, left: 12 }}>
+              <CartesianGrid stroke={PALETTE.grid} strokeDasharray="3 3" />
+              <XAxis dataKey={xKey} stroke={PALETTE.axis} tick={{ fill: PALETTE.axis, fontSize: 12 }} />
+              <YAxis stroke={PALETTE.axis} tick={{ fill: PALETTE.axis, fontSize: 12 }} tickFormatter={axisFormatter} />
+              <Tooltip
+                contentStyle={TOOLTIP_STYLE}
+                formatter={(value, name, payload) => {
+                  const seriesItem = series.find((item) => item.name === name || item.key === name);
+                  const formatter = seriesItem?.formatter || valueFormatter;
+                  return [formatter(value, payload?.payload), seriesItem?.name || name];
+                }}
+              />
+              {series.map((item) => (
+                <Line
+                  key={item.key}
+                  dataKey={item.key}
+                  name={item.name}
+                  stroke={item.color}
+                  strokeWidth={2.5}
+                  dot={false}
+                  activeDot={{ r: 5 }}
+                />
+              ))}
+            </LineChart>
+          </ResponsiveContainer>
+        </div>
+      </div>
+      <FullDataTable
+        data={rows.map((row) => ({ ...row, name: row?.[xKey] }))}
+        columns={series.map((item) => ({
+          key: item.key,
+          label: item.name,
+          formatter: item.tableFormatter || item.formatter || valueFormatter,
+        }))}
+        nameLabel={xKey === "week" ? "Week" : xKey === "month" ? "Month" : "Name"}
+      />
+    </>
+  );
+}
+
+function AnalyticsReportCard({
+  title,
+  description,
+  children,
+  defaultOpen = false,
+  testId,
+}) {
+  const [isOpen, setIsOpen] = useState(defaultOpen);
+
+  return (
+    <section
+      data-testid={testId}
+      className="rounded-2xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 shadow-sm overflow-hidden"
+    >
+      <button
+        type="button"
+        onClick={() => setIsOpen((current) => !current)}
+        className="w-full px-4 py-4 sm:px-5 text-left flex items-start justify-between gap-4 hover:bg-zinc-50 dark:hover:bg-zinc-800/60 focus:outline-none focus:ring-2 focus:ring-inset focus:ring-purple-500/70"
+        aria-expanded={isOpen}
+      >
+        <span className="min-w-0">
+          <span className="block text-base font-semibold text-zinc-900 dark:text-zinc-100">{title}</span>
+          <span className="mt-1 block text-sm text-zinc-500 dark:text-zinc-400">{description}</span>
+        </span>
+        <span className="shrink-0 rounded-full border border-zinc-300 dark:border-zinc-700 px-3 py-1 text-xs font-medium text-zinc-600 dark:text-zinc-300">
+          {isOpen ? "Collapse" : "Open report"}
+        </span>
+      </button>
+      {isOpen ? (
+        <div className="border-t border-zinc-200 dark:border-zinc-800 p-4 sm:p-5 space-y-3">
+          {children}
+        </div>
+      ) : null}
+    </section>
+  );
+}
+
+const ANALYTICS_SECTIONS = [
+  { id: "overview", label: "Overview", description: "Key operating, inventory, financial, and risk indicators." },
+  { id: "cultivation", label: "Cultivation", description: "Grow stages, yield, cost, contamination, timing, and throughput." },
+  { id: "production", label: "Production & Inventory", description: "Parent batches, package inventory, production efficiency, valuation, and rework." },
+  { id: "sales", label: "Sales & Financials", description: "Revenue, profit, product, SKU, package-size, pricing, and destination performance." },
+  { id: "quality", label: "Quality & Risk", description: "Release status, expiration, overrides, destruction, waste, and losses." },
+  { id: "supplies", label: "Supplies & Recipes", description: "Recipe use, supply consumption, stock runway, and packaging inventory." },
+];
+
+const ANALYTICS_REPORTS = {
+  cultivation: [
+    { key: "stageCounts", title: "Grow Stage Distribution", description: "Current active grows grouped by lifecycle stage." },
+    { key: "yieldData", title: "Wet vs Dry Yield", description: "Harvest-level wet and dry output with readable grow names." },
+    { key: "avgYieldPerStrain", title: "Average Yield per Strain", description: "Average wet and dry output for each strain represented in the selected dataset." },
+    { key: "growCosts", title: "Cost per Grow", description: "Normalized recipe and supply cost assigned to each grow." },
+    { key: "contamRate", title: "Contamination Rate", description: "Contamination percentage grouped by strain or recipe." },
+    { key: "timeToStage", title: "Median Time to Stage", description: "Median days between inoculation, colonization, fruiting, and harvest." },
+    { key: "yieldVsCost", title: "Yield vs Cost", description: "Relationship between grow cost and recorded yield." },
+    { key: "throughput", title: "Started vs Harvested Throughput", description: "Monthly grow starts compared with completed harvests." },
+    { key: "stageTransitions", title: "Stage Transitions Over Time", description: "Monthly lifecycle transition activity." },
+    { key: "sopWorkflow", title: "SOP / Workflow Performance", description: "SOP-started grows, checklist completion, generated tasks, and recorded outcomes." },
+  ],
+  production: [
+    { key: "ppInventoryStatus", title: "Active vs Depleted Inventory", description: "Current and historical parent finished batches and package lots." },
+    { key: "ppBatchPerformance", title: "Parent Batch Performance", description: "Sold, sampled, destroyed, and available units rolled up to each parent finished batch." },
+    { key: "ppEfficiency", title: "Production Batch Efficiency", description: "Expected output, actual output, waste, and variance by production batch." },
+    { key: "ppValuation", title: "Available Inventory Valuation", description: "Current packaged inventory at locked cost and projected sales value." },
+    { key: "ppRework", title: "Rework Salvage vs Waste", description: "Recovered output and loss from rework or repackaging activity." },
+  ],
+  sales: [
+    { key: "ppFinancial", title: "Realized vs Remaining Financials", description: "Revenue, cost, and profit already realized compared with remaining projected inventory value." },
+    { key: "ppProductPerformance", title: "Product Performance", description: "Revenue, profit, and remaining projected revenue by product." },
+    { key: "ppSkuPerformance", title: "SKU Performance", description: "Retail, sample, promo, and internal performance by SKU and package configuration." },
+    { key: "ppPackageSizePerformance", title: "Package-Size Performance", description: "Outbound and remaining inventory grouped by package size." },
+    { key: "ppMargins", title: "Locked Cost, Default Price, and MSRP", description: "Average locked package economics for each SKU configuration." },
+    { key: "ppSales", title: "Sales and Outbound by Destination", description: "Units and realized revenue grouped by customer, event, donation target, or other destination." },
+  ],
+  quality: [
+    { key: "ppWorkflow", title: "Workflow and Release Status", description: "Released, pending, held, failed, quarantined, or recalled inventory." },
+    { key: "ppOverrides", title: "Price and FEFO Overrides", description: "Recorded pricing exceptions and inventory-rotation overrides by product." },
+    { key: "ppExpiring", title: "Expiring Inventory", description: "Available package lots grouped into practical best-by windows." },
+    { key: "ppWaste", title: "Finished Inventory Losses", description: "Destroyed and wasted package units with estimated locked-cost loss." },
+    { key: "ppProcessWaste", title: "Production Waste by Reason", description: "Manufacturing waste grouped by its recorded cause." },
+  ],
+  supplies: [
+    { key: "recipeUseCounts", title: "Recipe Usage Count", description: "How often each recipe appears in the selected grow dataset, including average grow cost." },
+    { key: "recipeUsage", title: "Most Used Supplies", description: "Supplies that appear most often across grow recipes." },
+    { key: "burnRate", title: "Weekly Usage and Days Until Empty", description: "Eight-week supply consumption trend and estimated stock runway." },
+    { key: "ppPackaging", title: "Packaging Usage vs On Hand", description: "Packaging consumption compared with current supply inventory." },
+  ],
+};
 
 function toDateMaybe(v) {
   if (!v && v !== 0) return null;
@@ -407,133 +636,363 @@ function getRecipeYieldForGrow(g, recipeById) {
   return y > 0 ? y : 1;
 }
 
-function computeStoredLabConsumablesCost(g, supplyCostById) {
-  const inline = Number(g?.labConsumablesCost);
-  if (Number.isFinite(inline)) return Math.max(0, Number(inline.toFixed(2)));
-
-  const rows = Array.isArray(g?.labConsumablesUsed) ? g.labConsumablesUsed : [];
-  if (!rows.length) return 0;
-
-  let total = 0;
-  for (const row of rows) {
-    const directTotal = Number(row?.totalCost ?? row?.totalCostPerGrow ?? row?.costTotal);
-    if (Number.isFinite(directTotal)) {
-      total += directTotal;
-      continue;
-    }
-
-    const amount = toNumber(row?.amount ?? row?.amountPerGrow ?? row?.qty, 0);
-    const directUnitCost = Number(row?.unitCost ?? row?.unitPrice ?? row?.costPerUnit);
-    if (Number.isFinite(directUnitCost)) {
-      total += directUnitCost * amount;
-      continue;
-    }
-
-    const liveUnitCost =
-      row?.supplyId && supplyCostById.has(row.supplyId)
-        ? toNumber(supplyCostById.get(row.supplyId), 0)
-        : 0;
-    total += liveUnitCost * amount;
-  }
-
-  return Math.max(0, Number(total.toFixed(2)));
-}
 
 
 /* ---------- post-process helpers ---------- */
-const POST_PROCESS_FINISHED_TYPES = new Set(["capsules", "gummies", "chocolates", "tinctures"]);
 const PACKAGING_TYPE_HINTS = new Set([
   "container", "packaging", "package", "bottle", "jar", "bag", "box", "label", "labels",
-  "capsule", "capsules", "dropper", "droppers", "shrink_band", "shrink band", "wrapper", "wrappers"
+  "capsule", "capsules", "dropper", "droppers", "shrink_band", "shrink band", "wrapper", "wrappers",
 ]);
 const lower = (v) => String(v || "").trim().toLowerCase();
 const num = (v, fb = 0) => (Number.isFinite(Number(v)) ? Number(v) : fb);
-function isFinishedPostProcessLot(lot) {
-  return POST_PROCESS_FINISHED_TYPES.has(lower(lot?.lotType || lot?.finishedGoodType || lot?.productType));
+const round2 = (v) => Math.round((Number(v) || 0) * 100) / 100;
+const round3 = (v) => Math.round((Number(v) || 0) * 1000) / 1000;
+
+function isPackagedFinishedLot(lot = {}) {
+  if (!isFinishedGoodsLot(lot)) return false;
+  if (lot?.package?.isPackaged === true) return true;
+  if (lower(lot?.sourceType) === "finished_package") return true;
+  return Boolean(lot?.packageRunId && (lot?.parentLotId || lot?.sourceLotId));
 }
-function getLotAvailableQty(lot = {}) {
-  const explicit = num(lot?.availableQuantity, NaN);
-  if (Number.isFinite(explicit)) return explicit;
-  const initial = num(lot?.initialQuantity ?? lot?.quantity ?? lot?.count, 0);
-  const allocated = num(lot?.allocatedQuantity ?? lot?.usedQuantity ?? lot?.consumedQuantity, 0);
-  return Math.max(0, initial - allocated);
+
+function getSkuType(lot = {}) {
+  const raw = lower(
+    lot?.skuType ||
+      lot?.packageSkuType ||
+      lot?.package?.skuType ||
+      lot?.labelMetadata?.skuType ||
+      "retail"
+  );
+  if (["sample", "samples"].includes(raw)) return "sample";
+  if (["promo", "promotion", "event"].includes(raw)) return "promo";
+  if (["internal", "internal_use", "testing", "retention"].includes(raw)) return "internal";
+  return "retail";
 }
-function isArchivedPostProcessLot(lot = {}) {
-  const status = lower(lot?.status || lot?.workflowState);
-  return !!lot?.archived || !!lot?.archivedAt || status === "archived" || status === "depleted" || getLotAvailableQty(lot) <= 0;
+
+function getSkuTypeLabel(value = "retail") {
+  const key = lower(value);
+  if (key === "sample") return "Sample";
+  if (key === "promo") return "Promo / event";
+  if (key === "internal") return "Internal / testing";
+  return "Retail";
 }
-function getLotWorkflowState(lot = {}) {
-  const workflow = lower(lot?.workflowState || lot?.workflow?.state || lot?.releaseState || lot?.status);
-  const qc = lower(lot?.qc?.status);
-  if (lot?.recalled || workflow === "recalled") return "recalled";
-  if (lot?.quarantined || workflow === "quarantined" || workflow === "quarantine") return "quarantined";
-  if (qc === "hold" || workflow === "hold") return "hold";
-  if (lot?.released === true || workflow === "released") return "released";
-  return workflow || "pending";
+
+function getPackageSizeLabel(lot = {}) {
+  const explicit = String(
+    lot?.packageSizeLabel || lot?.package?.label || lot?.labelMetadata?.packageSizeLabel || ""
+  ).trim();
+  if (explicit) return explicit;
+
+  const capsules = Math.max(
+    0,
+    Math.floor(
+      num(
+        lot?.capsulesPerPackage ??
+          lot?.package?.capsulesPerPackage ??
+          lot?.labelMetadata?.capsulesPerPackage,
+        0
+      )
+    )
+  );
+  const weight = num(
+    lot?.actualPackageWeightG ?? lot?.package?.actualWeightG ?? lot?.labelMetadata?.actualPackageWeightG,
+    0
+  );
+  if (capsules > 0 && weight > 0) return `${capsules} capsules · ≈ ${round3(weight)} g`;
+
+  const size = num(lot?.packageSize ?? lot?.package?.size ?? lot?.labelMetadata?.packageSize, 0);
+  const unit = String(
+    lot?.packageSizeUnit ?? lot?.package?.unit ?? lot?.labelMetadata?.packageSizeUnit ?? ""
+  ).trim();
+  if (size > 0) return `${round3(size)} ${unit || "units"}`.trim();
+  return "Unspecified package";
 }
-function isBlockedPostProcessLot(lot = {}) {
-  const wf = getLotWorkflowState(lot);
-  const qc = lower(lot?.qc?.status);
-  return ["hold", "quarantined", "quarantine", "recalled", "pending"].includes(wf) || qc === "hold" || qc === "fail";
+
+function getLockedPackageCost(lot = {}) {
+  return round2(
+    num(
+      lot?.package?.costPerPackage ??
+        lot?.package?.totalCostPerPackage ??
+        lot?.pricing?.unitCost ??
+        lot?.unitCost ??
+        lot?.costPerUnit,
+      0
+    )
+  );
 }
-function isLabelReadyPostProcessLot(lot = {}) {
-  return isFinishedPostProcessLot(lot) && !isArchivedPostProcessLot(lot) && !isBlockedPostProcessLot(lot);
+
+function getLockedPackageMsrp(lot = {}) {
+  return round2(
+    num(
+      lot?.suggestedMsrpPerPackage ??
+        lot?.package?.suggestedMsrpPerPackage ??
+        lot?.labelMetadata?.suggestedMsrpPerPackage ??
+        lot?.msrpPerUnit ??
+        lot?.pricing?.suggestedMsrpPerUnit,
+      0
+    )
+  );
 }
-function getLabelMeta(lot = {}) {
-  const meta = lot?.labelMetadata || lot?.label || {};
-  return {
-    lotCode: meta?.lotCode || lot?.lotCode || "",
-    packDate: meta?.packDate || lot?.packDate || "",
-    bestBy: meta?.bestBy || meta?.bestByDate || lot?.bestBy || "",
-    ingredients: Array.isArray(meta?.ingredients) ? meta.ingredients : [],
-    allergens: Array.isArray(meta?.allergens) ? meta.allergens : [],
-  };
+
+function getLockedPackagePrice(lot = {}) {
+  const explicit = round2(
+    num(
+      lot?.pricePerUnit ??
+        lot?.package?.defaultSalePricePerPackage ??
+        lot?.labelMetadata?.defaultSalePricePerPackage ??
+        lot?.pricing?.pricePerUnit,
+      0
+    )
+  );
+  if (explicit > 0) return explicit;
+  return getSkuType(lot) === "retail" ? getLockedPackageMsrp(lot) : 0;
 }
+
+function getProductTypeLabel(lot = {}) {
+  const raw = lower(lot?.productType || lot?.finishedGoodType || lot?.lotType || "finished product");
+  if (raw === "capsule" || raw === "capsules") return "Capsules";
+  if (raw === "gummy" || raw === "gummies") return "Gummies";
+  if (raw === "chocolate" || raw === "chocolates") return "Chocolates";
+  if (raw === "tincture" || raw === "tinctures") return "Tinctures";
+  return raw ? raw.replace(/_/g, " ") : "Finished product";
+}
+
+function getProductLabel(lot = {}) {
+  return (
+    String(
+      lot?.labelMetadata?.productName ||
+        lot?.productName ||
+        lot?.strainName ||
+        lot?.strain ||
+        lot?.sourceStrain ||
+        lot?.batchName ||
+        lot?.name ||
+        "Finished product"
+    ).trim() || "Finished product"
+  );
+}
+
+function normalizedKeyPart(value = "") {
+  return String(value || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+}
+
+function getProductKey(lot = {}) {
+  return [
+    getProductTypeLabel(lot),
+    getProductLabel(lot),
+    lot?.variantTag || lot?.variant || "",
+  ]
+    .map(normalizedKeyPart)
+    .filter(Boolean)
+    .join("|");
+}
+
+function getParentBatchId(lot = {}) {
+  return String(
+    lot?.parentLotId || lot?.sourceLotId || lot?.package?.sourceLotId || lot?.sourceBatchId || ""
+  ).trim();
+}
+
+function getParentBatchLabel(lot = {}, parentById = new Map()) {
+  const parentId = getParentBatchId(lot);
+  const parent = parentId ? parentById.get(parentId) : null;
+  return (
+    String(parent?.batchName || parent?.name || lot?.batchName || lot?.sourceBatchName || parentId || "Batch").trim() ||
+    "Batch"
+  );
+}
+
+function getBestByValue(lot = {}) {
+  return String(
+    lot?.shelfLife?.bestBy ||
+      lot?.shelfLife?.bestByDate ||
+      lot?.shelfLife?.expirationDate ||
+      lot?.bestBy ||
+      lot?.expirationDate ||
+      lot?.labelMetadata?.bestBy ||
+      lot?.labelMetadata?.bestByDate ||
+      ""
+  ).trim();
+}
+
+function getWorkflowState(lot = {}) {
+  const workflow = lot?.workflow && typeof lot.workflow === "object" ? lot.workflow : {};
+  const qc = lower(lot?.qc?.status || lot?.qcStatus);
+  if (workflow?.recalled || lot?.recalled) return "recalled";
+  if (workflow?.quarantined || lot?.quarantined) return "quarantined";
+  if (workflow?.qcHold || lot?.qcHold || qc === "hold") return "hold";
+  if (["fail", "failed", "rejected"].includes(qc)) return "failed";
+  const releaseRequired = Boolean(workflow?.releaseRequired ?? lot?.releaseRequired ?? false);
+  const releaseStatus = lower(
+    workflow?.releaseStatus || lot?.releaseStatus || (releaseRequired ? "pending" : "released")
+  );
+  if (releaseRequired && releaseStatus !== "released") return "pending release";
+  if (!lot?.qc?.checkedDate && qc === "pending") return "qc pending";
+  return "released";
+}
+
+function getMoveRevenue(move = {}) {
+  const direct = num(move?.revenue ?? move?.totalValue, NaN);
+  if (Number.isFinite(direct)) return round2(direct);
+  return round2(num(move?.pricePerUnit, 0) * num(move?.quantity, 0));
+}
+
+function getMovementDate(move = {}) {
+  return toDateMaybe(move?.date || move?.createdAt || move?.updatedAt);
+}
+
+function isDateInRange(rawDate, fromDate = "", toDate = "") {
+  if (!fromDate && !toDate) return true;
+  const d = toDateMaybe(rawDate);
+  if (!d) return false;
+  const from = fromDate ? new Date(`${fromDate}T00:00:00`) : null;
+  const to = toDate ? new Date(`${toDate}T23:59:59.999`) : null;
+  if (from && d < from) return false;
+  if (to && d > to) return false;
+  return true;
+}
+
+function getMovementUnitCost(move = {}, lot = {}) {
+  return round2(
+    num(
+      move?.priceOverride?.packageUnitCost ??
+        move?.packageUnitCost ??
+        move?.unitCost ??
+        getLockedPackageCost(lot),
+      0
+    )
+  );
+}
+
+function hasPriceOverride(move = {}) {
+  return Boolean(
+    move?.priceOverride?.hasOverride ||
+      move?.priceOverride?.belowCost ||
+      move?.priceOverride?.nonRetailSale ||
+      Math.abs(num(move?.priceDifferencePerUnit, 0)) >= 0.01
+  );
+}
+
+function hasFefoOverride(move = {}) {
+  return Boolean(move?.fefoOverride?.applied || move?.inventoryRotation?.overrideApplied);
+}
+
 function getBatchExpectedOutput(batch = {}) {
   return num(
-    batch?.expectedOutput ?? batch?.expectedOutputCount ?? batch?.expectedOutputAmount ?? batch?.plannedOutput ?? batch?.plannedCount,
+    batch?.yieldMetrics?.expectedQuantity ??
+      batch?.expectedOutputCount ??
+      batch?.expectedOutput ??
+      batch?.expectedOutputAmount ??
+      batch?.plannedOutput ??
+      batch?.plannedCount,
     0
   );
 }
+
 function getBatchActualOutput(batch = {}) {
   return num(
-    batch?.actualOutput ?? batch?.actualOutputCount ?? batch?.actualOutputAmount ?? batch?.finalOutput ?? batch?.finalCount ?? batch?.outputCount ?? batch?.outputAmount,
+    batch?.yieldMetrics?.actualQuantity ??
+      batch?.actualOutputCount ??
+      batch?.actualOutput ??
+      batch?.actualOutputAmount ??
+      batch?.finalOutput ??
+      batch?.finalCount ??
+      batch?.outputCount ??
+      batch?.outputAmount,
     0
   );
 }
+
 function getBatchWasteQty(batch = {}) {
-  return num(batch?.wasteQuantity ?? batch?.waste?.quantity ?? batch?.shrinkQuantity, 0);
+  return num(
+    batch?.yieldMetrics?.wasteQuantity ?? batch?.wasteQuantity ?? batch?.waste?.quantity ?? batch?.shrinkQuantity,
+    0
+  );
 }
+
 function getBatchWasteReason(batch = {}) {
-  return batch?.wasteReason || batch?.waste?.reason || batch?.shrinkReason || batch?.reason || "Unspecified";
+  return (
+    batch?.yieldMetrics?.wasteReason ||
+    batch?.wasteReason ||
+    batch?.waste?.reason ||
+    batch?.shrinkReason ||
+    batch?.reason ||
+    "Unspecified"
+  );
 }
+
 function getBatchKind(batch = {}) {
   return lower(batch?.processType || batch?.processCategory || batch?.batchType || batch?.type);
 }
+
 function isReworkBatch(batch = {}) {
   const hay = `${getBatchKind(batch)} ${lower(batch?.name)}`;
   return /rework|repurpose|relabel|rebottle|repackage/.test(hay);
 }
-function getMoveRevenue(move = {}) {
-  const revenue = num(move?.revenue ?? move?.totalValue, NaN);
-  if (Number.isFinite(revenue)) return revenue;
-  return num(move?.unitPrice, 0) * num(move?.quantity, 0);
-}
-function withinDays(rawDate, days) {
-  const d = toDateMaybe(rawDate);
-  if (!d) return false;
-  const now = new Date();
-  now.setHours(0,0,0,0);
-  const target = new Date(d);
-  target.setHours(0,0,0,0);
-  const diff = Math.round((target - now) / 86400000);
-  return diff >= 0 && diff <= days;
-}
+
 function isPackagingSupply(supply = {}) {
   const type = lower(supply?.type);
   const unit = lower(supply?.unit);
   const name = lower(supply?.name);
-  return PACKAGING_TYPE_HINTS.has(type) || PACKAGING_TYPE_HINTS.has(unit) || /bottle|jar|bag|label|capsule|dropper|box|wrapper|shrink/.test(name);
+  return (
+    PACKAGING_TYPE_HINTS.has(type) ||
+    PACKAGING_TYPE_HINTS.has(unit) ||
+    /bottle|jar|bag|label|capsule|dropper|box|wrapper|shrink/.test(name)
+  );
+}
+
+function addMetricRow(map, key, label, seed = {}) {
+  if (!map.has(key)) {
+    map.set(key, {
+      key,
+      name: label,
+      available: 0,
+      activeLots: 0,
+      depletedLots: 0,
+      sold: 0,
+      samples: 0,
+      promo: 0,
+      internal: 0,
+      donated: 0,
+      destroyed: 0,
+      wasted: 0,
+      revenue: 0,
+      cogs: 0,
+      profit: 0,
+      projectedRevenue: 0,
+      projectedProfit: 0,
+      priceOverrides: 0,
+      fefoOverrides: 0,
+      ...seed,
+    });
+  }
+  return map.get(key);
+}
+
+function finalizeMetricRows(map, sortKey = "revenue") {
+  return Array.from(map.values())
+    .map((row) => ({
+      ...row,
+      available: round3(row.available),
+      sold: round3(row.sold),
+      samples: round3(row.samples),
+      promo: round3(row.promo),
+      internal: round3(row.internal),
+      donated: round3(row.donated),
+      destroyed: round3(row.destroyed),
+      wasted: round3(row.wasted),
+      revenue: round2(row.revenue),
+      cogs: round2(row.cogs),
+      profit: round2(row.profit),
+      projectedRevenue: round2(row.projectedRevenue),
+      projectedProfit: round2(row.projectedProfit),
+      realizedMarginPercent: row.revenue > 0 ? round2((row.profit / row.revenue) * 100) : 0,
+    }))
+    .sort((a, b) => num(b?.[sortKey], 0) - num(a?.[sortKey], 0));
 }
 
 /* ---------- component ---------- */
@@ -550,7 +1009,7 @@ export default function Analytics({
 }) {
   // Default to something that always has data
   
-  const [chartKey, setChartKey] = useState("stageCounts");
+  const [activeSection, setActiveSection] = useState("overview");
   const [showValues, setShowValues] = useState(true);
   const [showAll, setShowAll] = useState(false);
   const [groupMode, setGroupMode] = useState("strain"); // "strain" | "recipe"
@@ -562,8 +1021,6 @@ export default function Analytics({
   const [materialLots, setMaterialLots] = useState([]);
   const [processBatches, setProcessBatches] = useState([]);
   const [inventoryMoves, setInventoryMoves] = useState([]);
-  const [contaminationLogsByGrow, setContaminationLogsByGrow] = useState({});
-  const [contaminationLogErrors, setContaminationLogErrors] = useState({});
 
   useEffect(() => setAudits(Array.isArray(supplyAudits) ? supplyAudits : []), [supplyAudits]);
   useEffect(() => {
@@ -617,64 +1074,6 @@ export default function Analytics({
     return Array.from(byId.values());
   }, [grows, archivedGrows]);
 
-  useEffect(() => {
-    const u = auth.currentUser;
-    const ids = Array.from(
-      new Set(
-        (allGrows || [])
-          .map((g) => g?.id)
-          .filter(Boolean)
-      )
-    );
-
-    if (!u || ids.length === 0) {
-      setContaminationLogsByGrow({});
-      setContaminationLogErrors({});
-      return undefined;
-    }
-
-    let active = true;
-    const unsubs = [];
-
-    setContaminationLogsByGrow((prev) => {
-      const next = {};
-      ids.forEach((id) => {
-        if (prev[id]) next[id] = prev[id];
-      });
-      return next;
-    });
-
-    ids.forEach((growId) => {
-      const logsRef = collection(db, "users", u.uid, "grows", growId, "contaminationLogs");
-      const unsub = onSnapshot(
-        logsRef,
-        (snap) => {
-          if (!active) return;
-          const logs = snap.docs.map((d) => ({ id: d.id, growId, ...d.data() }));
-          setContaminationLogsByGrow((prev) => ({ ...prev, [growId]: logs }));
-          setContaminationLogErrors((prev) => {
-            if (!prev[growId]) return prev;
-            const next = { ...prev };
-            delete next[growId];
-            return next;
-          });
-        },
-        (error) => {
-          if (!active) return;
-          console.warn("Contamination analytics log read failed:", growId, error?.message || error);
-          setContaminationLogErrors((prev) => ({ ...prev, [growId]: error?.message || "Read failed" }));
-        }
-      );
-      unsubs.push(unsub);
-    });
-
-    return () => {
-      active = false;
-      unsubs.forEach((unsub) => unsub && unsub());
-    };
-  }, [allGrows]);
-
-
   // Toggle sources
   const datasetActive = useMemo(
     () => (
@@ -713,6 +1112,82 @@ export default function Analytics({
     [showAll, datasetAll, datasetActive, filterPredicate]
   );
 
+  const sopWorkflowPerformance = useMemo(() => {
+    const rowsByKey = new Map();
+    const growWorkflowById = new Map();
+
+    (filteredAll || []).filter(isSopWorkflowGrow).forEach((grow) => {
+      const key = String(
+        grow?.workflowTemplateId ||
+          grow?.sopTemplateId ||
+          grow?.workflowTemplateTitle ||
+          grow?.sopTemplateTitle ||
+          "sop-workflow"
+      );
+      const title =
+        grow?.workflowTemplateTitle ||
+        grow?.sopTemplateTitle ||
+        grow?.workflowTitle ||
+        "Workflow SOP";
+
+      if (!rowsByKey.has(key)) {
+        rowsByKey.set(key, {
+          key,
+          name: title,
+          grows: 0,
+          checklistCompleted: 0,
+          checklistTotal: 0,
+          checklistCompletionPercent: 0,
+          tasks: 0,
+          completedTasks: 0,
+          harvested: 0,
+          contaminated: 0,
+        });
+      }
+
+      const row = rowsByKey.get(key);
+      const checklist = getSopChecklist(grow);
+      row.grows += 1;
+      row.checklistTotal += checklist.length;
+      row.checklistCompleted += checklist.filter((item) => item?.completed === true).length;
+
+      const stage = String(grow?.stage || "").toLowerCase();
+      const status = String(grow?.status || "").toLowerCase();
+      if (stage === "harvested" || stage === "finished" || status === "harvested") {
+        row.harvested += 1;
+      }
+      if (isContaminated(grow)) row.contaminated += 1;
+
+      if (grow?.id) growWorkflowById.set(String(grow.id), key);
+    });
+
+    (Array.isArray(tasks) ? tasks : []).forEach((task) => {
+      const taskKey = String(
+        task?.workflowTemplateId ||
+          task?.sopTemplateId ||
+          growWorkflowById.get(String(task?.growId || "")) ||
+          ""
+      );
+      if (!taskKey || !rowsByKey.has(taskKey)) return;
+
+      const row = rowsByKey.get(taskKey);
+      row.tasks += 1;
+      if (task?.completedAt || task?.completed === true || task?.done === true) {
+        row.completedTasks += 1;
+      }
+    });
+
+    return Array.from(rowsByKey.values())
+      .map((row) => ({
+        ...row,
+        checklistCompletionPercent:
+          row.checklistTotal > 0
+            ? Math.round((row.checklistCompleted / row.checklistTotal) * 100)
+            : 0,
+      }))
+      .sort((a, b) => b.grows - a.grows || a.name.localeCompare(b.name));
+  }, [filteredAll, tasks]);
+
   // Tiny active-only overview (cards)
   // NEW: build normalized cost map once for the current dataset (active vs all)
   const supplyCostById = useMemo(
@@ -746,12 +1221,7 @@ export default function Analytics({
       }
 
       const stored = toNumber(g?.cost, null);
-      const labConsumablesCost = computeStoredLabConsumablesCost(g, supplyCostById);
-      const cost = derived != null
-        ? Number((derived + labConsumablesCost).toFixed(2))
-        : stored != null
-        ? stored
-        : labConsumablesCost;
+      const cost = derived != null ? derived : stored != null ? stored : 0;
 
       map.set(g.id, cost);
     }
@@ -789,93 +1259,424 @@ export default function Analytics({
   );
 
   const postProcessAnalytics = useMemo(() => {
-    const finishedLots = (materialLots || []).filter((lot) => isFinishedPostProcessLot(lot));
-    const activeFinishedLots = finishedLots.filter((lot) => !isArchivedPostProcessLot(lot));
-    const blockedFinishedLots = activeFinishedLots.filter((lot) => isBlockedPostProcessLot(lot));
-    const releasedFinishedLots = activeFinishedLots.filter((lot) => getLotWorkflowState(lot) === "released");
-    const labelReadyLots = activeFinishedLots.filter((lot) => isLabelReadyPostProcessLot(lot));
-    const expiringSoonLots = activeFinishedLots.filter((lot) => withinDays(getLabelMeta(lot).bestBy || lot?.expirationDate || lot?.shelfLife?.bestBy, 30));
+    const finishedLots = (materialLots || []).filter((lot) => isFinishedGoodsLot(lot));
+    const parentFinishedLots = finishedLots.filter((lot) => !isPackagedFinishedLot(lot));
+    const packageLots = finishedLots.filter((lot) => isPackagedFinishedLot(lot));
+    const activeParentLots = parentFinishedLots.filter((lot) => isActiveMaterialLot(lot));
+    const depletedParentLots = parentFinishedLots.filter((lot) => isArchivedOrDepletedMaterialLot(lot));
+    const activePackageLots = packageLots.filter((lot) => isActiveMaterialLot(lot));
+    const depletedPackageLots = packageLots.filter((lot) => isArchivedOrDepletedMaterialLot(lot));
+    const parentById = new Map(parentFinishedLots.map((lot) => [lot.id, lot]));
+    const packageById = new Map(packageLots.map((lot) => [lot.id, lot]));
+    const hasActivityDateFilter = Boolean(fromDate || toDate);
 
-    const workflowCounts = [
-      { name: "Blocked", value: blockedFinishedLots.length },
-      { name: "Released", value: releasedFinishedLots.length },
-      { name: "Label Ready", value: labelReadyLots.length },
-      { name: "Expiring Soon", value: expiringSoonLots.length },
+    const movementTypes = new Set(["sell", "sample", "donate", "waste", "destroy", "adjustment"]);
+    const finishedMoves = (inventoryMoves || [])
+      .filter((move) => packageById.has(String(move?.lotId || "")))
+      .filter((move) => movementTypes.has(lower(move?.movementType)))
+      .filter((move) => isDateInRange(getMovementDate(move), fromDate, toDate));
+
+    const movesByLot = new Map();
+    finishedMoves.forEach((move) => {
+      const lotId = String(move?.lotId || "");
+      if (!movesByLot.has(lotId)) movesByLot.set(lotId, []);
+      movesByLot.get(lotId).push(move);
+    });
+
+    const productMap = new Map();
+    const batchMap = new Map();
+    const skuMap = new Map();
+    const packageSizeMap = new Map();
+    const valuationMap = new Map();
+    const destinationMap = new Map();
+    const overrideMap = new Map();
+    const lossMap = new Map();
+
+    const summary = {
+      activeParentBatches: activeParentLots.length,
+      depletedParentBatches: depletedParentLots.length,
+      activePackageLots: activePackageLots.length,
+      depletedPackageLots: depletedPackageLots.length,
+      availablePackagedUnits: 0,
+      unitsSold: 0,
+      samplesDistributed: 0,
+      promoDistributed: 0,
+      internalDistributed: 0,
+      donatedUnits: 0,
+      destroyedUnits: 0,
+      wastedUnits: 0,
+      adjustedOutUnits: 0,
+      adjustedInUnits: 0,
+      realizedRevenue: 0,
+      realizedCogs: 0,
+      realizedProfit: 0,
+      realizedMarginPercent: 0,
+      remainingProjectedRevenue: 0,
+      remainingProjectedCogs: 0,
+      remainingProjectedProfit: 0,
+      priceOverrides: 0,
+      belowCostSales: 0,
+      nonRetailSales: 0,
+      fefoOverrides: 0,
+      expiring30Lots: 0,
+      expiring30Units: 0,
+      packagingShortages: 0,
+      reworkBatches: 0,
+    };
+
+    packageLots.forEach((lot) => {
+      const active = isActiveMaterialLot(lot);
+      const available = active ? Math.max(0, getLotAvailableQuantity(lot)) : 0;
+      const unitCost = getLockedPackageCost(lot);
+      const lockedPrice = getLockedPackagePrice(lot);
+      const msrp = getLockedPackageMsrp(lot);
+      const projectedRevenue = round2(available * lockedPrice);
+      const projectedCogs = round2(available * unitCost);
+      const projectedProfit = round2(projectedRevenue - projectedCogs);
+      const productKey = getProductKey(lot) || lot.id;
+      const productLabel = getProductLabel(lot);
+      const batchKey = getParentBatchId(lot) || lot?.sourceBatchId || lot?.batchName || lot.id;
+      const batchLabel = getParentBatchLabel(lot, parentById);
+      const skuType = getSkuType(lot);
+      const packageSizeLabel = getPackageSizeLabel(lot);
+      const skuKey = `${skuType}|${normalizedKeyPart(packageSizeLabel)}`;
+      const typeLabel = getProductTypeLabel(lot);
+
+      const productRow = addMetricRow(productMap, productKey, productLabel, {
+        productType: typeLabel,
+        variant: lot?.variant || lot?.variantTag || "",
+      });
+      const batchRow = addMetricRow(batchMap, String(batchKey), batchLabel, {
+        product: productLabel,
+        parentLotId: getParentBatchId(lot),
+      });
+      const skuRow = addMetricRow(skuMap, skuKey, `${getSkuTypeLabel(skuType)} · ${packageSizeLabel}`, {
+        skuType,
+        packageSize: packageSizeLabel,
+      });
+      const packageRow = addMetricRow(packageSizeMap, normalizedKeyPart(packageSizeLabel) || packageSizeLabel, packageSizeLabel, {
+        packageSize: packageSizeLabel,
+      });
+
+      [productRow, batchRow, skuRow, packageRow].forEach((row) => {
+        row.available += available;
+        row.activeLots += active ? 1 : 0;
+        row.depletedLots += active ? 0 : 1;
+        row.projectedRevenue += projectedRevenue;
+        row.projectedProfit += projectedProfit;
+      });
+
+      const valuationRow = addMetricRow(valuationMap, normalizedKeyPart(typeLabel), typeLabel);
+      valuationRow.available += available;
+      valuationRow.activeLots += active ? 1 : 0;
+      valuationRow.depletedLots += active ? 0 : 1;
+      valuationRow.projectedRevenue += projectedRevenue;
+      valuationRow.projectedProfit += projectedProfit;
+      valuationRow.inventoryCostValue = round2((valuationRow.inventoryCostValue || 0) + projectedCogs);
+
+      summary.availablePackagedUnits += available;
+      summary.remainingProjectedRevenue += projectedRevenue;
+      summary.remainingProjectedCogs += projectedCogs;
+      summary.remainingProjectedProfit += projectedProfit;
+
+      const lotMoves = movesByLot.get(lot.id) || [];
+      if (lotMoves.length > 0) {
+        lotMoves.forEach((move) => {
+          const type = lower(move?.movementType);
+          const direction = lower(move?.direction || "out");
+          const quantity = Math.max(0, num(move?.quantity, 0));
+          const revenue = type === "sell" && direction === "out" ? getMoveRevenue(move) : 0;
+          const cogs = type === "sell" && direction === "out" ? round2(getMovementUnitCost(move, lot) * quantity) : 0;
+          const profit = round2(revenue - cogs);
+          const isOverride = type === "sell" && hasPriceOverride(move);
+          const isFefo = type === "sell" && hasFefoOverride(move);
+
+          [productRow, batchRow, skuRow, packageRow].forEach((row) => {
+            if (type === "sell" && direction === "out") {
+              row.sold += quantity;
+              row.revenue += revenue;
+              row.cogs += cogs;
+              row.profit += profit;
+            } else if (type === "sample" && direction === "out") {
+              row.samples += quantity;
+              if (skuType === "promo") row.promo += quantity;
+              if (skuType === "internal") row.internal += quantity;
+            } else if (type === "donate" && direction === "out") row.donated += quantity;
+            else if (type === "destroy" && direction === "out") row.destroyed += quantity;
+            else if (type === "waste" && direction === "out") row.wasted += quantity;
+            if (isOverride) row.priceOverrides += 1;
+            if (isFefo) row.fefoOverrides += 1;
+          });
+
+          if (type === "sell" && direction === "out") {
+            summary.unitsSold += quantity;
+            summary.realizedRevenue += revenue;
+            summary.realizedCogs += cogs;
+            summary.realizedProfit += profit;
+          } else if (type === "sample" && direction === "out") {
+            summary.samplesDistributed += quantity;
+            if (skuType === "promo") summary.promoDistributed += quantity;
+            if (skuType === "internal") summary.internalDistributed += quantity;
+          } else if (type === "donate" && direction === "out") summary.donatedUnits += quantity;
+          else if (type === "destroy" && direction === "out") summary.destroyedUnits += quantity;
+          else if (type === "waste" && direction === "out") summary.wastedUnits += quantity;
+          else if (type === "adjustment" && direction === "in") summary.adjustedInUnits += quantity;
+          else if (type === "adjustment") summary.adjustedOutUnits += quantity;
+
+          if (isOverride) {
+            summary.priceOverrides += 1;
+            if (move?.priceOverride?.belowCost) summary.belowCostSales += 1;
+            if (move?.priceOverride?.nonRetailSale) summary.nonRetailSales += 1;
+          }
+          if (isFefo) summary.fefoOverrides += 1;
+
+          const destination = String(
+            move?.destinationName || move?.counterparty || move?.destinationType || "Unspecified"
+          ).trim() || "Unspecified";
+          if (!destinationMap.has(destination)) {
+            destinationMap.set(destination, { name: destination, quantity: 0, revenue: 0 });
+          }
+          if (["sell", "sample", "donate"].includes(type) && direction === "out") {
+            destinationMap.get(destination).quantity += quantity;
+            destinationMap.get(destination).revenue += revenue;
+          }
+
+          if (isOverride || isFefo) {
+            const key = productKey || productLabel;
+            if (!overrideMap.has(key)) {
+              overrideMap.set(key, { name: productLabel, priceOverrides: 0, fefoOverrides: 0 });
+            }
+            if (isOverride) overrideMap.get(key).priceOverrides += 1;
+            if (isFefo) overrideMap.get(key).fefoOverrides += 1;
+          }
+
+          if (["destroy", "waste"].includes(type) && direction === "out") {
+            const reason = String(move?.reason || move?.note || `${type} inventory`).trim() || "Unspecified";
+            if (!lossMap.has(reason)) {
+              lossMap.set(reason, { name: reason, destroyed: 0, wasted: 0, costLoss: 0 });
+            }
+            const row = lossMap.get(reason);
+            if (type === "destroy") row.destroyed += quantity;
+            if (type === "waste") row.wasted += quantity;
+            row.costLoss += round2(getMovementUnitCost(move, lot) * quantity);
+          }
+        });
+      } else if (!hasActivityDateFilter) {
+        const outbound = lot?.outboundSummary || {};
+        const sold = Math.max(0, num(outbound?.sold, 0));
+        const sampled = Math.max(0, num(outbound?.sampled, 0));
+        const donated = Math.max(0, num(outbound?.donated, 0));
+        const destroyed = Math.max(0, num(outbound?.destroyed, 0));
+        const wasted = Math.max(0, num(outbound?.wasted, 0));
+        const revenue = round2(num(outbound?.revenue, 0));
+        const cogs = round2(unitCost * sold);
+        const profit = round2(revenue - cogs);
+
+        [productRow, batchRow, skuRow, packageRow].forEach((row) => {
+          row.sold += sold;
+          row.samples += sampled;
+          if (skuType === "promo") row.promo += sampled;
+          if (skuType === "internal") row.internal += sampled;
+          row.donated += donated;
+          row.destroyed += destroyed;
+          row.wasted += wasted;
+          row.revenue += revenue;
+          row.cogs += cogs;
+          row.profit += profit;
+        });
+
+        summary.unitsSold += sold;
+        summary.samplesDistributed += sampled;
+        if (skuType === "promo") summary.promoDistributed += sampled;
+        if (skuType === "internal") summary.internalDistributed += sampled;
+        summary.donatedUnits += donated;
+        summary.destroyedUnits += destroyed;
+        summary.wastedUnits += wasted;
+        summary.realizedRevenue += revenue;
+        summary.realizedCogs += cogs;
+        summary.realizedProfit += profit;
+      }
+
+      const bestBy = toDateMaybe(getBestByValue(lot));
+      if (active && available > 0 && bestBy) {
+        const today = new Date();
+        today.setHours(0, 0, 0, 0);
+        const target = new Date(bestBy);
+        target.setHours(0, 0, 0, 0);
+        const days = Math.ceil((target - today) / 86400000);
+        if (days >= 0 && days <= 30) {
+          summary.expiring30Lots += 1;
+          summary.expiring30Units += available;
+        }
+      }
+    });
+
+    summary.availablePackagedUnits = round3(summary.availablePackagedUnits);
+    summary.unitsSold = round3(summary.unitsSold);
+    summary.samplesDistributed = round3(summary.samplesDistributed);
+    summary.promoDistributed = round3(summary.promoDistributed);
+    summary.internalDistributed = round3(summary.internalDistributed);
+    summary.donatedUnits = round3(summary.donatedUnits);
+    summary.destroyedUnits = round3(summary.destroyedUnits);
+    summary.wastedUnits = round3(summary.wastedUnits);
+    summary.realizedRevenue = round2(summary.realizedRevenue);
+    summary.realizedCogs = round2(summary.realizedCogs);
+    summary.realizedProfit = round2(summary.realizedProfit);
+    summary.realizedMarginPercent = summary.realizedRevenue > 0
+      ? round2((summary.realizedProfit / summary.realizedRevenue) * 100)
+      : 0;
+    summary.remainingProjectedRevenue = round2(summary.remainingProjectedRevenue);
+    summary.remainingProjectedCogs = round2(summary.remainingProjectedCogs);
+    summary.remainingProjectedProfit = round2(summary.remainingProjectedProfit);
+    summary.expiring30Units = round3(summary.expiring30Units);
+
+    const workflowTally = new Map();
+    [...activeParentLots, ...activePackageLots].forEach((lot) => {
+      const state = getWorkflowState(lot);
+      workflowTally.set(state, (workflowTally.get(state) || 0) + 1);
+    });
+    const workflowCounts = Array.from(workflowTally.entries())
+      .map(([name, value]) => ({ name: name.replace(/\b\w/g, (c) => c.toUpperCase()), value }))
+      .sort((a, b) => b.value - a.value);
+
+    const inventoryStatus = [
+      { name: "Parent finished batches", Active: activeParentLots.length, Depleted: depletedParentLots.length },
+      { name: "Package lots", Active: activePackageLots.length, Depleted: depletedPackageLots.length },
     ];
 
-    const valuationMap = {};
-    activeFinishedLots.forEach((lot) => {
-      const key = lot?.productType || lot?.finishedGoodType || lot?.lotType || "other";
-      const available = Math.max(0, getLotAvailableQty(lot));
-      const unitCost = num(lot?.costs?.unitCost ?? lot?.unitCost ?? lot?.pricing?.unitCost, 0);
-      const unitPrice = num(lot?.pricePerUnit ?? lot?.pricing?.pricePerUnit, 0);
-      if (!valuationMap[key]) valuationMap[key] = { name: key, units: 0, costValue: 0, salesValue: 0 };
-      valuationMap[key].units += available;
-      valuationMap[key].costValue += available * unitCost;
-      valuationMap[key].salesValue += available * unitPrice;
-    });
-    const valuationByType = Object.values(valuationMap)
-      .map((row) => ({ ...row, costValue: Number(row.costValue.toFixed(2)), salesValue: Number(row.salesValue.toFixed(2)) }))
-      .sort((a, b) => b.salesValue - a.salesValue);
+    const financialSnapshot = [
+      {
+        name: "Realized",
+        Revenue: summary.realizedRevenue,
+        Cost: summary.realizedCogs,
+        Profit: summary.realizedProfit,
+      },
+      {
+        name: "Remaining",
+        Revenue: summary.remainingProjectedRevenue,
+        Cost: summary.remainingProjectedCogs,
+        Profit: summary.remainingProjectedProfit,
+      },
+    ];
 
-    const salesMap = {};
-    (inventoryMoves || []).forEach((move) => {
-      const type = lower(move?.movementType);
-      if (!["sell", "donate", "sample"].includes(type)) return;
-      const key = move?.destinationName || move?.destinationType || move?.counterparty || "Unspecified";
-      if (!salesMap[key]) salesMap[key] = { name: key, quantity: 0, revenue: 0, type: move?.destinationType || type };
-      salesMap[key].quantity += num(move?.quantity, 0);
-      salesMap[key].revenue += getMoveRevenue(move);
+    const lockedPricingMap = new Map();
+    packageLots.forEach((lot) => {
+      const skuType = getSkuType(lot);
+      const packageLabel = getPackageSizeLabel(lot);
+      const key = `${skuType}|${normalizedKeyPart(packageLabel)}`;
+      if (!lockedPricingMap.has(key)) {
+        lockedPricingMap.set(key, {
+          name: `${getSkuTypeLabel(skuType)} · ${packageLabel}`,
+          costTotal: 0,
+          priceTotal: 0,
+          msrpTotal: 0,
+          count: 0,
+        });
+      }
+      const row = lockedPricingMap.get(key);
+      row.costTotal += getLockedPackageCost(lot);
+      row.priceTotal += getLockedPackagePrice(lot);
+      row.msrpTotal += getLockedPackageMsrp(lot);
+      row.count += 1;
     });
-    const salesByDestination = Object.values(salesMap)
-      .map((row) => ({ ...row, revenue: Number(row.revenue.toFixed(2)) }))
-      .sort((a, b) => b.revenue - a.revenue)
-      .slice(0, 12);
+    const lockedPricing = Array.from(lockedPricingMap.values())
+      .map((row) => ({
+        name: row.name,
+        Cost: row.count ? round2(row.costTotal / row.count) : 0,
+        DefaultPrice: row.count ? round2(row.priceTotal / row.count) : 0,
+        MSRP: row.count ? round2(row.msrpTotal / row.count) : 0,
+      }))
+      .sort((a, b) => b.DefaultPrice - a.DefaultPrice)
+      .slice(0, 16);
 
-    const wasteMap = {};
-    (processBatches || []).forEach((batch) => {
-      const qty = getBatchWasteQty(batch);
-      if (qty <= 0) return;
-      const key = getBatchWasteReason(batch);
-      if (!wasteMap[key]) wasteMap[key] = { name: key, quantity: 0 };
-      wasteMap[key].quantity += qty;
+    const expiringLots = activePackageLots
+      .map((lot) => {
+        const bestBy = toDateMaybe(getBestByValue(lot));
+        if (!bestBy) return null;
+        const today = new Date();
+        today.setHours(0, 0, 0, 0);
+        const target = new Date(bestBy);
+        target.setHours(0, 0, 0, 0);
+        return {
+          id: lot.id,
+          name: lot?.lotCode || lot?.batchLot || lot?.name || lot.id,
+          product: getProductLabel(lot),
+          packageSize: getPackageSizeLabel(lot),
+          bestBy: getBestByValue(lot),
+          days: Math.ceil((target - today) / 86400000),
+          units: Math.max(0, getLotAvailableQuantity(lot)),
+        };
+      })
+      .filter(Boolean)
+      .sort((a, b) => a.days - b.days);
+
+    const expirationBuckets = [
+      { name: "Past best-by", units: 0, lots: 0 },
+      { name: "0–30 days", units: 0, lots: 0 },
+      { name: "31–60 days", units: 0, lots: 0 },
+      { name: "61–90 days", units: 0, lots: 0 },
+      { name: "90+ days", units: 0, lots: 0 },
+    ];
+    expiringLots.forEach((lot) => {
+      let bucket = expirationBuckets[4];
+      if (lot.days < 0) bucket = expirationBuckets[0];
+      else if (lot.days <= 30) bucket = expirationBuckets[1];
+      else if (lot.days <= 60) bucket = expirationBuckets[2];
+      else if (lot.days <= 90) bucket = expirationBuckets[3];
+      bucket.units += lot.units;
+      bucket.lots += 1;
     });
-    (inventoryMoves || []).forEach((move) => {
-      if (lower(move?.movementType) !== "waste") return;
-      const key = move?.reason || move?.note || "Inventory waste";
-      if (!wasteMap[key]) wasteMap[key] = { name: key, quantity: 0 };
-      wasteMap[key].quantity += num(move?.quantity, 0);
+    expirationBuckets.forEach((row) => {
+      row.units = round3(row.units);
     });
-    const wasteByReason = Object.values(wasteMap).sort((a, b) => b.quantity - a.quantity).slice(0, 12);
 
     const efficiencyByBatch = (processBatches || [])
       .map((batch) => {
         const expected = getBatchExpectedOutput(batch);
         const actual = getBatchActualOutput(batch);
-        if (!(expected > 0 || actual > 0)) return null;
+        const waste = getBatchWasteQty(batch);
+        if (!(expected > 0 || actual > 0 || waste > 0)) return null;
         const variance = actual - expected;
         const variancePct = expected > 0 ? (variance / expected) * 100 : 0;
         return {
           name: batch?.name || batch?.id || "Batch",
           kind: getBatchKind(batch) || "batch",
-          expected,
-          actual,
-          variance,
-          variancePct: Number(variancePct.toFixed(2)),
+          expected: round3(expected),
+          actual: round3(actual),
+          waste: round3(waste),
+          variance: round3(variance),
+          variancePct: round2(variancePct),
         };
       })
       .filter(Boolean)
       .sort((a, b) => Math.abs(b.variancePct) - Math.abs(a.variancePct))
-      .slice(0, 14);
+      .slice(0, 16);
 
     const reworkSeries = (processBatches || [])
       .filter((batch) => isReworkBatch(batch))
       .map((batch) => ({
         name: batch?.name || batch?.id || "Rework",
-        salvage: num(batch?.salvageOutput ?? batch?.salvageQuantity ?? batch?.actualOutput, 0),
+        salvage: num(
+          batch?.salvageOutput ?? batch?.salvageQuantity ?? batch?.yieldMetrics?.actualQuantity ?? batch?.actualOutput,
+          0
+        ),
         waste: getBatchWasteQty(batch),
       }))
-      .sort((a, b) => (b.salvage + b.waste) - (a.salvage + a.waste));
+      .sort((a, b) => b.salvage + b.waste - (a.salvage + a.waste));
+    summary.reworkBatches = reworkSeries.length;
+
+    const processWasteMap = new Map();
+    (processBatches || []).forEach((batch) => {
+      const qty = getBatchWasteQty(batch);
+      if (qty <= 0) return;
+      const reason = getBatchWasteReason(batch);
+      if (!processWasteMap.has(reason)) processWasteMap.set(reason, { name: reason, quantity: 0 });
+      processWasteMap.get(reason).quantity += qty;
+    });
+    const processWasteByReason = Array.from(processWasteMap.values())
+      .map((row) => ({ ...row, quantity: round3(row.quantity) }))
+      .sort((a, b) => b.quantity - a.quantity)
+      .slice(0, 12);
 
     const packagingUsageMap = {};
     (audits || []).forEach((audit) => {
@@ -883,11 +1684,22 @@ export default function Analytics({
       if (!sid || !packagingSupplyIds.has(sid)) return;
       if (lower(audit?.action) !== "consume") return;
       const name = audit?.supplyName || supplyMetaById.get(sid)?.name || sid;
-      if (!packagingUsageMap[name]) packagingUsageMap[name] = { name, used: 0, onHand: num(supplyMetaById.get(sid)?.quantity, 0) };
+      if (!packagingUsageMap[name]) {
+        packagingUsageMap[name] = {
+          name,
+          used: 0,
+          onHand: num(supplyMetaById.get(sid)?.quantity, 0),
+        };
+      }
       packagingUsageMap[name].used += num(audit?.amount, 0);
     });
     const packagingUsage = Object.values(packagingUsageMap)
-      .map((row) => ({ ...row, daysCover: row.used > 0 ? Math.round((row.onHand / ((row.used / 56) || 1))) : null }))
+      .map((row) => ({
+        ...row,
+        used: round3(row.used),
+        onHand: round3(row.onHand),
+        daysCover: row.used > 0 ? Math.round(row.onHand / (row.used / 56 || 1)) : null,
+      }))
       .sort((a, b) => b.used - a.used)
       .slice(0, 12);
 
@@ -898,338 +1710,78 @@ export default function Analytics({
         const threshold = num(s?.lowStockThreshold ?? s?.reorderAt ?? s?.reorderThreshold, 0);
         return threshold > 0 ? qty <= threshold : qty <= 0;
       });
+    summary.packagingShortages = packagingShortages.length;
 
-    const labelCompleteness = activeFinishedLots.reduce((acc, lot) => {
-      const meta = getLabelMeta(lot);
-      if (meta.lotCode) acc.codes += 1;
-      if (meta.packDate) acc.packDates += 1;
-      if (meta.ingredients?.length) acc.ingredients += 1;
-      if (meta.allergens?.length) acc.allergens += 1;
-      return acc;
-    }, { codes: 0, packDates: 0, ingredients: 0, allergens: 0 });
+    const labelCompleteness = packageLots.reduce(
+      (acc, lot) => {
+        const meta = lot?.labelMetadata || {};
+        if (meta?.lotCode || lot?.lotCode) acc.codes += 1;
+        if (meta?.packDate || lot?.packDate || lot?.package?.packagedDate) acc.packDates += 1;
+        if (meta?.packageSizeLabel || lot?.packageSizeLabel) acc.packageSizes += 1;
+        if (meta?.skuType || lot?.skuType) acc.skuTypes += 1;
+        return acc;
+      },
+      { codes: 0, packDates: 0, packageSizes: 0, skuTypes: 0 }
+    );
+
+    const valuationByType = finalizeMetricRows(valuationMap, "projectedRevenue").map((row) => ({
+      ...row,
+      units: row.available,
+      costValue: round2(row.inventoryCostValue || 0),
+      salesValue: row.projectedRevenue,
+    }));
+    const salesByDestination = Array.from(destinationMap.values())
+      .map((row) => ({ ...row, quantity: round3(row.quantity), revenue: round2(row.revenue) }))
+      .sort((a, b) => b.revenue - a.revenue)
+      .slice(0, 14);
+    const overrideByProduct = Array.from(overrideMap.values())
+      .sort((a, b) => b.priceOverrides + b.fefoOverrides - (a.priceOverrides + a.fefoOverrides));
+    const finishedLossByReason = Array.from(lossMap.values())
+      .map((row) => ({
+        ...row,
+        destroyed: round3(row.destroyed),
+        wasted: round3(row.wasted),
+        costLoss: round2(row.costLoss),
+      }))
+      .sort((a, b) => b.costLoss - a.costLoss || b.destroyed + b.wasted - (a.destroyed + a.wasted))
+      .slice(0, 14);
 
     return {
-      summary: {
-        activeFinished: activeFinishedLots.length,
-        blockedFinished: blockedFinishedLots.length,
-        releasedFinished: releasedFinishedLots.length,
-        labelReady: labelReadyLots.length,
-        expiringSoon: expiringSoonLots.length,
-        packagingShortages: packagingShortages.length,
-        reworkBatches: reworkSeries.length,
-      },
+      summary,
       workflowCounts,
+      inventoryStatus,
+      financialSnapshot,
+      productPerformance: finalizeMetricRows(productMap, "revenue").slice(0, 18),
+      batchPerformance: finalizeMetricRows(batchMap, "revenue").slice(0, 18),
+      skuPerformance: finalizeMetricRows(skuMap, "revenue").slice(0, 18),
+      packageSizePerformance: finalizeMetricRows(packageSizeMap, "revenue").slice(0, 18),
+      lockedPricing,
+      overrideByProduct,
+      expirationBuckets,
+      expiringLots,
       valuationByType,
       salesByDestination,
-      wasteByReason,
+      finishedLossByReason,
+      processWasteByReason,
       efficiencyByBatch,
       reworkSeries,
       packagingUsage,
       packagingShortages,
       labelCompleteness,
+      activityMoveCount: finishedMoves.length,
+      activityDateFiltered: hasActivityDateFilter,
     };
-  }, [materialLots, processBatches, inventoryMoves, audits, packagingSupplyIds, supplyMetaById, supplies]);
-
-
-  const contaminationAnalytics = useMemo(() => {
-    const scopeGrows = (datasetAll || []).filter(filterPredicate);
-    const logs = [];
-
-    scopeGrows.forEach((grow) => {
-      const directLogs = Array.isArray(contaminationLogsByGrow[grow.id])
-        ? contaminationLogsByGrow[grow.id]
-        : [];
-
-      if (directLogs.length) {
-        directLogs.forEach((log) => logs.push(normalizeContaminationLog(log, grow)));
-        return;
-      }
-
-      const summaryLog = buildSummaryContaminationLog(grow);
-      if (summaryLog) logs.push(summaryLog);
-    });
-
-    const impactedGrowIds = new Set();
-    const confirmedGrowIds = new Set();
-    const suspectedGrowIds = new Set();
-    const stageCountsMap = {};
-    const strainCountsMap = {};
-    const typeCountsMap = {};
-    const causeCountsMap = {};
-    const signCountsMap = {};
-    const actionCountsMap = {};
-    const outcomeCountsMap = {};
-    const severityCountsMap = {};
-    const cleanupCountsMap = {};
-    const disposalCountsMap = {};
-    const sanitationCountsMap = {};
-    const monthCountsMap = {};
-    const preventionNotes = [];
-    const cleanupNotes = [];
-
-    logs.forEach((log) => {
-      if (log.growId) impactedGrowIds.add(log.growId);
-      if (log.confirmed && log.growId) confirmedGrowIds.add(log.growId);
-      if (!log.confirmed && log.growId) suspectedGrowIds.add(log.growId);
-
-      incrementCount(stageCountsMap, log.stage);
-      incrementCount(strainCountsMap, log.strain);
-      incrementCount(typeCountsMap, log.growType);
-      incrementCount(causeCountsMap, log.suspectedCause);
-      incrementCount(actionCountsMap, log.actionTaken);
-      incrementCount(outcomeCountsMap, log.outcome);
-      incrementCount(severityCountsMap, log.severity);
-      normalizeContaminationList(log.cleanupChecklist).forEach((item) => incrementCount(cleanupCountsMap, cleanupLabel(item)));
-      if (log.disposalMethod && log.disposalMethod !== "Not recorded") incrementCount(disposalCountsMap, log.disposalMethod);
-      if (log.sanitationMethod && log.sanitationMethod !== "Not recorded") incrementCount(sanitationCountsMap, log.sanitationMethod);
-
-      splitContaminationTokens(log.visualSigns).forEach((sign) => incrementCount(signCountsMap, sign));
-
-      if (log.observedDate) {
-        incrementCount(monthCountsMap, monthKey(log.observedDate));
-      }
-
-      const noteText = log.preventionNotes || log.notes;
-      if (noteText) {
-        preventionNotes.push({
-          id: log.id,
-          growId: log.growId,
-          growName: log.growName,
-          strain: log.strain,
-          stage: log.stage,
-          cause: log.suspectedCause,
-          text: noteText,
-          observedTime: log.observedTime,
-        });
-      }
-
-      if (log.cleanupNotes || log.followUpRequired || log.clearedForReuse || normalizeContaminationList(log.cleanupChecklist).length) {
-        cleanupNotes.push({
-          id: log.id,
-          growId: log.growId,
-          growName: log.growName,
-          strain: log.strain,
-          stage: log.stage,
-          clearedForReuse: !!log.clearedForReuse,
-          clearedForReuseDate: log.clearedForReuseDate,
-          followUpRequired: !!log.followUpRequired,
-          followUpDate: log.followUpDate,
-          cleanupNotes: log.cleanupNotes,
-          checklist: normalizeContaminationList(log.cleanupChecklist).map(cleanupLabel),
-          evidencePhotoCount: log.evidencePhotoCount || 0,
-          observedTime: log.observedTime,
-        });
-      }
-    });
-
-    const contaminatedStageGrowCount = scopeGrows.filter(isContaminated).length;
-    const summaryFallbacks = logs.filter((log) => log.summaryFallback).length;
-    const topCause = countMapToRows(causeCountsMap, 1)[0]?.name || "None logged";
-    const mostAffectedStage = countMapToRows(stageCountsMap, 1)[0]?.name || "None logged";
-    const mostAffectedStrain = countMapToRows(strainCountsMap, 1)[0]?.name || "None logged";
-
-    const recentEvents = [...logs]
-      .sort((a, b) => (b.observedTime || 0) - (a.observedTime || 0))
-      .slice(0, 8);
-
-    return {
-      scopeGrowCount: scopeGrows.length,
-      logCount: logs.length,
-      logs,
-      readErrorCount: Object.keys(contaminationLogErrors || {}).length,
-      summary: {
-        impactedGrows: impactedGrowIds.size,
-        confirmedGrows: confirmedGrowIds.size,
-        suspectedGrows: suspectedGrowIds.size,
-        contaminatedStageGrowCount,
-        confirmedLogs: logs.filter((log) => log.confirmed).length,
-        suspectedLogs: logs.filter((log) => !log.confirmed).length,
-        summaryFallbacks,
-        topCause,
-        mostAffectedStage,
-        mostAffectedStrain,
-        cleanupFollowUps: logs.filter((log) => log.followUpRequired).length,
-        clearedForReuse: logs.filter((log) => log.clearedForReuse).length,
-        evidencePhotoCount: logs.reduce((sum, log) => sum + (Number(log.evidencePhotoCount) || 0), 0),
-      },
-      byStage: countMapToRows(stageCountsMap),
-      byStrain: countMapToRows(strainCountsMap),
-      byGrowType: countMapToRows(typeCountsMap),
-      byCause: countMapToRows(causeCountsMap),
-      byVisualSign: countMapToRows(signCountsMap),
-      byAction: countMapToRows(actionCountsMap),
-      byOutcome: countMapToRows(outcomeCountsMap),
-      bySeverity: countMapToRows(severityCountsMap),
-      byCleanup: countMapToRows(cleanupCountsMap),
-      byDisposal: countMapToRows(disposalCountsMap),
-      bySanitation: countMapToRows(sanitationCountsMap),
-      byMonth: Object.entries(monthCountsMap)
-        .map(([month, count]) => ({ month, count }))
-        .sort((a, b) => a.month.localeCompare(b.month)),
-      recentEvents,
-      preventionNotes: preventionNotes
-        .sort((a, b) => (b.observedTime || 0) - (a.observedTime || 0))
-        .slice(0, 6),
-      cleanupNotes: cleanupNotes
-        .sort((a, b) => (b.observedTime || 0) - (a.observedTime || 0))
-        .slice(0, 8),
-    };
-  }, [datasetAll, filterPredicate, contaminationLogsByGrow, contaminationLogErrors]);
-
-
-
-  const sopWorkflowAnalytics = useMemo(() => {
-    const scopeGrows = (datasetAll || []).filter(filterPredicate);
-    const workflowGrows = scopeGrows.filter((grow) => getSopWorkflowMeta(grow).hasWorkflow);
-    const templateMap = {};
-    const categoryMap = {};
-    const stepMap = {};
-    const recent = [];
-    const sopTasks = (Array.isArray(tasks) ? tasks : []).filter(isSopTask);
-    const tasksByGrow = {};
-
-    sopTasks.forEach((task) => {
-      const growId = String(task?.growId || "").trim();
-      if (!growId) return;
-      if (!tasksByGrow[growId]) tasksByGrow[growId] = [];
-      tasksByGrow[growId].push(task);
-    });
-
-    workflowGrows.forEach((grow) => {
-      const meta = getSopWorkflowMeta(grow);
-      const key = workflowKey(meta);
-      const contaminated =
-        isContaminated(grow) ||
-        Number(grow?.contaminationLogCount || 0) > 0 ||
-        (Array.isArray(contaminationLogsByGrow[grow.id]) && contaminationLogsByGrow[grow.id].length > 0);
-      const harvested =
-        String(grow?.stage || "").toLowerCase() === "harvested" ||
-        !!grow?.harvestedAt ||
-        !!grow?.archived;
-      const active = isActiveGrow(grow);
-      const totals = totalsFromGrow(grow);
-      const cost = Number(normalizedCostById.get(grow.id) ?? grow?.cost ?? 0) || 0;
-      const checklist = getSopChecklistStats(grow);
-      const growTasks = tasksByGrow[grow.id] || [];
-      const taskDone = growTasks.filter(isTaskComplete).length;
-      const taskOpen = Math.max(0, growTasks.length - taskDone);
-
-      if (!templateMap[key]) {
-        templateMap[key] = {
-          name: meta.title || key,
-          templateId: meta.templateId,
-          category: meta.category || "Workflow",
-          step: meta.step || "",
-          total: 0,
-          active: 0,
-          harvested: 0,
-          contaminated: 0,
-          wet: 0,
-          dry: 0,
-          cost: 0,
-          costCount: 0,
-          checklistTotal: 0,
-          checklistDone: 0,
-          checklistSkipped: 0,
-          checklistPending: 0,
-          taskTotal: 0,
-          taskDone: 0,
-          taskOpen: 0,
-        };
-      }
-
-      templateMap[key].total += 1;
-      if (active) templateMap[key].active += 1;
-      if (harvested) templateMap[key].harvested += 1;
-      if (contaminated) templateMap[key].contaminated += 1;
-      templateMap[key].wet += Number(totals.Wet || 0);
-      templateMap[key].dry += Number(totals.Dry || 0);
-      if (cost > 0) {
-        templateMap[key].cost += cost;
-        templateMap[key].costCount += 1;
-      }
-      templateMap[key].checklistTotal += checklist.total;
-      templateMap[key].checklistDone += checklist.done;
-      templateMap[key].checklistSkipped += checklist.skipped;
-      templateMap[key].checklistPending += checklist.pending;
-      templateMap[key].taskTotal += growTasks.length;
-      templateMap[key].taskDone += taskDone;
-      templateMap[key].taskOpen += taskOpen;
-
-      if (meta.category) {
-        categoryMap[meta.category] = (categoryMap[meta.category] || 0) + 1;
-      }
-      if (meta.step) {
-        stepMap[meta.step] = (stepMap[meta.step] || 0) + 1;
-      }
-
-      recent.push({
-        id: grow.id,
-        name: shortGrowName(grow),
-        strain: grow?.strain || "Unknown strain",
-        stage: grow?.stage || "—",
-        template: meta.title,
-        category: meta.category || "Workflow",
-        step: meta.step || "",
-        createdAt: getRefDate(grow),
-        contaminated,
-        checklistPct: checklist.completionRate,
-        taskOpen,
-      });
-    });
-
-    const byTemplate = Object.values(templateMap)
-      .map((row) => ({
-        ...row,
-        contaminationRate: row.total ? Number(((row.contaminated / row.total) * 100).toFixed(1)) : 0,
-        harvestRate: row.total ? Number(((row.harvested / row.total) * 100).toFixed(1)) : 0,
-        avgWet: row.harvested ? Number((row.wet / row.harvested).toFixed(1)) : 0,
-        avgDry: row.harvested ? Number((row.dry / row.harvested).toFixed(1)) : 0,
-        avgCost: row.costCount ? Number((row.cost / row.costCount).toFixed(2)) : 0,
-        checklistCompletionRate:
-          row.checklistTotal - row.checklistSkipped > 0
-            ? Number(((row.checklistDone / (row.checklistTotal - row.checklistSkipped)) * 100).toFixed(1))
-            : row.checklistTotal > 0
-              ? 100
-              : 0,
-      }))
-      .sort((a, b) => b.total - a.total || a.name.localeCompare(b.name));
-
-    const topTemplate = byTemplate[0]?.name || "—";
-    const highestContam = byTemplate
-      .filter((row) => row.total > 0)
-      .slice()
-      .sort((a, b) => b.contaminationRate - a.contaminationRate || b.contaminated - a.contaminated)[0];
-
-    return {
-      scopeGrowCount: scopeGrows.length,
-      sopGrowCount: workflowGrows.length,
-      nonSopGrowCount: Math.max(0, scopeGrows.length - workflowGrows.length),
-      summary: {
-        topTemplate,
-        templatesTracked: byTemplate.length,
-        sopContaminated: byTemplate.reduce((sum, row) => sum + row.contaminated, 0),
-        sopHarvested: byTemplate.reduce((sum, row) => sum + row.harvested, 0),
-        highestContamTemplate: highestContam?.name || "—",
-        highestContamRate: highestContam?.contaminationRate || 0,
-        sopTaskTotal: sopTasks.length,
-        sopTaskOpen: sopTasks.filter((task) => !isTaskComplete(task)).length,
-        checklistTotal: byTemplate.reduce((sum, row) => sum + row.checklistTotal, 0),
-        checklistDone: byTemplate.reduce((sum, row) => sum + row.checklistDone, 0),
-        checklistCompletionRate: (() => {
-          const total = byTemplate.reduce((sum, row) => sum + row.checklistTotal - row.checklistSkipped, 0);
-          const done = byTemplate.reduce((sum, row) => sum + row.checklistDone, 0);
-          return total > 0 ? Number(((done / total) * 100).toFixed(1)) : 0;
-        })(),
-      },
-      byTemplate,
-      byCategory: countMapToRows(categoryMap),
-      byStep: countMapToRows(stepMap),
-      recent: recent
-        .sort((a, b) => (b.createdAt?.getTime?.() || 0) - (a.createdAt?.getTime?.() || 0))
-        .slice(0, 8),
-    };
-  }, [datasetAll, filterPredicate, normalizedCostById, contaminationLogsByGrow, tasks]);
+  }, [
+    materialLots,
+    processBatches,
+    inventoryMoves,
+    audits,
+    packagingSupplyIds,
+    supplyMetaById,
+    supplies,
+    fromDate,
+    toDate,
+  ]);
 
 
   const {
@@ -1618,39 +2170,47 @@ for (let i = weeksBack - 1; i >= 0; i--) {
 
   // CSV export
   const exportCSV = () => {
+    const csvCell = (value) => {
+      const text = value == null ? "" : String(value);
+      return /[",\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
+    };
+    const row = (...values) => values.map(csvCell).join(",");
     const lines = [
-      "Type,Name,ValueA,ValueB",
-      ...stageCounts.map((d) => ["StageCount (active)", d.name, d.value, ""].join(",")),
-      ...yieldData.map((d) => ["Yield", d.name, d.Wet, d.Dry].join(",")),
-      ...avgYieldPerStrain.map((d) => ["AvgYieldPerStrain", d.name, d.Wet, d.Dry].join(",")),
-      ...growCosts.map((d) => ["Cost", d.name, d.Cost, ""].join(",")),
-      ...mostUsedSupplies.map((d) => ["MostUsedSupplies", d.name, d.count, ""].join(",")),
-      ...recipeUseCounts.map((d) =>
-        ["RecipeUseCount", d.name, d.count, (Number(d.avgCost) || 0).toFixed(2)].join(",")
-      ),
-      ...stageTransitions.map((d) => ["StageTransition", d.month, d.count, ""].join(",")),
-      ...contamRate.map((d) => ["ContamRate(" + groupMode + ")", d.name, d.rate.toFixed(1) + "%", `${d.bad}/${d.total}`].join(",")),
-      ...contaminationAnalytics.byStage.map((d) => ["ContamByStage", d.name, d.count, ""].join(",")),
-      ...contaminationAnalytics.byCause.map((d) => ["ContamByCause", d.name, d.count, ""].join(",")),
-      ...contaminationAnalytics.byStrain.map((d) => ["ContamByStrain", d.name, d.count, ""].join(",")),
-      ...contaminationAnalytics.byGrowType.map((d) => ["ContamByGrowType", d.name, d.count, ""].join(",")),
-      ...contaminationAnalytics.byCleanup.map((d) => ["ContamCleanup", d.name, d.count, ""].join(",")),
-      ...contaminationAnalytics.bySanitation.map((d) => ["ContamSanitation", d.name, d.count, ""].join(",")),
-      ...contaminationAnalytics.byDisposal.map((d) => ["ContamDisposal", d.name, d.count, ""].join(",")),
-      ...sopWorkflowAnalytics.byTemplate.map((d) => ["SOPWorkflow", d.name, d.total, `contam ${d.contaminationRate}% | harvested ${d.harvestRate}% | checklist ${d.checklistCompletionRate}% | open tasks ${d.taskOpen}`].join(",")),
-      ...sopWorkflowAnalytics.byCategory.map((d) => ["SOPWorkflowCategory", d.name, d.count, ""].join(",")),
-      ...sopWorkflowAnalytics.byStep.map((d) => ["SOPWorkflowStep", d.name, d.count, ""].join(",")),
-      ...ttsSeries.map((d) => ["TimeToStage(" + groupMode + ")", d.name, d.Inoc_to_Colonized, d.Colonized_to_Fruiting + "|" + d.Fruiting_to_Harvested].join(",")),
-      ...burnRateSeries.map((row) => ["BurnRate", row.week, JSON.stringify({ ...row, week: undefined }), ""].join(",")),
-      ...yieldVsCost.map((p) => ["YieldVsCost", p.name, p.x, p.y].join(",")),
-      ...throughputSeries.map((r) => ["Throughput", r.month, r.Started, r.Harvested].join(",")),
-      ...postProcessAnalytics.workflowCounts.map((d) => ["PostProcessWorkflow", d.name, d.value, ""].join(",")),
-      ...postProcessAnalytics.valuationByType.map((d) => ["PostProcessValuation", d.name, d.costValue.toFixed(2), d.salesValue.toFixed(2)].join(",")),
-      ...postProcessAnalytics.salesByDestination.map((d) => ["PostProcessSales", d.name, d.quantity, d.revenue.toFixed(2)].join(",")),
-      ...postProcessAnalytics.wasteByReason.map((d) => ["PostProcessWaste", d.name, d.quantity, ""].join(",")),
-      ...postProcessAnalytics.efficiencyByBatch.map((d) => ["PostProcessEfficiency", d.name, d.expected, `${d.actual}|${d.variancePct}%`].join(",")),
-      ...postProcessAnalytics.reworkSeries.map((d) => ["PostProcessRework", d.name, d.salvage, d.waste].join(",")),
-      ...postProcessAnalytics.packagingUsage.map((d) => ["PackagingUsage", d.name, d.used, d.onHand].join(",")),
+      row("Type", "Name", "ValueA", "ValueB", "ValueC", "ValueD"),
+      ...stageCounts.map((d) => row("StageCount (active)", d.name, d.value)),
+      ...yieldData.map((d) => row("Yield", d.name, d.Wet, d.Dry)),
+      ...avgYieldPerStrain.map((d) => row("AvgYieldPerStrain", d.name, d.Wet, d.Dry)),
+      ...growCosts.map((d) => row("Cost", d.name, d.Cost)),
+      ...mostUsedSupplies.map((d) => row("MostUsedSupplies", d.name, d.count)),
+      ...recipeUseCounts.map((d) => row("RecipeUseCount", d.name, d.count, round2(d.avgCost))),
+      ...stageTransitions.map((d) => row("StageTransition", d.month, d.count)),
+      ...contamRate.map((d) => row(`ContamRate(${groupMode})`, d.name, round2(d.rate), d.bad, d.total)),
+      ...ttsSeries.map((d) => row(
+        `TimeToStage(${groupMode})`,
+        d.name,
+        d.Inoc_to_Colonized,
+        d.Colonized_to_Fruiting,
+        d.Fruiting_to_Harvested
+      )),
+      ...burnRateSeries.map((d) => row("BurnRate", d.week, JSON.stringify(d))),
+      ...yieldVsCost.map((d) => row("YieldVsCost", d.name, d.x, d.y)),
+      ...throughputSeries.map((d) => row("Throughput", d.month, d.Started, d.Harvested)),
+      ...postProcessAnalytics.workflowCounts.map((d) => row("PP Workflow", d.name, d.value)),
+      ...postProcessAnalytics.inventoryStatus.map((d) => row("PP Inventory Status", d.name, d.Active, d.Depleted)),
+      ...postProcessAnalytics.financialSnapshot.map((d) => row("PP Financial", d.name, d.Revenue, d.Cost, d.Profit)),
+      ...postProcessAnalytics.productPerformance.map((d) => row("PP Product", d.name, d.sold, d.revenue, d.profit, d.available)),
+      ...postProcessAnalytics.batchPerformance.map((d) => row("PP Batch", d.name, d.sold, d.revenue, d.profit, d.available)),
+      ...postProcessAnalytics.skuPerformance.map((d) => row("PP SKU", d.name, d.sold, d.samples, d.revenue, d.available)),
+      ...postProcessAnalytics.packageSizePerformance.map((d) => row("PP Package Size", d.name, d.sold, d.samples, d.revenue, d.available)),
+      ...postProcessAnalytics.lockedPricing.map((d) => row("PP Locked Pricing", d.name, d.Cost, d.DefaultPrice, d.MSRP)),
+      ...postProcessAnalytics.overrideByProduct.map((d) => row("PP Overrides", d.name, d.priceOverrides, d.fefoOverrides)),
+      ...postProcessAnalytics.expirationBuckets.map((d) => row("PP Expiration", d.name, d.units, d.lots)),
+      ...postProcessAnalytics.salesByDestination.map((d) => row("PP Destination", d.name, d.quantity, d.revenue)),
+      ...postProcessAnalytics.finishedLossByReason.map((d) => row("PP Finished Loss", d.name, d.destroyed, d.wasted, d.costLoss)),
+      ...postProcessAnalytics.processWasteByReason.map((d) => row("PP Process Waste", d.name, d.quantity)),
+      ...postProcessAnalytics.efficiencyByBatch.map((d) => row("PP Efficiency", d.name, d.expected, d.actual, d.waste, d.variancePct)),
+      ...postProcessAnalytics.reworkSeries.map((d) => row("PP Rework", d.name, d.salvage, d.waste)),
+      ...postProcessAnalytics.packagingUsage.map((d) => row("Packaging Usage", d.name, d.used, d.onHand, d.daysCover)),
     ];
     const blob = new Blob([lines.join("\n")], { type: "text/csv;charset=utf-8" });
     const a = document.createElement("a");
@@ -1664,16 +2224,20 @@ for (let i = weeksBack - 1; i >= 0; i--) {
   const exportJSON = () => {
     const chosenGrows = showAll ? (Array.isArray(growsAll) ? growsAll : allGrows) : datasetActive;
     const payload = {
-      app: "Mushroom Tracker",
-      schemaVersion: 2,
+      app: "Chaotic Neutral Myco Tracker",
+      schemaVersion: 3,
       exportedAt: new Date().toISOString(),
-      dataset: showAll ? "all" : "active",
+      growDataset: showAll ? "all" : "active",
+      activityRange: { from: fromDate || null, to: toDate || null },
       counts: {
         grows: Array.isArray(chosenGrows) ? chosenGrows.length : 0,
         tasks: Array.isArray(tasks) ? tasks.length : 0,
         recipes: Array.isArray(recipes) ? recipes.length : 0,
         supplies: Array.isArray(supplies) ? supplies.length : 0,
         audits: Array.isArray(audits) ? audits.length : 0,
+        materialLots: materialLots.length,
+        processBatches: processBatches.length,
+        inventoryMovements: inventoryMoves.length,
       },
       data: {
         grows: Array.isArray(chosenGrows) ? chosenGrows : [],
@@ -1681,13 +2245,14 @@ for (let i = weeksBack - 1; i >= 0; i--) {
         recipes: Array.isArray(recipes) ? recipes : [],
         supplies: Array.isArray(supplies) ? supplies : [],
         audits: Array.isArray(audits) ? audits : [],
+        materialLots,
+        processBatches,
+        inventoryMovements: inventoryMoves,
       },
       analytics: {
         recipeUseCounts,
         mostUsedSupplies,
         contamRate,
-        contamination: contaminationAnalytics,
-        sopWorkflow: sopWorkflowAnalytics,
         ttsSeries,
         burnTopSupplies,
         throughputSeries,
@@ -1697,1038 +2262,881 @@ for (let i = weeksBack - 1; i >= 0; i--) {
     const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
     const a = document.createElement("a");
     a.href = URL.createObjectURL(blob);
-    a.download = `myco-backup-${payload.dataset}-${new Date().toISOString().slice(0,10)}.json`;
+    a.download = `myco-backup-${payload.growDataset}-${new Date().toISOString().slice(0, 10)}.json`;
     a.click();
     URL.revokeObjectURL(a.href);
   };
 
-  const exportContaminationReport = () => {
-    const a = contaminationAnalytics;
-    const lines = [
-      "Chaotic Neutral Myco Tracker — Contamination Analytics Report",
-      textExportLine("Exported", new Date().toLocaleString()),
-      textExportLine("Matching grows", a.scopeGrowCount),
-      textExportLine("Total contamination logs", a.logCount),
-      textExportLine("Impacted grows", a.summary.impactedGrows),
-      textExportLine("Confirmed logs", a.summary.confirmedLogs),
-      textExportLine("Suspected logs", a.summary.suspectedLogs),
-      textExportLine("Cleanup follow-ups", a.summary.cleanupFollowUps),
-      textExportLine("Cleared for reuse", a.summary.clearedForReuse),
-      textExportLine("Evidence photos", a.summary.evidencePhotoCount),
-      textExportLine("Top suspected cause", a.summary.topCause),
-      textExportLine("Most affected stage", a.summary.mostAffectedStage),
-      "",
-      "By Stage",
-      ...a.byStage.map((row) => `- ${row.name}: ${row.count}`),
-      "",
-      "By Suspected Cause",
-      ...a.byCause.map((row) => `- ${row.name}: ${row.count}`),
-      "",
-      "By Visual Sign",
-      ...(a.byVisualSign.length ? a.byVisualSign.map((row) => `- ${row.name}: ${row.count}`) : ["- No visual signs logged yet."]),
-      "",
-      "Cleanup Checklist Items",
-      ...(a.byCleanup.length ? a.byCleanup.map((row) => `- ${row.name}: ${row.count}`) : ["- No cleanup checklist items logged yet."]),
-      "",
-      "Sanitation Methods",
-      ...(a.bySanitation.length ? a.bySanitation.map((row) => `- ${row.name}: ${row.count}`) : ["- No sanitation methods logged yet."]),
-      "",
-      "Recent Events",
-      ...(a.recentEvents.length
-        ? a.recentEvents.map((log) => {
-            const date = log.observedDate ? log.observedDate.toLocaleDateString() : "No date";
-            return `- ${date} · ${log.growName} · ${log.stage} · ${log.severity} · ${log.suspectedCause}`;
-          })
-        : ["- No contamination events logged yet."]),
-      "",
-      "Prevention / Follow-up Notes",
-      ...(a.preventionNotes.length
-        ? a.preventionNotes.map((note) => `- ${note.growName} (${note.stage}, ${note.cause}): ${note.text}`)
-        : ["- No prevention notes logged yet."]),
-      "",
-      "Cleanup / Reuse Notes",
-      ...(a.cleanupNotes.length
-        ? a.cleanupNotes.map((note) => `- ${note.growName} (${note.stage}): ${note.cleanupNotes || note.checklist.join(", ") || "Cleanup tracked"}${note.followUpRequired ? " [follow-up]" : ""}${note.clearedForReuse ? " [cleared]" : ""}`)
-        : ["- No cleanup notes logged yet."]),
-      "",
-    ];
-
-    downloadTextFile(`myco-contamination-report-${new Date().toISOString().slice(0, 10)}.txt`, lines.join("\n"));
-  };
-
-
   const axisProps = { stroke: PALETTE.axis, tick: { fill: PALETTE.axis, fontSize: 12 } };
   const gridProps = { stroke: PALETTE.grid, strokeDasharray: "3 3" };
 
-  const renderChart = () => {
-    switch (chartKey) {
-      case "stageCounts":
+  const renderChart = (reportKey) => {
+    switch (reportKey) {
+      case "sopWorkflow":
+        if (!sopWorkflowPerformance.length) {
+          return (
+            <ChartEmptyState message="No SOP-started grows match the current filters." />
+          );
+        }
         return (
-          <ResponsiveContainer width="100%" height={360}>
-            <PieChart>
-              <Tooltip formatter={(v) => fmtInt(v)} contentStyle={{ background: "#0b0f19", border: "1px solid #334155", color: "#e5e7eb" }} />
-              <Legend verticalAlign="bottom" />
-              <Pie data={stageCounts} dataKey="value" nameKey="name" label>
-                {stageCounts.map((_, i) => (
-                  <Cell key={i} fill={PIE_COLORS[i % PIE_COLORS.length]} />
-                ))}
-              </Pie>
-            </PieChart>
-          </ResponsiveContainer>
+          <>
+            <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
+              {sopWorkflowPerformance.map((row) => (
+                <div
+                  key={row.key}
+                  className="rounded-xl border border-zinc-200 dark:border-zinc-800 bg-zinc-50/70 dark:bg-zinc-950/30 p-3"
+                >
+                  <div className="font-medium text-zinc-900 dark:text-zinc-100">
+                    {row.name}
+                  </div>
+                  <div className="mt-2 grid grid-cols-2 gap-2 text-sm">
+                    <div>
+                      <div className="text-xs text-zinc-500 dark:text-zinc-400">
+                        Checklist
+                      </div>
+                      <div className="font-semibold">
+                        {fmtInt(row.checklistCompletionPercent)}% complete
+                      </div>
+                    </div>
+                    <div>
+                      <div className="text-xs text-zinc-500 dark:text-zinc-400">
+                        SOP tasks
+                      </div>
+                      <div className="font-semibold">
+                        {fmtInt(row.completedTasks)} / {fmtInt(row.tasks)}
+                      </div>
+                    </div>
+                    <div>
+                      <div className="text-xs text-zinc-500 dark:text-zinc-400">
+                        Harvested
+                      </div>
+                      <div className="font-semibold">{fmtInt(row.harvested)}</div>
+                    </div>
+                    <div>
+                      <div className="text-xs text-zinc-500 dark:text-zinc-400">
+                        Contaminated
+                      </div>
+                      <div className="font-semibold">{fmtInt(row.contaminated)}</div>
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+
+            <HorizontalBarChartPanel
+              data={sopWorkflowPerformance}
+              showValues={showValues}
+              nameLabel="Workflow"
+              series={[
+                {
+                  key: "grows",
+                  name: "SOP-started grows",
+                  color: PALETTE.line,
+                  formatter: fmtInt,
+                },
+                {
+                  key: "tasks",
+                  name: "Generated SOP tasks",
+                  color: PALETTE.cost,
+                  formatter: fmtInt,
+                },
+                {
+                  key: "completedTasks",
+                  name: "Completed SOP tasks",
+                  color: PALETTE.scatter,
+                  formatter: fmtInt,
+                },
+              ]}
+              emptyMessage="No SOP-started grows match the current filters."
+            />
+          </>
+        );
+
+      case "stageCounts":
+        if (!stageCounts.length) return <ChartEmptyState message="No active grow stages match the current filters." />;
+        return (
+          <>
+            <KeyLegend items={stageCounts.map((row, index) => ({ label: row.name, color: PIE_COLORS[index % PIE_COLORS.length] }))} />
+            <div style={{ height: 390 }}>
+              <ResponsiveContainer width="100%" height="100%">
+                <PieChart margin={{ top: 10, right: 20, bottom: 18, left: 20 }}>
+                  <Tooltip formatter={(value) => fmtInt(value)} contentStyle={TOOLTIP_STYLE} />
+                  <Pie data={stageCounts} dataKey="value" nameKey="name" outerRadius="78%" labelLine={false} label={({ name, value }) => `${name}: ${fmtInt(value)}`}>
+                    {stageCounts.map((_, index) => (
+                      <Cell key={index} fill={PIE_COLORS[index % PIE_COLORS.length]} />
+                    ))}
+                  </Pie>
+                </PieChart>
+              </ResponsiveContainer>
+            </div>
+            <FullDataTable data={stageCounts} columns={[{ key: "value", label: "Active grows", formatter: fmtInt }]} />
+          </>
         );
 
       case "yieldData":
         return (
-          <>
-            <KeyLegend items={[{ label: "Wet (g)", color: PALETTE.wet }, { label: "Dry (g)", color: PALETTE.dry }]} />
-            <ResponsiveContainer width="100%" height={380}>
-              <BarChart data={yieldData}>
-                <CartesianGrid {...gridProps} />
-                <XAxis
-                  dataKey="name"
-                  {...axisProps}
-                  interval={0}
-                  angle={-25}
-                  textAnchor="end"
-                  height={70}
-                />
-                <YAxis {...axisProps} tickFormatter={fmtInt} />
-                <Tooltip formatter={(v, n) => (n === "Wet" || n === "Dry" ? fmtG(v) : fmtInt(v))} contentStyle={{ background: "#0b0f19", border: "1px solid #334155", color: "#e5e7eb" }} />
-                <Bar dataKey="Wet" fill={PALETTE.wet}>{showValues && <LabelList dataKey="Wet" position="top" formatter={fmtInt} />}</Bar>
-                <Bar dataKey="Dry" fill={PALETTE.dry}>{showValues && <LabelList dataKey="Dry" position="top" formatter={fmtInt} />}</Bar>
-              </BarChart>
-            </ResponsiveContainer>
-          </>
+          <HorizontalBarChartPanel
+            data={yieldData}
+            showValues={showValues}
+            valueFormatter={fmtG}
+            axisFormatter={fmtInt}
+            series={[
+              { key: "Wet", name: "Wet (g)", color: PALETTE.wet, formatter: fmtG },
+              { key: "Dry", name: "Dry (g)", color: PALETTE.dry, formatter: fmtG },
+            ]}
+            emptyMessage="No harvested grow yield matches the current filters."
+            nameLabel="Grow / strain"
+          />
         );
 
       case "avgYieldPerStrain":
         return (
-          <>
-            <KeyLegend items={[{ label: "Avg Wet (g)", color: PALETTE.wet }, { label: "Avg Dry (g)", color: PALETTE.dry }]} />
-            <ResponsiveContainer width="100%" height={380}>
-              <BarChart data={avgYieldPerStrain}>
-                <CartesianGrid {...gridProps} />
-                <XAxis dataKey="name" {...axisProps} />
-                <YAxis {...axisProps} tickFormatter={fmtInt} />
-                <Tooltip formatter={(v, n) => (n === "Wet" || n === "Dry" ? fmtG(v) : fmtInt(v))} contentStyle={{ background: "#0b0f19", border: "1px solid #334155", color: "#e5e7eb" }} />
-                <Bar dataKey="Wet" fill={PALETTE.wet}>{showValues && <LabelList dataKey="Wet" position="top" formatter={fmtInt} />}</Bar>
-                <Bar dataKey="Dry" fill={PALETTE.dry}>{showValues && <LabelList dataKey="Dry" position="top" formatter={fmtInt} />}</Bar>
-              </BarChart>
-            </ResponsiveContainer>
-          </>
+          <HorizontalBarChartPanel
+            data={avgYieldPerStrain}
+            showValues={showValues}
+            valueFormatter={fmtG}
+            axisFormatter={fmtInt}
+            series={[
+              { key: "Wet", name: "Average wet (g)", color: PALETTE.wet, formatter: fmtG },
+              { key: "Dry", name: "Average dry (g)", color: PALETTE.dry, formatter: fmtG },
+            ]}
+            emptyMessage="No strain-level yield is available for the current filters."
+            nameLabel="Strain"
+          />
         );
 
       case "growCosts":
         return (
-          <>
-            <KeyLegend items={[{ label: "Cost ($)", color: PALETTE.cost }]} />
-            <ResponsiveContainer width="100%" height={360}>
-              <LineChart data={growCosts}>
-                <CartesianGrid {...gridProps} />
-                <XAxis
-                  dataKey="name"
-                  {...axisProps}
-                  interval={0}
-                  angle={-25}
-                  textAnchor="end"
-                  height={70}
-                />
-                <YAxis {...axisProps} tickFormatter={fmtInt} />
-                <Tooltip formatter={(v) => fmt$(v)} contentStyle={{ background: "#0b0f19", border: "1px solid #334155", color: "#e5e7eb" }} />
-                <Legend />
-                <Line dataKey="Cost" stroke={PALETTE.cost} strokeWidth={2} dot={false} />
-              </LineChart>
-            </ResponsiveContainer>
-          </>
+          <HorizontalBarChartPanel
+            data={growCosts}
+            showValues={showValues}
+            valueFormatter={fmt$}
+            axisFormatter={(value) => `$${fmtInt(value)}`}
+            series={[{ key: "Cost", name: "Grow cost", color: PALETTE.cost, formatter: fmt$ }]}
+            emptyMessage="No grow cost data matches the current filters."
+            nameLabel="Grow"
+          />
         );
 
       case "recipeUseCounts":
         return (
-          <>
-            <KeyLegend items={[{ label: "Grows using recipe", color: PALETTE.line }]} />
-            <ResponsiveContainer width="100%" height={360}>
-              <BarChart data={recipeUseCounts}>
-                <CartesianGrid {...gridProps} />
-                <XAxis dataKey="name" {...axisProps} interval={0} angle={-25} textAnchor="end" height={70} />
-                <YAxis {...axisProps} tickFormatter={fmtInt} />
-                <Tooltip
-                  formatter={(v, n) => (n === "count" ? fmtInt(v) : fmt$(v))}
-                  labelFormatter={(label, payload) => {
-                    const row = payload && payload[0] && payload[0].payload;
-                    if (!row) return label;
-                    return `${label} — ${fmtInt(row.count)} uses · avg cost ${fmt$(row.avgCost)}`;
-                  }}
-                  contentStyle={{ background: "#0b0f19", border: "1px solid #334155", color: "#e5e7eb" }}
-                />
-                <Bar dataKey="count" fill={PALETTE.line}>
-                  {showValues && <LabelList dataKey="count" position="top" formatter={fmtInt} />}
-                </Bar>
-              </BarChart>
-            </ResponsiveContainer>
-          </>
+          <HorizontalBarChartPanel
+            data={recipeUseCounts}
+            showValues={showValues}
+            valueFormatter={fmtInt}
+            axisFormatter={fmtInt}
+            series={[{ key: "count", name: "Grows using recipe", color: PALETTE.line, formatter: fmtInt }]}
+            tooltipLabelFormatter={(label, row) => row ? `${label} · Average cost ${fmt$(row.avgCost)}` : label}
+            emptyMessage="No recipe usage matches the current grow filters."
+            nameLabel="Recipe"
+          />
         );
 
       case "recipeUsage":
         return (
-          <>
-            <KeyLegend items={[{ label: "Times in recipes", color: PALETTE.line }]} />
-            <ResponsiveContainer width="100%" height={360}>
-              <BarChart data={mostUsedSupplies}>
-                <CartesianGrid {...gridProps} />
-                <XAxis dataKey="name" {...axisProps} interval={0} angle={-25} textAnchor="end" height={70} />
-                <YAxis {...axisProps} tickFormatter={fmtInt} />
-                <Tooltip formatter={(v) => fmtInt(v)} contentStyle={{ background: "#0b0f19", border: "1px solid #334155", color: "#e5e7eb" }} />
-                <Bar dataKey="count" fill={PALETTE.line}>{showValues && <LabelList dataKey="count" position="top" formatter={fmtInt} />}</Bar>
-              </BarChart>
-            </ResponsiveContainer>
-          </>
+          <HorizontalBarChartPanel
+            data={mostUsedSupplies}
+            showValues={showValues}
+            valueFormatter={fmtInt}
+            axisFormatter={fmtInt}
+            series={[{ key: "count", name: "Recipe appearances", color: PALETTE.line, formatter: fmtInt }]}
+            emptyMessage="No recipe-linked supplies match the current grow filters."
+            nameLabel="Supply"
+          />
         );
 
       case "contamRate":
         return (
-          <>
-            <KeyLegend items={[{ label: "Contamination rate (%)", color: "#f87171" }]} />
-            <ResponsiveContainer width="100%" height={360}>
-              <BarChart data={contamRate}>
-                <CartesianGrid {...gridProps} />
-                <XAxis dataKey="name" {...axisProps} interval={0} angle={-25} textAnchor="end" height={70} />
-                <YAxis {...axisProps} tickFormatter={(v) => `${Math.round(v)}%`} />
-                <Tooltip
-                  formatter={(v) => `${Math.round(v)}%`}
-                  labelFormatter={(label, payload) => {
-                    const r = payload?.[0]?.payload;
-                    return r ? `${label} — ${Math.round(r.rate)}% (${r.bad}/${r.total})` : label;
-                  }}
-                  contentStyle={{ background: "#0b0f19", border: "1px solid #334155", color: "#e5e7eb" }}
-                />
-                <Bar dataKey="rate" fill="#f87171">
-                  {showValues && <LabelList dataKey="rate" position="top" formatter={(v) => `${Math.round(v)}%`} />}
-                </Bar>
-              </BarChart>
-            </ResponsiveContainer>
-          </>
-        );
-
-      case "contamInsights":
-        return (
-          <div className="space-y-4">
-            <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-red-200 bg-red-50 p-4 text-red-950 dark:border-red-900/60 dark:bg-red-950/20 dark:text-red-100">
-              <div>
-                <h3 className="text-lg font-semibold">Contamination summary</h3>
-                <p className="text-sm opacity-80">
-                  Uses detailed grow contamination logs when available, with grow-level summary fallbacks for older records.
-                </p>
-                {contaminationAnalytics.readErrorCount > 0 && (
-                  <p className="mt-1 text-xs text-amber-700 dark:text-amber-200">
-                    {contaminationAnalytics.readErrorCount} grow log source(s) could not be read. Check Firestore rules if this persists.
-                  </p>
-                )}
-              </div>
-              <button type="button" onClick={exportContaminationReport} className="btn btn-accent">
-                Export Report
-              </button>
-            </div>
-
-            <div className="grid grid-cols-2 md:grid-cols-4 xl:grid-cols-8 gap-3">
-              <StatCard label="Matching Grows" value={contaminationAnalytics.scopeGrowCount} />
-              <StatCard label="Contam Logs" value={contaminationAnalytics.logCount} />
-              <StatCard label="Impacted Grows" value={contaminationAnalytics.summary.impactedGrows} />
-              <StatCard label="Confirmed Logs" value={contaminationAnalytics.summary.confirmedLogs} />
-              <StatCard label="Follow-ups" value={contaminationAnalytics.summary.cleanupFollowUps} />
-              <StatCard label="Cleared" value={contaminationAnalytics.summary.clearedForReuse} />
-              <StatCard label="Evidence Photos" value={contaminationAnalytics.summary.evidencePhotoCount} />
-              <StatCard label="Top Cause" value={contaminationAnalytics.summary.topCause} />
-            </div>
-
-            <div className="grid gap-4 xl:grid-cols-2">
-              <div className="rounded-2xl border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-950/40">
-                <div className="mb-3 font-semibold">Logs by stage</div>
-                {contaminationAnalytics.byStage.length ? (
-                  <ResponsiveContainer width="100%" height={300}>
-                    <BarChart data={contaminationAnalytics.byStage}>
-                      <CartesianGrid {...gridProps} />
-                      <XAxis dataKey="name" {...axisProps} interval={0} angle={-25} textAnchor="end" height={70} />
-                      <YAxis {...axisProps} tickFormatter={fmtInt} />
-                      <Tooltip formatter={(v) => fmtInt(v)} contentStyle={{ background: "#0b0f19", border: "1px solid #334155", color: "#e5e7eb" }} />
-                      <Bar dataKey="count" fill="#f87171">
-                        {showValues && <LabelList dataKey="count" position="top" formatter={fmtInt} />}
-                      </Bar>
-                    </BarChart>
-                  </ResponsiveContainer>
-                ) : (
-                  <EmptyState message="No contamination stages logged yet." />
-                )}
-              </div>
-
-              <div className="rounded-2xl border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-950/40">
-                <div className="mb-3 font-semibold">Logs by suspected cause</div>
-                {contaminationAnalytics.byCause.length ? (
-                  <ResponsiveContainer width="100%" height={300}>
-                    <BarChart data={contaminationAnalytics.byCause}>
-                      <CartesianGrid {...gridProps} />
-                      <XAxis dataKey="name" {...axisProps} interval={0} angle={-25} textAnchor="end" height={90} />
-                      <YAxis {...axisProps} tickFormatter={fmtInt} />
-                      <Tooltip formatter={(v) => fmtInt(v)} contentStyle={{ background: "#0b0f19", border: "1px solid #334155", color: "#e5e7eb" }} />
-                      <Bar dataKey="count" fill="#fb923c">
-                        {showValues && <LabelList dataKey="count" position="top" formatter={fmtInt} />}
-                      </Bar>
-                    </BarChart>
-                  </ResponsiveContainer>
-                ) : (
-                  <EmptyState message="No suspected causes logged yet." />
-                )}
-              </div>
-
-              <div className="rounded-2xl border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-950/40">
-                <div className="mb-3 font-semibold">Logs by strain</div>
-                {contaminationAnalytics.byStrain.length ? (
-                  <ResponsiveContainer width="100%" height={300}>
-                    <BarChart data={contaminationAnalytics.byStrain}>
-                      <CartesianGrid {...gridProps} />
-                      <XAxis dataKey="name" {...axisProps} interval={0} angle={-25} textAnchor="end" height={70} />
-                      <YAxis {...axisProps} tickFormatter={fmtInt} />
-                      <Tooltip formatter={(v) => fmtInt(v)} contentStyle={{ background: "#0b0f19", border: "1px solid #334155", color: "#e5e7eb" }} />
-                      <Bar dataKey="count" fill="#a78bfa">
-                        {showValues && <LabelList dataKey="count" position="top" formatter={fmtInt} />}
-                      </Bar>
-                    </BarChart>
-                  </ResponsiveContainer>
-                ) : (
-                  <EmptyState message="No strain-level contamination data yet." />
-                )}
-              </div>
-
-              <div className="rounded-2xl border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-950/40">
-                <div className="mb-3 font-semibold">Visual signs</div>
-                {contaminationAnalytics.byVisualSign.length ? (
-                  <div className="flex flex-wrap gap-2">
-                    {contaminationAnalytics.byVisualSign.map((row) => (
-                      <span key={row.name} className="rounded-full border border-zinc-200 px-3 py-1 text-sm dark:border-zinc-700">
-                        {row.name} <span className="opacity-60">×{row.count}</span>
-                      </span>
-                    ))}
-                  </div>
-                ) : (
-                  <EmptyState message="No visual signs have been entered yet." />
-                )}
-              </div>
-
-              <div className="rounded-2xl border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-950/40">
-                <div className="mb-3 font-semibold">Cleanup checklist items</div>
-                {contaminationAnalytics.byCleanup.length ? (
-                  <div className="flex flex-wrap gap-2">
-                    {contaminationAnalytics.byCleanup.map((row) => (
-                      <span key={row.name} className="rounded-full border border-amber-200 bg-amber-50 px-3 py-1 text-sm text-amber-900 dark:border-amber-900/60 dark:bg-amber-950/30 dark:text-amber-100">
-                        {row.name} <span className="opacity-60">×{row.count}</span>
-                      </span>
-                    ))}
-                  </div>
-                ) : (
-                  <EmptyState message="No cleanup checklist items logged yet." />
-                )}
-              </div>
-
-              <div className="rounded-2xl border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-950/40">
-                <div className="mb-3 font-semibold">Sanitation / disposal</div>
-                {contaminationAnalytics.bySanitation.length || contaminationAnalytics.byDisposal.length ? (
-                  <div className="space-y-3">
-                    <div>
-                      <div className="mb-2 text-xs uppercase tracking-wide text-zinc-500">Sanitation</div>
-                      <div className="flex flex-wrap gap-2">
-                        {contaminationAnalytics.bySanitation.map((row) => (
-                          <span key={row.name} className="rounded-full border border-zinc-200 px-3 py-1 text-sm dark:border-zinc-700">
-                            {row.name} <span className="opacity-60">×{row.count}</span>
-                          </span>
-                        ))}
-                      </div>
-                    </div>
-                    <div>
-                      <div className="mb-2 text-xs uppercase tracking-wide text-zinc-500">Disposal</div>
-                      <div className="flex flex-wrap gap-2">
-                        {contaminationAnalytics.byDisposal.map((row) => (
-                          <span key={row.name} className="rounded-full border border-zinc-200 px-3 py-1 text-sm dark:border-zinc-700">
-                            {row.name} <span className="opacity-60">×{row.count}</span>
-                          </span>
-                        ))}
-                      </div>
-                    </div>
-                  </div>
-                ) : (
-                  <EmptyState message="No sanitation or disposal methods logged yet." />
-                )}
-              </div>
-            </div>
-
-            <div className="grid gap-4 xl:grid-cols-2">
-              <div className="rounded-2xl border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-950/40">
-                <div className="mb-3 font-semibold">Recent contamination events</div>
-                {contaminationAnalytics.recentEvents.length ? (
-                  <div className="space-y-3">
-                    {contaminationAnalytics.recentEvents.map((log) => (
-                      <div key={`${log.growId}-${log.id}`} className="rounded-xl border border-zinc-200 p-3 text-sm dark:border-zinc-800">
-                        <div className="flex flex-wrap items-center justify-between gap-2">
-                          <div className="font-semibold">{log.growName}</div>
-                          <div className="text-xs text-zinc-500">
-                            {log.observedDate ? log.observedDate.toLocaleDateString() : "No date"}
-                          </div>
-                        </div>
-                        <div className="mt-1 text-zinc-600 dark:text-zinc-300">
-                          {log.strain} · {log.growType} · {log.stage}
-                        </div>
-                        <div className="mt-2 flex flex-wrap gap-2">
-                          <span className="rounded-full bg-red-100 px-2 py-1 text-xs text-red-800 dark:bg-red-950/40 dark:text-red-200">
-                            {log.severity}
-                          </span>
-                          <span className="rounded-full bg-amber-100 px-2 py-1 text-xs text-amber-800 dark:bg-amber-950/40 dark:text-amber-200">
-                            {log.suspectedCause}
-                          </span>
-                          <span className="rounded-full bg-zinc-100 px-2 py-1 text-xs text-zinc-700 dark:bg-zinc-800 dark:text-zinc-200">
-                            {log.outcome}
-                          </span>
-                          {log.followUpRequired ? (
-                            <span className="rounded-full bg-amber-100 px-2 py-1 text-xs text-amber-800 dark:bg-amber-950/40 dark:text-amber-200">
-                              Cleanup follow-up
-                            </span>
-                          ) : null}
-                          {log.clearedForReuse ? (
-                            <span className="rounded-full bg-emerald-100 px-2 py-1 text-xs text-emerald-800 dark:bg-emerald-950/40 dark:text-emerald-200">
-                              Cleared
-                            </span>
-                          ) : null}
-                          {log.evidencePhotoCount ? (
-                            <span className="rounded-full bg-sky-100 px-2 py-1 text-xs text-sky-800 dark:bg-sky-950/40 dark:text-sky-200">
-                              {log.evidencePhotoCount} photo{log.evidencePhotoCount === 1 ? "" : "s"}
-                            </span>
-                          ) : null}
-                        </div>
-                        {log.notes && <p className="mt-2 text-xs text-zinc-500 dark:text-zinc-400">{log.notes}</p>}
-                        {log.cleanupNotes && <p className="mt-2 text-xs text-amber-700 dark:text-amber-200">Cleanup: {log.cleanupNotes}</p>}
-                      </div>
-                    ))}
-                  </div>
-                ) : (
-                  <EmptyState message="No contamination events match the current filters." />
-                )}
-              </div>
-
-              <div className="rounded-2xl border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-950/40">
-                <div className="mb-3 font-semibold">Prevention notes and follow-up ideas</div>
-                {contaminationAnalytics.preventionNotes.length ? (
-                  <div className="space-y-3">
-                    {contaminationAnalytics.preventionNotes.map((note) => (
-                      <div key={`${note.growId}-${note.id}`} className="rounded-xl border border-zinc-200 p-3 text-sm dark:border-zinc-800">
-                        <div className="font-semibold">{note.growName}</div>
-                        <div className="text-xs text-zinc-500">
-                          {note.strain} · {note.stage} · {note.cause}
-                        </div>
-                        <p className="mt-2 text-zinc-700 dark:text-zinc-300">{note.text}</p>
-                      </div>
-                    ))}
-                  </div>
-                ) : (
-                  <EmptyState message="No prevention notes logged yet. Add notes in Grow Detail contamination logs to make this report useful." />
-                )}
-              </div>
-
-              <div className="rounded-2xl border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-950/40">
-                <div className="mb-3 font-semibold">Cleanup follow-ups and reuse clearance</div>
-                {contaminationAnalytics.cleanupNotes.length ? (
-                  <div className="space-y-3">
-                    {contaminationAnalytics.cleanupNotes.map((note) => (
-                      <div key={`${note.growId}-${note.id}`} className="rounded-xl border border-zinc-200 p-3 text-sm dark:border-zinc-800">
-                        <div className="flex flex-wrap items-center justify-between gap-2">
-                          <div className="font-semibold">{note.growName}</div>
-                          <div className="flex flex-wrap gap-2 text-xs">
-                            {note.followUpRequired ? <span className="rounded-full bg-amber-100 px-2 py-1 text-amber-800 dark:bg-amber-950/40 dark:text-amber-200">Follow-up {note.followUpDate ? `· ${String(note.followUpDate).slice(0, 10)}` : ""}</span> : null}
-                            {note.clearedForReuse ? <span className="rounded-full bg-emerald-100 px-2 py-1 text-emerald-800 dark:bg-emerald-950/40 dark:text-emerald-200">Cleared {note.clearedForReuseDate ? `· ${String(note.clearedForReuseDate).slice(0, 10)}` : ""}</span> : null}
-                            {note.evidencePhotoCount ? <span className="rounded-full bg-sky-100 px-2 py-1 text-sky-800 dark:bg-sky-950/40 dark:text-sky-200">{note.evidencePhotoCount} photo{note.evidencePhotoCount === 1 ? "" : "s"}</span> : null}
-                          </div>
-                        </div>
-                        <div className="mt-1 text-xs text-zinc-500">{note.strain} · {note.stage}</div>
-                        {note.checklist.length ? (
-                          <div className="mt-2 flex flex-wrap gap-2">
-                            {note.checklist.map((item) => (
-                              <span key={item} className="rounded-full border border-zinc-200 px-2 py-1 text-xs dark:border-zinc-700">{item}</span>
-                            ))}
-                          </div>
-                        ) : null}
-                        {note.cleanupNotes ? <p className="mt-2 text-zinc-700 dark:text-zinc-300">{note.cleanupNotes}</p> : null}
-                      </div>
-                    ))}
-                  </div>
-                ) : (
-                  <EmptyState message="No cleanup metadata logged yet. Add checklist items in Grow Detail contamination logs." />
-                )}
-              </div>
-            </div>
-          </div>
-        );
-
-
-
-      case "sopWorkflow":
-        return (
-          <div className="space-y-4">
-            <div className="rounded-2xl border border-indigo-200 bg-indigo-50 p-4 text-indigo-950 dark:border-indigo-900/60 dark:bg-indigo-950/20 dark:text-indigo-100">
-              <div className="flex flex-wrap items-start justify-between gap-3">
-                <div>
-                  <h3 className="text-lg font-semibold">SOP / Workflow performance</h3>
-                  <p className="text-sm opacity-80">
-                    Tracks grows started from SOP templates and connects outcomes back to the workflow that created them.
-                  </p>
-                </div>
-              </div>
-            </div>
-
-            <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-6 gap-3">
-              <StatCard label="SOP Grows" value={sopWorkflowAnalytics.sopGrowCount} />
-              <StatCard label="Templates" value={sopWorkflowAnalytics.summary.templatesTracked} />
-              <StatCard label="SOP Harvested" value={sopWorkflowAnalytics.summary.sopHarvested} />
-              <StatCard label="SOP Contam" value={sopWorkflowAnalytics.summary.sopContaminated} />
-              <StatCard label="SOP Tasks" value={sopWorkflowAnalytics.summary.sopTaskTotal} />
-              <StatCard label="Checklist" value={`${sopWorkflowAnalytics.summary.checklistCompletionRate}%`} />
-            </div>
-
-            {sopWorkflowAnalytics.byTemplate.length ? (
-              <div className="rounded-2xl border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-900">
-                <div className="mb-3 font-semibold">Grows by SOP template</div>
-                <ResponsiveContainer width="100%" height={360}>
-                  <BarChart data={sopWorkflowAnalytics.byTemplate}>
-                    <CartesianGrid {...gridProps} />
-                    <XAxis dataKey="name" {...axisProps} interval={0} angle={-25} textAnchor="end" height={90} />
-                    <YAxis {...axisProps} tickFormatter={fmtInt} />
-                    <Tooltip contentStyle={{ background: "#0b0f19", border: "1px solid #334155", color: "#e5e7eb" }} />
-                    <Legend />
-                    <Bar dataKey="total" name="Total" fill={PALETTE.line}>
-                      {showValues && <LabelList dataKey="total" position="top" formatter={fmtInt} />}
-                    </Bar>
-                    <Bar dataKey="harvested" name="Harvested" fill={PALETTE.wet} />
-                    <Bar dataKey="contaminated" name="Contam" fill="#f87171" />
-                  </BarChart>
-                </ResponsiveContainer>
-              </div>
-            ) : (
-              <EmptyState message="No SOP-started grows match the current filters yet." />
-            )}
-
-            {sopWorkflowAnalytics.byTemplate.length ? (
-              <div className="overflow-x-auto rounded-2xl border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-900">
-                <div className="mb-3 font-semibold">SOP outcome table</div>
-                <table className="w-full min-w-[760px] text-left text-sm">
-                  <thead className="text-xs uppercase text-zinc-500">
-                    <tr>
-                      <th className="py-2 pr-3">Template</th>
-                      <th className="py-2 pr-3">Category</th>
-                      <th className="py-2 pr-3">Total</th>
-                      <th className="py-2 pr-3">Active</th>
-                      <th className="py-2 pr-3">Harvested</th>
-                      <th className="py-2 pr-3">Contam %</th>
-                      <th className="py-2 pr-3">Avg Dry</th>
-                      <th className="py-2 pr-3">Avg Cost</th>
-                      <th className="py-2 pr-3">Checklist</th>
-                      <th className="py-2 pr-3">Open Tasks</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {sopWorkflowAnalytics.byTemplate.map((row) => (
-                      <tr key={row.templateId || row.name} className="border-t border-zinc-200 dark:border-zinc-800">
-                        <td className="py-2 pr-3 font-medium">{row.name}</td>
-                        <td className="py-2 pr-3">{row.category || "Workflow"}</td>
-                        <td className="py-2 pr-3">{row.total}</td>
-                        <td className="py-2 pr-3">{row.active}</td>
-                        <td className="py-2 pr-3">{row.harvested}</td>
-                        <td className="py-2 pr-3">{row.contaminationRate}%</td>
-                        <td className="py-2 pr-3">{row.avgDry ? fmtG(row.avgDry) : "—"}</td>
-                        <td className="py-2 pr-3">{row.avgCost ? fmt$(row.avgCost) : "—"}</td>
-                        <td className="py-2 pr-3">{row.checklistTotal ? `${row.checklistCompletionRate}%` : "—"}</td>
-                        <td className="py-2 pr-3">{row.taskOpen || 0}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            ) : null}
-
-            <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-              <div className="rounded-2xl border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-900">
-                <div className="mb-3 font-semibold">Workflow categories</div>
-                {sopWorkflowAnalytics.byCategory.length ? (
-                  <div className="space-y-2">
-                    {sopWorkflowAnalytics.byCategory.map((row) => (
-                      <div key={row.name} className="flex items-center justify-between rounded-xl bg-zinc-50 px-3 py-2 dark:bg-zinc-800/60">
-                        <span>{row.name}</span>
-                        <span className="font-semibold">{row.count}</span>
-                      </div>
-                    ))}
-                  </div>
-                ) : (
-                  <EmptyState message="No SOP categories tracked yet." />
-                )}
-              </div>
-
-              <div className="rounded-2xl border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-900">
-                <div className="mb-3 font-semibold">Recent SOP-started grows</div>
-                {sopWorkflowAnalytics.recent.length ? (
-                  <div className="space-y-2">
-                    {sopWorkflowAnalytics.recent.map((grow) => (
-                      <div key={grow.id || `${grow.name}-${grow.template}`} className="rounded-xl bg-zinc-50 p-3 text-sm dark:bg-zinc-800/60">
-                        <div className="font-medium">{grow.name} · {grow.strain}</div>
-                        <div className="mt-1 text-xs text-zinc-500 dark:text-zinc-400">
-                          {grow.template} · {grow.category} · {grow.stage}
-                          {grow.checklistPct ? ` · checklist ${grow.checklistPct}%` : ""}
-                          {grow.taskOpen ? ` · ${grow.taskOpen} open SOP task${grow.taskOpen === 1 ? "" : "s"}` : ""}
-                          {grow.contaminated ? " · contamination logged" : ""}
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                ) : (
-                  <EmptyState message="No recent SOP-started grows match the current filters." />
-                )}
-              </div>
-            </div>
-          </div>
+          <HorizontalBarChartPanel
+            data={contamRate}
+            showValues={showValues}
+            valueFormatter={(value) => `${round2(value)}%`}
+            axisFormatter={(value) => `${Math.round(value)}%`}
+            series={[{ key: "rate", name: "Contamination rate", color: "#f87171", formatter: (value) => `${round2(value)}%` }]}
+            tooltipLabelFormatter={(label, row) => row ? `${label} · ${fmtInt(row.bad)} contaminated of ${fmtInt(row.total)}` : label}
+            emptyMessage="No contamination-rate data matches the current filters."
+            nameLabel={groupMode === "recipe" ? "Recipe" : "Strain"}
+          />
         );
 
       case "timeToStage":
         return (
-          <>
-            <KeyLegend items={[
-              { label: "Inoc → Colonized", color: "#60a5fa" },
-              { label: "Colonized → Fruiting", color: "#34d399" },
-              { label: "Fruiting → Harvested", color: "#f59e0b" },
-            ]} />
-            <ResponsiveContainer width="100%" height={380}>
-              <BarChart data={ttsSeries}>
-                <CartesianGrid {...gridProps} />
-                <XAxis dataKey="name" {...axisProps} interval={0} angle={-25} textAnchor="end" height={70} />
-                <YAxis {...axisProps} tickFormatter={fmtInt} />
-                <Tooltip formatter={(v) => `${fmtInt(v)} days`} contentStyle={{ background: "#0b0f19", border: "1px solid #334155", color: "#e5e7eb" }} />
-                <Legend />
-                <Bar dataKey="Inoc_to_Colonized" fill="#60a5fa" />
-                <Bar dataKey="Colonized_to_Fruiting" fill="#34d399" />
-                <Bar dataKey="Fruiting_to_Harvested" fill="#f59e0b" />
-              </BarChart>
-            </ResponsiveContainer>
-          </>
+          <HorizontalBarChartPanel
+            data={ttsSeries}
+            showValues={showValues}
+            valueFormatter={(value) => `${fmtInt(value)} days`}
+            axisFormatter={fmtInt}
+            series={[
+              { key: "Inoc_to_Colonized", name: "Inoculated → Colonized", color: "#60a5fa", formatter: (value) => `${fmtInt(value)}d` },
+              { key: "Colonized_to_Fruiting", name: "Colonized → Fruiting", color: "#34d399", formatter: (value) => `${fmtInt(value)}d` },
+              { key: "Fruiting_to_Harvested", name: "Fruiting → Harvested", color: "#f59e0b", formatter: (value) => `${fmtInt(value)}d` },
+            ]}
+            emptyMessage="No complete stage-date sequences match the current filters."
+            nameLabel={groupMode === "recipe" ? "Recipe" : "Strain"}
+          />
         );
 
       case "burnRate":
+        if (!burnTopSupplies.length || !burnRateSeries.length) {
+          return <ChartEmptyState message="No recent supply-consumption data is available." />;
+        }
         return (
           <>
-            <div className="flex flex-wrap items-center gap-2 text-xs opacity-80">
-              {burnTopSupplies.map((s) => (
-                <span key={s.id} className="inline-flex items-center gap-2 rounded-full px-2 py-1 border border-zinc-700">
-                  <span className="inline-block w-2.5 h-2.5 rounded" style={{ background: s.color }} />
-                  {s.name}
-                  <span className="opacity-70">· {s.daysToZero != null ? `${s.daysToZero}d to zero` : "no est."}</span>
+            <div className="flex flex-wrap items-center gap-2 text-xs text-zinc-500 dark:text-zinc-400">
+              {burnTopSupplies.map((supply) => (
+                <span key={supply.id} className="inline-flex items-center gap-2 rounded-full border border-zinc-300 dark:border-zinc-700 px-2.5 py-1">
+                  <span className="inline-block h-2.5 w-2.5 rounded-full" style={{ background: supply.color }} />
+                  {supply.name}
+                  <span className="opacity-75">· {supply.daysToZero != null ? `${supply.daysToZero}d to zero` : "no runway estimate"}</span>
                 </span>
               ))}
-              <span className="ml-2 italic opacity-70">{burnNote}</span>
+              <span className="italic">{burnNote}</span>
             </div>
-            <ResponsiveContainer width="100%" height={360}>
-              <LineChart data={burnRateSeries}>
-                <CartesianGrid {...gridProps} />
-                <XAxis dataKey="week" {...axisProps} />
-                <YAxis {...axisProps} tickFormatter={fmtInt} />
-                <Tooltip formatter={(v) => fmtInt(v)} contentStyle={{ background: "#0b0f19", border: "1px solid #334155", color: "#e5e7eb" }} />
-                <Legend />
-                {burnTopSupplies.map((s) => (
-                  <Line key={s.id} dataKey={s.name} stroke={s.color} strokeWidth={2} dot={false} />
-                ))}
-              </LineChart>
-            </ResponsiveContainer>
+            <LineChartPanel
+              data={burnRateSeries}
+              xKey="week"
+              valueFormatter={fmtInt}
+              axisFormatter={fmtInt}
+              series={burnTopSupplies.map((supply) => ({ key: supply.name, name: supply.name, color: supply.color, formatter: fmtInt }))}
+            />
           </>
         );
 
       case "yieldVsCost":
+        if (!yieldVsCost.length) return <ChartEmptyState message="No paired yield and cost data matches the current filters." />;
         return (
           <>
-            <KeyLegend items={[{ label: "Point = Grow", color: PALETTE.scatter }]} />
-            <ResponsiveContainer width="100%" height={360}>
-              <ScatterChart>
-                <CartesianGrid {...gridProps} />
-                <XAxis type="number" dataKey="x" name="Cost" unit="$" {...axisProps} tickFormatter={(v) => `$${v}`} />
-                <YAxis type="number" dataKey="y" name="Yield" unit=" g" {...axisProps} tickFormatter={(v) => fmtInt(v)} />
-                <ZAxis type="number" dataKey="z" range={[60, 60]} />
-                <Tooltip cursor={{ strokeDasharray: "3 3" }} contentStyle={{ background: "#0b0f19", border: "1px solid #334155", color: "#e5e7eb" }}
-                  formatter={(value, name) => name === "x" ? fmt$(value) : name === "y" ? fmtG(value) : fmtInt(value)}
-                  labelFormatter={() => ""} />
-                <Scatter data={yieldVsCost} fill={PALETTE.scatter} />
-              </ScatterChart>
-            </ResponsiveContainer>
+            <KeyLegend items={[{ label: "Each point represents one grow", color: PALETTE.scatter }]} />
+            <div className="w-full overflow-x-auto">
+              <div style={{ minWidth: 700, height: 390 }}>
+                <ResponsiveContainer width="100%" height="100%">
+                  <ScatterChart margin={{ top: 20, right: 34, bottom: 24, left: 12 }}>
+                    <CartesianGrid stroke={PALETTE.grid} strokeDasharray="3 3" />
+                    <XAxis type="number" dataKey="x" name="Cost" stroke={PALETTE.axis} tick={{ fill: PALETTE.axis, fontSize: 12 }} tickFormatter={(value) => `$${value}`} />
+                    <YAxis type="number" dataKey="y" name="Yield" stroke={PALETTE.axis} tick={{ fill: PALETTE.axis, fontSize: 12 }} tickFormatter={fmtInt} />
+                    <ZAxis type="number" dataKey="z" range={[70, 70]} />
+                    <Tooltip
+                      cursor={{ strokeDasharray: "3 3" }}
+                      contentStyle={TOOLTIP_STYLE}
+                      content={({ active, payload }) => {
+                        if (!active || !payload?.length) return null;
+                        const row = payload[0]?.payload || {};
+                        return (
+                          <div style={TOOLTIP_STYLE} className="p-3 text-sm">
+                            <div className="font-semibold">{row.name || "Grow"}</div>
+                            <div>Cost: {fmt$(row.x)}</div>
+                            <div>Yield: {fmtG(row.y)}</div>
+                          </div>
+                        );
+                      }}
+                    />
+                    <Scatter data={yieldVsCost} fill={PALETTE.scatter} />
+                  </ScatterChart>
+                </ResponsiveContainer>
+              </div>
+            </div>
+            <FullDataTable data={yieldVsCost} columns={[{ key: "x", label: "Cost", formatter: fmt$ }, { key: "y", label: "Yield", formatter: fmtG }]} nameLabel="Grow" />
           </>
         );
 
       case "throughput":
         return (
-          <>
-            <KeyLegend items={[{ label: "Started", color: "#60a5fa" }, { label: "Harvested", color: "#a78bfa" }]} />
-            <ResponsiveContainer width="100%" height={360}>
-              <LineChart data={throughputSeries}>
-                <CartesianGrid {...gridProps} />
-                <XAxis dataKey="month" {...axisProps} />
-                <YAxis {...axisProps} tickFormatter={fmtInt} />
-                <Tooltip formatter={(v) => fmtInt(v)} contentStyle={{ background: "#0b0f19", border: "1px solid #334155", color: "#e5e7eb" }} />
-                <Legend />
-                <Line dataKey="Started" stroke="#60a5fa" strokeWidth={2} dot={false} />
-                <Line dataKey="Harvested" stroke="#a78bfa" strokeWidth={2} dot={false} />
-              </LineChart>
-            </ResponsiveContainer>
-          </>
+          <LineChartPanel
+            data={throughputSeries}
+            xKey="month"
+            valueFormatter={fmtInt}
+            axisFormatter={fmtInt}
+            series={[
+              { key: "Started", name: "Started", color: "#60a5fa", formatter: fmtInt },
+              { key: "Harvested", name: "Harvested", color: "#a78bfa", formatter: fmtInt },
+            ]}
+            emptyMessage="No monthly start or harvest dates match the current filters."
+          />
         );
 
       case "stageTransitions":
         return (
-          <>
-            <KeyLegend items={[{ label: "Stage changes / month", color: PALETTE.line }]} />
-            <ResponsiveContainer width="100%" height={360}>
-              <LineChart data={stageTransitions}>
-                <CartesianGrid {...gridProps} />
-                <XAxis dataKey="month" {...axisProps} />
-                <YAxis {...axisProps} tickFormatter={fmtInt} />
-                <Tooltip formatter={(v) => fmtInt(v)} contentStyle={{ background: "#0b0f19", border: "1px solid #334155", color: "#e5e7eb" }} />
-                <Legend />
-                <Line dataKey="count" stroke={PALETTE.line} strokeWidth={2} dot={false} />
-              </LineChart>
-            </ResponsiveContainer>
-          </>
+          <LineChartPanel
+            data={stageTransitions}
+            xKey="month"
+            valueFormatter={fmtInt}
+            axisFormatter={fmtInt}
+            series={[{ key: "count", name: "Stage changes", color: PALETTE.line, formatter: fmtInt }]}
+            emptyMessage="No stage-transition history matches the current filters."
+          />
         );
 
+      case "ppInventoryStatus":
+        return (
+          <VerticalBarChartPanel
+            data={postProcessAnalytics.inventoryStatus}
+            showValues={showValues}
+            valueFormatter={fmtInt}
+            axisFormatter={fmtInt}
+            series={[
+              { key: "Active", name: "Active", color: "#34d399", formatter: fmtInt },
+              { key: "Depleted", name: "Depleted / archived", color: "#a78bfa", formatter: fmtInt },
+            ]}
+          />
+        );
+
+      case "ppFinancial":
+        return (
+          <VerticalBarChartPanel
+            data={postProcessAnalytics.financialSnapshot}
+            showValues={showValues}
+            valueFormatter={fmt$}
+            axisFormatter={(value) => `$${fmtInt(value)}`}
+            series={[
+              { key: "Revenue", name: "Revenue", color: "#34d399", formatter: fmt$ },
+              { key: "Cost", name: "Cost", color: "#f59e0b", formatter: fmt$ },
+              { key: "Profit", name: "Profit", color: "#22d3ee", formatter: fmt$ },
+            ]}
+          />
+        );
+
+      case "ppProductPerformance":
+        return (
+          <HorizontalBarChartPanel
+            data={postProcessAnalytics.productPerformance}
+            showValues={showValues}
+            valueFormatter={fmt$}
+            axisFormatter={(value) => `$${fmtInt(value)}`}
+            series={[
+              { key: "revenue", name: "Realized revenue", color: "#34d399", formatter: fmt$ },
+              { key: "profit", name: "Realized profit", color: "#22d3ee", formatter: fmt$ },
+              { key: "projectedRevenue", name: "Remaining projected revenue", color: "#a78bfa", formatter: fmt$ },
+            ]}
+            tooltipLabelFormatter={(label, row) => row ? `${label} · ${fmtInt(row.sold)} sold · ${fmtInt(row.available)} available` : label}
+            emptyMessage="No product performance is available for the selected activity range."
+            nameLabel="Product"
+          />
+        );
+
+      case "ppBatchPerformance":
+        return (
+          <HorizontalBarChartPanel
+            data={postProcessAnalytics.batchPerformance}
+            showValues={showValues}
+            valueFormatter={fmtInt}
+            axisFormatter={fmtInt}
+            series={[
+              { key: "sold", name: "Sold", color: "#34d399", formatter: fmtInt },
+              { key: "samples", name: "Samples / outbound", color: "#60a5fa", formatter: fmtInt },
+              { key: "destroyed", name: "Destroyed", color: "#f87171", formatter: fmtInt },
+              { key: "available", name: "Available", color: "#a78bfa", formatter: fmtInt },
+            ]}
+            tooltipLabelFormatter={(label, row) => row ? `${label} · Revenue ${fmt$(row.revenue)} · Profit ${fmt$(row.profit)}` : label}
+            emptyMessage="No parent-batch package activity is available."
+            nameLabel="Parent finished batch"
+          />
+        );
+
+      case "ppSkuPerformance":
+        return (
+          <HorizontalBarChartPanel
+            data={postProcessAnalytics.skuPerformance}
+            showValues={showValues}
+            valueFormatter={fmtInt}
+            axisFormatter={fmtInt}
+            series={[
+              { key: "sold", name: "Sold", color: "#34d399", formatter: fmtInt },
+              { key: "samples", name: "Samples / promo / internal", color: "#60a5fa", formatter: fmtInt },
+              { key: "available", name: "Available", color: "#a78bfa", formatter: fmtInt },
+            ]}
+            tooltipLabelFormatter={(label, row) => row ? `${label} · Revenue ${fmt$(row.revenue)} · Margin ${row.realizedMarginPercent}%` : label}
+            emptyMessage="No SKU performance is available for the selected activity range."
+            nameLabel="SKU"
+          />
+        );
+
+      case "ppPackageSizePerformance":
+        return (
+          <HorizontalBarChartPanel
+            data={postProcessAnalytics.packageSizePerformance}
+            showValues={showValues}
+            valueFormatter={fmtInt}
+            axisFormatter={fmtInt}
+            series={[
+              { key: "sold", name: "Sold", color: "#34d399", formatter: fmtInt },
+              { key: "samples", name: "Samples", color: "#60a5fa", formatter: fmtInt },
+              { key: "destroyed", name: "Destroyed", color: "#f87171", formatter: fmtInt },
+              { key: "available", name: "Available", color: "#a78bfa", formatter: fmtInt },
+            ]}
+            tooltipLabelFormatter={(label, row) => row ? `${label} · Revenue ${fmt$(row.revenue)} · Profit ${fmt$(row.profit)}` : label}
+            emptyMessage="No package-size performance is available."
+            nameLabel="Package size"
+          />
+        );
+
+      case "ppMargins":
+        return (
+          <HorizontalBarChartPanel
+            data={postProcessAnalytics.lockedPricing}
+            showValues={showValues}
+            valueFormatter={fmt$}
+            axisFormatter={(value) => `$${fmtInt(value)}`}
+            series={[
+              { key: "Cost", name: "Locked package cost", color: "#f59e0b", formatter: fmt$ },
+              { key: "DefaultPrice", name: "Locked default price", color: "#34d399", formatter: fmt$ },
+              { key: "MSRP", name: "MSRP", color: "#a78bfa", formatter: fmt$ },
+            ]}
+            emptyMessage="No locked package pricing is available."
+            nameLabel="SKU / package"
+          />
+        );
+
+      case "ppOverrides":
+        return (
+          <HorizontalBarChartPanel
+            data={postProcessAnalytics.overrideByProduct}
+            showValues={showValues}
+            valueFormatter={fmtInt}
+            axisFormatter={fmtInt}
+            series={[
+              { key: "priceOverrides", name: "Price overrides", color: "#f59e0b", formatter: fmtInt },
+              { key: "fefoOverrides", name: "FEFO overrides", color: "#f87171", formatter: fmtInt },
+            ]}
+            emptyMessage="No price or FEFO overrides are recorded in the selected activity range."
+            nameLabel="Product"
+          />
+        );
+
+      case "ppExpiring":
+        return (
+          <VerticalBarChartPanel
+            data={postProcessAnalytics.expirationBuckets}
+            showValues={showValues}
+            valueFormatter={fmtInt}
+            axisFormatter={fmtInt}
+            series={[
+              { key: "units", name: "Available units", color: "#f59e0b", formatter: fmtInt },
+              { key: "lots", name: "Package lots", color: "#60a5fa", formatter: fmtInt },
+            ]}
+          />
+        );
 
       case "ppWorkflow":
         return (
-          <>
-            <KeyLegend items={[
-              { label: "Blocked", color: "#f87171" },
-              { label: "Released", color: "#34d399" },
-              { label: "Label Ready", color: "#60a5fa" },
-              { label: "Expiring Soon", color: "#f59e0b" },
-            ]} />
-            <ResponsiveContainer width="100%" height={360}>
-              <BarChart data={postProcessAnalytics.workflowCounts}>
-                <CartesianGrid {...gridProps} />
-                <XAxis dataKey="name" {...axisProps} />
-                <YAxis {...axisProps} tickFormatter={fmtInt} />
-                <Tooltip formatter={(v) => fmtInt(v)} contentStyle={{ background: "#0b0f19", border: "1px solid #334155", color: "#e5e7eb" }} />
-                <Bar dataKey="value" fill="#60a5fa">{showValues && <LabelList dataKey="value" position="top" formatter={fmtInt} />}</Bar>
-              </BarChart>
-            </ResponsiveContainer>
-          </>
+          <HorizontalBarChartPanel
+            data={postProcessAnalytics.workflowCounts}
+            showValues={showValues}
+            valueFormatter={fmtInt}
+            axisFormatter={fmtInt}
+            series={[{ key: "value", name: "Lots", color: "#60a5fa", formatter: fmtInt }]}
+            emptyMessage="No active finished inventory workflow records are available."
+            nameLabel="Workflow state"
+          />
         );
 
       case "ppValuation":
         return (
-          <>
-            <KeyLegend items={[{ label: "Cost value", color: "#f59e0b" }, { label: "Sales value", color: "#34d399" }]} />
-            <ResponsiveContainer width="100%" height={380}>
-              <BarChart data={postProcessAnalytics.valuationByType}>
-                <CartesianGrid {...gridProps} />
-                <XAxis dataKey="name" {...axisProps} />
-                <YAxis {...axisProps} tickFormatter={fmtInt} />
-                <Tooltip formatter={(v) => fmt$(v)} contentStyle={{ background: "#0b0f19", border: "1px solid #334155", color: "#e5e7eb" }} />
-                <Legend />
-                <Bar dataKey="costValue" fill="#f59e0b" />
-                <Bar dataKey="salesValue" fill="#34d399" />
-              </BarChart>
-            </ResponsiveContainer>
-          </>
+          <VerticalBarChartPanel
+            data={postProcessAnalytics.valuationByType}
+            showValues={showValues}
+            valueFormatter={fmt$}
+            axisFormatter={(value) => `$${fmtInt(value)}`}
+            series={[
+              { key: "costValue", name: "Cost value", color: "#f59e0b", formatter: fmt$ },
+              { key: "salesValue", name: "Projected sales value", color: "#34d399", formatter: fmt$ },
+            ]}
+            emptyMessage="No available packaged inventory has a locked valuation."
+          />
         );
 
       case "ppSales":
         return (
-          <>
-            <KeyLegend items={[{ label: "Revenue by destination", color: "#22d3ee" }]} />
-            <ResponsiveContainer width="100%" height={380}>
-              <BarChart data={postProcessAnalytics.salesByDestination}>
-                <CartesianGrid {...gridProps} />
-                <XAxis dataKey="name" {...axisProps} interval={0} angle={-25} textAnchor="end" height={70} />
-                <YAxis {...axisProps} tickFormatter={fmtInt} />
-                <Tooltip formatter={(v, n) => n === "revenue" ? fmt$(v) : fmtInt(v)} contentStyle={{ background: "#0b0f19", border: "1px solid #334155", color: "#e5e7eb" }} />
-                <Legend />
-                <Bar dataKey="revenue" fill="#22d3ee" />
-                <Bar dataKey="quantity" fill="#60a5fa" />
-              </BarChart>
-            </ResponsiveContainer>
-          </>
+          <HorizontalBarChartPanel
+            data={postProcessAnalytics.salesByDestination}
+            showValues={showValues}
+            valueFormatter={fmtInt}
+            axisFormatter={fmtInt}
+            tooltipFormatter={(value, name) => [name === "Revenue" ? fmt$(value) : fmtInt(value), name]}
+            series={[
+              { key: "revenue", name: "Revenue", color: "#22d3ee", formatter: fmt$ },
+              { key: "quantity", name: "Units outbound", color: "#60a5fa", formatter: fmtInt },
+            ]}
+            emptyMessage="No sales, samples, or donations match the selected activity range."
+            nameLabel="Destination"
+          />
         );
 
       case "ppWaste":
         return (
-          <>
-            <KeyLegend items={[{ label: "Waste by reason", color: "#f87171" }]} />
-            <ResponsiveContainer width="100%" height={380}>
-              <BarChart data={postProcessAnalytics.wasteByReason}>
-                <CartesianGrid {...gridProps} />
-                <XAxis dataKey="name" {...axisProps} interval={0} angle={-25} textAnchor="end" height={80} />
-                <YAxis {...axisProps} tickFormatter={fmtInt} />
-                <Tooltip formatter={(v) => fmtInt(v)} contentStyle={{ background: "#0b0f19", border: "1px solid #334155", color: "#e5e7eb" }} />
-                <Bar dataKey="quantity" fill="#f87171" />
-              </BarChart>
-            </ResponsiveContainer>
-          </>
+          <HorizontalBarChartPanel
+            data={postProcessAnalytics.finishedLossByReason}
+            showValues={showValues}
+            valueFormatter={fmtInt}
+            axisFormatter={fmtInt}
+            series={[
+              { key: "destroyed", name: "Destroyed package units", color: "#f87171", formatter: fmtInt },
+              { key: "wasted", name: "Wasted package units", color: "#f59e0b", formatter: fmtInt },
+            ]}
+            tooltipLabelFormatter={(label, row) => row ? `${label} · Estimated cost loss ${fmt$(row.costLoss)}` : label}
+            emptyMessage="No finished-inventory destruction or waste is recorded in the selected activity range."
+            nameLabel="Loss reason"
+          />
+        );
+
+      case "ppProcessWaste":
+        return (
+          <HorizontalBarChartPanel
+            data={postProcessAnalytics.processWasteByReason}
+            showValues={showValues}
+            valueFormatter={fmtInt}
+            axisFormatter={fmtInt}
+            series={[{ key: "quantity", name: "Process waste quantity", color: "#f87171", formatter: fmtInt }]}
+            emptyMessage="No manufacturing waste quantities are recorded."
+            nameLabel="Waste reason"
+          />
         );
 
       case "ppEfficiency":
         return (
-          <>
-            <KeyLegend items={[{ label: "Expected", color: "#60a5fa" }, { label: "Actual", color: "#34d399" }]} />
-            <ResponsiveContainer width="100%" height={380}>
-              <BarChart data={postProcessAnalytics.efficiencyByBatch}>
-                <CartesianGrid {...gridProps} />
-                <XAxis dataKey="name" {...axisProps} interval={0} angle={-25} textAnchor="end" height={80} />
-                <YAxis {...axisProps} tickFormatter={fmtInt} />
-                <Tooltip labelFormatter={(label, payload) => {
-                  const row = payload?.[0]?.payload;
-                  return row ? `${label} · ${row.variancePct}% variance` : label;
-                }} formatter={(v) => fmtInt(v)} contentStyle={{ background: "#0b0f19", border: "1px solid #334155", color: "#e5e7eb" }} />
-                <Legend />
-                <Bar dataKey="expected" fill="#60a5fa" />
-                <Bar dataKey="actual" fill="#34d399" />
-              </BarChart>
-            </ResponsiveContainer>
-          </>
+          <HorizontalBarChartPanel
+            data={postProcessAnalytics.efficiencyByBatch}
+            showValues={showValues}
+            valueFormatter={fmtInt}
+            axisFormatter={fmtInt}
+            series={[
+              { key: "expected", name: "Expected", color: "#60a5fa", formatter: fmtInt },
+              { key: "actual", name: "Actual", color: "#34d399", formatter: fmtInt },
+              { key: "waste", name: "Waste", color: "#f87171", formatter: fmtInt },
+            ]}
+            tooltipLabelFormatter={(label, row) => row ? `${label} · ${row.variancePct}% variance` : label}
+            emptyMessage="No production batches have expected, actual, or waste metrics."
+            nameLabel="Production batch"
+          />
         );
 
       case "ppPackaging":
         return (
-          <>
-            <KeyLegend items={[{ label: "Packaging used", color: "#a78bfa" }, { label: "On hand", color: "#f59e0b" }]} />
-            <ResponsiveContainer width="100%" height={380}>
-              <BarChart data={postProcessAnalytics.packagingUsage}>
-                <CartesianGrid {...gridProps} />
-                <XAxis dataKey="name" {...axisProps} interval={0} angle={-25} textAnchor="end" height={80} />
-                <YAxis {...axisProps} tickFormatter={fmtInt} />
-                <Tooltip formatter={(v) => fmtInt(v)} contentStyle={{ background: "#0b0f19", border: "1px solid #334155", color: "#e5e7eb" }} />
-                <Legend />
-                <Bar dataKey="used" fill="#a78bfa" />
-                <Bar dataKey="onHand" fill="#f59e0b" />
-              </BarChart>
-            </ResponsiveContainer>
-          </>
+          <HorizontalBarChartPanel
+            data={postProcessAnalytics.packagingUsage}
+            showValues={showValues}
+            valueFormatter={fmtInt}
+            axisFormatter={fmtInt}
+            series={[
+              { key: "used", name: "Packaging used", color: "#a78bfa", formatter: fmtInt },
+              { key: "onHand", name: "On hand", color: "#f59e0b", formatter: fmtInt },
+            ]}
+            tooltipLabelFormatter={(label, row) => row?.daysCover != null ? `${label} · Approximately ${row.daysCover} days of cover` : label}
+            emptyMessage="No packaging-consumption audits are available."
+            nameLabel="Packaging supply"
+          />
         );
 
       case "ppRework":
         return (
-          <>
-            <KeyLegend items={[{ label: "Salvage", color: "#34d399" }, { label: "Waste", color: "#f87171" }]} />
-            <ResponsiveContainer width="100%" height={380}>
-              <BarChart data={postProcessAnalytics.reworkSeries}>
-                <CartesianGrid {...gridProps} />
-                <XAxis dataKey="name" {...axisProps} interval={0} angle={-25} textAnchor="end" height={80} />
-                <YAxis {...axisProps} tickFormatter={fmtInt} />
-                <Tooltip formatter={(v) => fmtInt(v)} contentStyle={{ background: "#0b0f19", border: "1px solid #334155", color: "#e5e7eb" }} />
-                <Legend />
-                <Bar dataKey="salvage" fill="#34d399" />
-                <Bar dataKey="waste" fill="#f87171" />
-              </BarChart>
-            </ResponsiveContainer>
-          </>
+          <HorizontalBarChartPanel
+            data={postProcessAnalytics.reworkSeries}
+            showValues={showValues}
+            valueFormatter={fmtInt}
+            axisFormatter={fmtInt}
+            series={[
+              { key: "salvage", name: "Salvage", color: "#34d399", formatter: fmtInt },
+              { key: "waste", name: "Waste", color: "#f87171", formatter: fmtInt },
+            ]}
+            emptyMessage="No rework, repackaging, or salvage batches are recorded."
+            nameLabel="Rework batch"
+          />
         );
 
-
       default:
-        return null;
+        return <ChartEmptyState message="This analytics report is not available." />;
     }
   };
 
-  const showGroupChooser = chartKey === "contamRate" || chartKey === "timeToStage";
+  const ppSummary = postProcessAnalytics.summary;
+  const expiringAttention = postProcessAnalytics.expiringLots.filter((lot) => lot.days <= 90).slice(0, 8);
+  const activeSectionConfig = ANALYTICS_SECTIONS.find((section) => section.id === activeSection) || ANALYTICS_SECTIONS[0];
+  const activeReports = ANALYTICS_REPORTS[activeSection] || [];
+  const usesGrowFilters = activeSection === "cultivation" || activeSection === "supplies";
+  const isPostProcessSection = ["production", "sales", "quality"].includes(activeSection);
+
+  const clearDateRange = () => {
+    setFromDate("");
+    setToDate("");
+  };
 
   return (
-    <div className="space-y-4 p-4 md:p-6 bg-white dark:bg-zinc-900 rounded-2xl border border-zinc-200 dark:border-zinc-800 shadow-sm">
-      {/* overview cards */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-        <StatCard label="Active Grows" value={overview.totalActive} />
-        <StatCard label="Unique Strains" value={overview.uniqueStrains} />
-        <StatCard label="Avg Age (days)" value={overview.avgAgeDays} />
-        <StatCard label="Est. Running Cost" value={`$${overview.runningCost}`} />
+    <div className="space-y-5 p-4 md:p-6 bg-white dark:bg-zinc-900 rounded-2xl border border-zinc-200 dark:border-zinc-800 shadow-sm">
+      <div className="rounded-2xl border border-purple-200/80 dark:border-purple-900/70 bg-gradient-to-br from-purple-50 via-white to-sky-50 dark:from-purple-950/30 dark:via-zinc-950 dark:to-sky-950/20 p-5">
+        <div className="flex flex-wrap items-start justify-between gap-4">
+          <div className="max-w-3xl">
+            <div className="text-xs font-semibold uppercase tracking-[0.2em] text-purple-700 dark:text-purple-300">Chaotic Neutral Intelligence</div>
+            <h2 className="mt-1 text-2xl font-bold text-zinc-950 dark:text-white">Analytics Command Center</h2>
+            <p className="mt-2 text-sm text-zinc-600 dark:text-zinc-300">
+              Cultivation, production, inventory, sales, quality, and supply reports are organized into focused workspaces. Long names use readable horizontal charts and every report includes a full-name data table.
+            </p>
+          </div>
+          <div className="rounded-xl border border-purple-200 dark:border-purple-800 bg-white/80 dark:bg-zinc-900/80 px-4 py-3 text-sm">
+            <div className="font-semibold text-zinc-900 dark:text-zinc-100">Current workspace</div>
+            <div className="text-purple-700 dark:text-purple-300">{activeSectionConfig.label}</div>
+          </div>
+        </div>
       </div>
 
-      <div className="grid grid-cols-2 md:grid-cols-4 xl:grid-cols-8 gap-4">
-        <StatCard label="Contam Logs" value={contaminationAnalytics.logCount} />
-        <StatCard label="Impacted Grows" value={contaminationAnalytics.summary.impactedGrows} />
-        <StatCard label="Confirmed Issues" value={contaminationAnalytics.summary.confirmedLogs} />
-        <StatCard label="Top Cause" value={contaminationAnalytics.summary.topCause} />
+      <div role="tablist" aria-label="Analytics workspaces" className="flex flex-wrap gap-2 rounded-2xl border border-zinc-200 dark:border-zinc-800 bg-zinc-50/80 dark:bg-zinc-950/40 p-2">
+        {ANALYTICS_SECTIONS.map((section) => {
+          const active = section.id === activeSection;
+          const reportCount = (ANALYTICS_REPORTS[section.id] || []).length;
+          return (
+            <button
+              key={section.id}
+              type="button"
+              role="tab"
+              aria-selected={active}
+              onClick={() => setActiveSection(section.id)}
+              className={`rounded-xl px-3.5 py-2 text-sm font-medium transition ${active ? "bg-purple-600 text-white shadow-sm" : "text-zinc-700 dark:text-zinc-300 hover:bg-white dark:hover:bg-zinc-800"}`}
+            >
+              {section.label}
+              {reportCount > 0 ? <span className={`ml-2 text-xs ${active ? "text-purple-100" : "text-zinc-400"}`}>{reportCount}</span> : null}
+            </button>
+          );
+        })}
       </div>
 
-      <div className="grid grid-cols-2 md:grid-cols-4 xl:grid-cols-8 gap-4">
-        <StatCard label="SOP Grows" value={sopWorkflowAnalytics.sopGrowCount} />
-        <StatCard label="SOP Templates" value={sopWorkflowAnalytics.summary.templatesTracked} />
-        <StatCard label="Top SOP" value={sopWorkflowAnalytics.summary.topTemplate} />
-        <StatCard
-          label="Highest SOP Contam"
-          value={
-            sopWorkflowAnalytics.summary.highestContamTemplate === "—"
-              ? "—"
-              : `${sopWorkflowAnalytics.summary.highestContamRate}%`
-          }
-        />
-      </div>
-
-      <div className="grid grid-cols-2 md:grid-cols-4 xl:grid-cols-8 gap-4">
-        <StatCard label="PP Active Finished" value={postProcessAnalytics.summary.activeFinished} />
-        <StatCard label="PP Blocked" value={postProcessAnalytics.summary.blockedFinished} />
-        <StatCard label="PP Released" value={postProcessAnalytics.summary.releasedFinished} />
-        <StatCard label="Label Ready" value={postProcessAnalytics.summary.labelReady} />
-        <StatCard label="Expiring ≤30d" value={postProcessAnalytics.summary.expiringSoon} />
-        <StatCard label="Packaging Shortages" value={postProcessAnalytics.summary.packagingShortages} />
-        <StatCard label="Rework Batches" value={postProcessAnalytics.summary.reworkBatches} />
-        <StatCard label="Label Codes" value={`${postProcessAnalytics.labelCompleteness.codes}/${postProcessAnalytics.summary.activeFinished || 0}`} />
-      </div>
-
-      <div className="flex flex-wrap items-center gap-2">
-        <select
-          data-testid="analytics-chart-select"
-          className="rounded-lg border border-gray-300 dark:border-zinc-700 bg-white dark:bg-zinc-800 text-gray-900 dark:text-white px-3 py-2"
-          value={chartKey}
-          onChange={(e) => setChartKey(e.target.value)}
-        >
-          <option value="stageCounts">Grow Stage Distribution</option>
-          <option value="yieldData">Wet vs Dry Yield</option>
-          <option value="avgYieldPerStrain">Average Yield per Strain</option>
-          <option value="growCosts">Cost per Grow</option>
-          <option value="recipeUseCounts">Recipe Usage Count</option>
-          <option value="recipeUsage">Most Used Supplies</option>
-          <option value="contamRate">Contamination Rate</option>
-          <option value="contamInsights">Contamination Analytics Report</option>
-          <option value="sopWorkflow">SOP / Workflow Performance</option>
-          <option value="timeToStage">Time to Stage (median)</option>
-          <option value="burnRate">Top Supplies: Weekly Usage &amp; Days Until Empty</option>
-          <option value="yieldVsCost">Yield vs Cost</option>
-          <option value="throughput">Throughput (Started vs Harvested)</option>
-          <option value="stageTransitions">Stage Transitions Over Time</option>
-          <option value="ppWorkflow">Post Process Workflow Status</option>
-          <option value="ppValuation">Post Process Inventory Valuation</option>
-          <option value="ppSales">Post Process Sales by Destination</option>
-          <option value="ppWaste">Post Process Waste by Reason</option>
-          <option value="ppEfficiency">Post Process Batch Efficiency</option>
-          <option value="ppPackaging">Packaging Usage vs On Hand</option>
-          <option value="ppRework">Rework Salvage vs Waste</option>
-        </select>
-
-        {showGroupChooser && (
-          <select
-            className="rounded-lg border border-gray-300 dark:border-zinc-700 bg-white dark:bg-zinc-800 text-gray-900 dark:text-white px-3 py-2"
-            value={groupMode}
-            onChange={(e) => setGroupMode(e.target.value)}
-            title="Group by"
-          >
-            <option value="strain">By Strain</option>
-            <option value="recipe">By Recipe</option>
-          </select>
-        )}
-
-        <select
-          className="rounded-lg border border-gray-300 dark:border-zinc-700 bg-white dark:bg-zinc-800 text-gray-900 dark:text-white px-3 py-2"
-          value={strainFilter}
-          onChange={(e) => setStrainFilter(e.target.value)}
-          title="Filter by strain"
-        >
-          {allStrainOptions.map((s) => (
-            <option key={s} value={s}>{s}</option>
-          ))}
-        </select>
-
-        {chartKey === "growCosts" && (
-          <select
-            className="rounded-lg border border-gray-300 dark:border-zinc-700 bg-white dark:bg-zinc-800 text-gray-900 dark:text-white px-3 py-2"
-            value={sortMode}
-            onChange={(e) => setSortMode(e.target.value)}
-            title="Sort cost chart"
-          >
-            <option value="recent">Newest inoculated first</option>
-            <option value="alpha">Name A → Z</option>
-          </select>
-        )}
-
-        <div className="flex items-center gap-2 text-sm">
-          <span className="opacity-70">From</span>
-          <input
-            type="date"
-            value={fromDate}
-            onChange={(e) => setFromDate(e.target.value)}
-            className="rounded border border-gray-300 dark:border-zinc-700 bg-white dark:bg-zinc-800 px-2 py-1"
-          />
-          <span className="opacity-70">to</span>
-          <input
-            type="date"
-            value={toDate}
-            onChange={(e) => setToDate(e.target.value)}
-            className="rounded border border-gray-300 dark:border-zinc-700 bg-white dark:bg-zinc-800 px-2 py-1"
-          />
+      <section className="rounded-2xl border border-zinc-200 dark:border-zinc-800 bg-zinc-50/70 dark:bg-zinc-950/30 p-4 space-y-4">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <div className="text-sm font-semibold text-zinc-800 dark:text-zinc-100">Filters and exports</div>
+            <div className="mt-1 text-xs text-zinc-500 dark:text-zinc-400">
+              Date filters apply to grow reference dates and Post Processing outbound activity. Current inventory remains a live snapshot.
+            </div>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            <button onClick={exportCSV} className="btn btn-accent">Export CSV</button>
+            <button onClick={exportJSON} className="btn" title="Export grows, post-processing collections, and analytic snapshots">Export JSON</button>
+          </div>
         </div>
 
-        <label className="inline-flex items-center gap-2 text-sm select-none">
-          <input
-            type="checkbox"
-            style={{ accentColor: "var(--_accent-600)" }}
-            checked={showValues}
-            onChange={(e) => setShowValues(e.target.checked)}
-          />
-          Show values
-        </label>
+        <div className="flex flex-wrap items-end gap-3">
+          <label className="space-y-1 text-sm">
+            <span className="block text-xs text-zinc-500 dark:text-zinc-400">From</span>
+            <input type="date" value={fromDate} onChange={(event) => setFromDate(event.target.value)} className="rounded-lg border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-900 px-3 py-2" />
+          </label>
+          <label className="space-y-1 text-sm">
+            <span className="block text-xs text-zinc-500 dark:text-zinc-400">To</span>
+            <input type="date" value={toDate} onChange={(event) => setToDate(event.target.value)} className="rounded-lg border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-900 px-3 py-2" />
+          </label>
+          {(fromDate || toDate) ? (
+            <button type="button" onClick={clearDateRange} className="rounded-lg border border-zinc-300 dark:border-zinc-700 px-3 py-2 text-sm hover:bg-white dark:hover:bg-zinc-800">
+              Clear dates
+            </button>
+          ) : null}
 
-        <div className="ml-auto flex items-center gap-2">
-          <div className="inline-flex items-center gap-0 rounded-lg overflow-hidden border border-zinc-300 dark:border-zinc-700">
-            <span className="px-2 py-2 text-xs uppercase tracking-wide bg-zinc-100 dark:bg-zinc-800 text-zinc-700 dark:text-zinc-300 border-r border-zinc-300 dark:border-zinc-700 select-none">DATASET</span>
-            <button
-              type="button"
-              onClick={() => setShowAll(false)}
-              className="chip !rounded-none !border-0 text-sm"
-              aria-pressed={!showAll}
-              title="Show only active grows"
-            >
-              Active only
-            </button>
-            <button
-              type="button"
-              onClick={() => setShowAll(true)}
-              className="chip !rounded-none !border-0 text-sm"
-              aria-pressed={showAll}
-              title="Include archived and contaminated"
-            >
-              All
-            </button>
+          {usesGrowFilters ? (
+            <>
+              <label className="space-y-1 text-sm min-w-48">
+                <span className="block text-xs text-zinc-500 dark:text-zinc-400">Strain</span>
+                <select value={strainFilter} onChange={(event) => setStrainFilter(event.target.value)} className="w-full rounded-lg border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-900 px-3 py-2">
+                  {allStrainOptions.map((strain) => <option key={strain} value={strain}>{strain}</option>)}
+                </select>
+              </label>
+              <label className="space-y-1 text-sm">
+                <span className="block text-xs text-zinc-500 dark:text-zinc-400">Grow dataset</span>
+                <select value={showAll ? "all" : "active"} onChange={(event) => setShowAll(event.target.value === "all")} className="rounded-lg border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-900 px-3 py-2">
+                  <option value="active">Active only</option>
+                  <option value="all">All history</option>
+                </select>
+              </label>
+            </>
+          ) : null}
+
+          {activeSection === "cultivation" ? (
+            <>
+              <label className="space-y-1 text-sm">
+                <span className="block text-xs text-zinc-500 dark:text-zinc-400">Rate and timing groups</span>
+                <select value={groupMode} onChange={(event) => setGroupMode(event.target.value)} className="rounded-lg border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-900 px-3 py-2">
+                  <option value="strain">By strain</option>
+                  <option value="recipe">By recipe</option>
+                </select>
+              </label>
+              <label className="space-y-1 text-sm">
+                <span className="block text-xs text-zinc-500 dark:text-zinc-400">Grow-cost order</span>
+                <select value={sortMode} onChange={(event) => setSortMode(event.target.value)} className="rounded-lg border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-900 px-3 py-2">
+                  <option value="recent">Newest first</option>
+                  <option value="alpha">Name A → Z</option>
+                </select>
+              </label>
+            </>
+          ) : null}
+
+          <label className="inline-flex items-center gap-2 rounded-lg border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-900 px-3 py-2 text-sm select-none">
+            <input type="checkbox" style={{ accentColor: "var(--_accent-600)" }} checked={showValues} onChange={(event) => setShowValues(event.target.checked)} />
+            Show chart values
+          </label>
+        </div>
+
+        <div className="text-xs text-zinc-500 dark:text-zinc-400">
+          {isPostProcessSection ? (
+            <>Post Processing activity: {postProcessAnalytics.activityMoveCount} matching outbound transaction{postProcessAnalytics.activityMoveCount === 1 ? "" : "s"}{(fromDate || toDate) ? ` · ${fromDate || "…"} → ${toDate || "…"}` : " · all history"}</>
+          ) : usesGrowFilters ? (
+            <>Grow dataset: {filteredAll.length} matching grow{filteredAll.length === 1 ? "" : "s"} · {activeFiltered.length} active{strainFilter !== "All strains" ? ` · ${strainFilter}` : ""}{(fromDate || toDate) ? ` · ${fromDate || "…"} → ${toDate || "…"}` : ""}</>
+          ) : (
+            <>Live inventory snapshot with {postProcessAnalytics.activityMoveCount} matching outbound transaction{postProcessAnalytics.activityMoveCount === 1 ? "" : "s"}.</>
+          )}
+        </div>
+      </section>
+
+      {activeSection === "overview" ? (
+        <div className="space-y-5">
+          <div>
+            <div className="mb-2 text-sm font-semibold text-zinc-800 dark:text-zinc-100">Cultivation snapshot</div>
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+              <StatCard label="Active grows" value={overview.totalActive} />
+              <StatCard label="Unique strains" value={overview.uniqueStrains} />
+              <StatCard label="Average age" value={`${overview.avgAgeDays} days`} />
+              <StatCard label="Estimated running cost" value={fmt$(overview.runningCost)} />
+            </div>
           </div>
 
-          <button onClick={exportCSV} className="btn btn-accent">
-            Export CSV
-          </button>
-          <button
-            onClick={exportJSON}
-            className="btn"
-            title="Export grows, tasks, recipes, supplies, audits as JSON + analytic snapshots"
-          >
-            Export JSON
-          </button>
+          <div>
+            <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+              <div className="text-sm font-semibold text-zinc-800 dark:text-zinc-100">Post Processing snapshot</div>
+              <div className="text-xs text-zinc-500 dark:text-zinc-400">Inventory is current. Revenue and outbound totals follow the date range.</div>
+            </div>
+            <div className="grid grid-cols-2 md:grid-cols-4 xl:grid-cols-6 gap-4">
+              <StatCard label="Active parent batches" value={ppSummary.activeParentBatches} />
+              <StatCard label="Active package lots" value={ppSummary.activePackageLots} />
+              <StatCard label="Available package units" value={fmtInt(ppSummary.availablePackagedUnits)} />
+              <StatCard label="Depleted package lots" value={ppSummary.depletedPackageLots} />
+              <StatCard label="Units sold" value={fmtInt(ppSummary.unitsSold)} />
+              <StatCard label="Samples distributed" value={fmtInt(ppSummary.samplesDistributed)} />
+              <StatCard label="Destroyed units" value={fmtInt(ppSummary.destroyedUnits)} />
+              <StatCard label="Realized revenue" value={fmt$(ppSummary.realizedRevenue)} />
+              <StatCard label="Realized profit" value={fmt$(ppSummary.realizedProfit)} hint={`${ppSummary.realizedMarginPercent}% realized margin`} />
+              <StatCard label="Remaining projected revenue" value={fmt$(ppSummary.remainingProjectedRevenue)} />
+              <StatCard label="Remaining projected profit" value={fmt$(ppSummary.remainingProjectedProfit)} />
+              <StatCard label="Price / FEFO overrides" value={`${ppSummary.priceOverrides} / ${ppSummary.fefoOverrides}`} />
+            </div>
+          </div>
+
+          {(expiringAttention.length > 0 || ppSummary.packagingShortages > 0 || ppSummary.belowCostSales > 0) ? (
+            <section className="rounded-2xl border border-amber-300/70 dark:border-amber-800/70 bg-amber-50/70 dark:bg-amber-950/20 p-4 space-y-3">
+              <div>
+                <div className="font-semibold text-amber-900 dark:text-amber-100">Attention queue</div>
+                <div className="text-sm text-amber-800/80 dark:text-amber-200/80">
+                  {expiringAttention.length} expiring or expired package lot{expiringAttention.length === 1 ? "" : "s"} · {ppSummary.packagingShortages} packaging shortage{ppSummary.packagingShortages === 1 ? "" : "s"} · {ppSummary.belowCostSales} below-cost sale{ppSummary.belowCostSales === 1 ? "" : "s"}
+                </div>
+              </div>
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-3 text-sm">
+                {expiringAttention.map((lot) => (
+                  <div key={lot.id} className="rounded-xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 p-3">
+                    <div className="font-medium break-words">{lot.product}</div>
+                    <div className="mt-1 text-zinc-500 dark:text-zinc-400 break-words">
+                      {lot.name} · {lot.packageSize} · {fmtInt(lot.units)} units · Best by {lot.bestBy} · {lot.days < 0 ? `${Math.abs(lot.days)} days past` : `${lot.days} days`}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </section>
+          ) : (
+            <div className="rounded-2xl border border-emerald-300/70 dark:border-emerald-800/70 bg-emerald-50/70 dark:bg-emerald-950/20 p-4 text-sm text-emerald-800 dark:text-emerald-200">
+              No expiring inventory, packaging shortages, or below-cost sales currently require attention.
+            </div>
+          )}
+
+          <div>
+            <div className="mb-2 text-sm font-semibold text-zinc-800 dark:text-zinc-100">Analytics workspaces</div>
+            <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
+              {ANALYTICS_SECTIONS.filter((section) => section.id !== "overview").map((section) => (
+                <button key={section.id} type="button" onClick={() => setActiveSection(section.id)} className="rounded-2xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 p-4 text-left hover:border-purple-400 dark:hover:border-purple-700 hover:shadow-sm transition">
+                  <div className="flex items-center justify-between gap-3">
+                    <div className="font-semibold text-zinc-900 dark:text-zinc-100">{section.label}</div>
+                    <div className="rounded-full bg-purple-100 dark:bg-purple-950/60 px-2 py-0.5 text-xs text-purple-700 dark:text-purple-300">{(ANALYTICS_REPORTS[section.id] || []).length} reports</div>
+                  </div>
+                  <div className="mt-2 text-sm text-zinc-500 dark:text-zinc-400">{section.description}</div>
+                </button>
+              ))}
+            </div>
+          </div>
         </div>
-      </div>
+      ) : (
+        <div className="space-y-4">
+          <div className="rounded-2xl border border-zinc-200 dark:border-zinc-800 bg-zinc-50/70 dark:bg-zinc-950/30 p-4">
+            <div className="text-lg font-semibold text-zinc-900 dark:text-zinc-100">{activeSectionConfig.label}</div>
+            <div className="mt-1 text-sm text-zinc-500 dark:text-zinc-400">{activeSectionConfig.description}</div>
+          </div>
 
-      <div className="text-xs opacity-60">
-        Showing {filteredAll.length} grows ({activeFiltered.length} active in stage distribution)
-        {strainFilter !== "All strains" ? ` · Strain: ${strainFilter}` : ""}
-        {(fromDate || toDate) ? ` · Range: ${fromDate || "…"} → ${toDate || "…"}`
-          : ""}
-      </div>
+          {activeSection === "cultivation" ? (
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+              <StatCard label="Matching grows" value={filteredAll.length} />
+              <StatCard label="Active grows" value={activeFiltered.length} />
+              <StatCard label="Unique strains" value={overview.uniqueStrains} />
+              <StatCard label="Estimated running cost" value={fmt$(overview.runningCost)} />
+            </div>
+          ) : null}
 
-      {renderChart()}
+          {activeSection === "production" ? (
+            <div className="grid grid-cols-2 md:grid-cols-4 xl:grid-cols-6 gap-4">
+              <StatCard label="Active parent batches" value={ppSummary.activeParentBatches} />
+              <StatCard label="Active package lots" value={ppSummary.activePackageLots} />
+              <StatCard label="Available package units" value={fmtInt(ppSummary.availablePackagedUnits)} />
+              <StatCard label="Depleted package lots" value={ppSummary.depletedPackageLots} />
+              <StatCard label="Projected inventory value" value={fmt$(ppSummary.remainingProjectedRevenue)} />
+              <StatCard label="Rework batches" value={ppSummary.reworkBatches} />
+            </div>
+          ) : null}
+
+          {activeSection === "sales" ? (
+            <div className="grid grid-cols-2 md:grid-cols-4 xl:grid-cols-6 gap-4">
+              <StatCard label="Units sold" value={fmtInt(ppSummary.unitsSold)} />
+              <StatCard label="Samples distributed" value={fmtInt(ppSummary.samplesDistributed)} />
+              <StatCard label="Realized revenue" value={fmt$(ppSummary.realizedRevenue)} />
+              <StatCard label="Realized profit" value={fmt$(ppSummary.realizedProfit)} hint={`${ppSummary.realizedMarginPercent}% margin`} />
+              <StatCard label="Remaining projected revenue" value={fmt$(ppSummary.remainingProjectedRevenue)} />
+              <StatCard label="Remaining projected profit" value={fmt$(ppSummary.remainingProjectedProfit)} />
+            </div>
+          ) : null}
+
+          {activeSection === "quality" ? (
+            <div className="grid grid-cols-2 md:grid-cols-4 xl:grid-cols-6 gap-4">
+              <StatCard label="Expiring ≤30 days" value={`${ppSummary.expiring30Lots} lots`} hint={`${fmtInt(ppSummary.expiring30Units)} units`} />
+              <StatCard label="Destroyed units" value={fmtInt(ppSummary.destroyedUnits)} />
+              <StatCard label="Wasted units" value={fmtInt(ppSummary.wastedUnits)} />
+              <StatCard label="Price overrides" value={ppSummary.priceOverrides} />
+              <StatCard label="FEFO overrides" value={ppSummary.fefoOverrides} />
+              <StatCard label="Below-cost sales" value={ppSummary.belowCostSales} />
+            </div>
+          ) : null}
+
+          {activeSection === "supplies" ? (
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+              <StatCard label="Recipes" value={Array.isArray(recipes) ? recipes.length : 0} />
+              <StatCard label="Supplies" value={Array.isArray(supplies) ? supplies.length : 0} />
+              <StatCard label="Supply audits" value={Array.isArray(audits) ? audits.length : 0} />
+              <StatCard label="Packaging shortages" value={ppSummary.packagingShortages} />
+            </div>
+          ) : null}
+
+          <div className="space-y-4">
+            {activeReports.map((report, index) => (
+              <AnalyticsReportCard
+                key={report.key}
+                title={report.title}
+                description={report.description}
+                defaultOpen={index === 0}
+                testId={`analytics-report-${report.key}`}
+              >
+                {renderChart(report.key)}
+              </AnalyticsReportCard>
+            ))}
+          </div>
+        </div>
+      )}
     </div>
   );
+
 }
 
-function EmptyState({ message }) {
+function StatCard({ label, value, hint = "" }) {
   return (
-    <div className="rounded-xl border border-dashed border-zinc-300 bg-zinc-50 p-4 text-sm text-zinc-500 dark:border-zinc-700 dark:bg-zinc-900/50 dark:text-zinc-400">
-      {message}
-    </div>
-  );
-}
-
-function StatCard({ label, value }) {
-  return (
-    <div className="rounded-2xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 p-4 shadow-sm">
-      <div className="text-sm text-zinc-500">{label}</div>
-      <div className="text-2xl font-semibold mt-1">{value}</div>
+    <div className="rounded-2xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 p-4 shadow-sm min-w-0">
+      <div className="text-sm text-zinc-500 dark:text-zinc-400 break-words">{label}</div>
+      <div className="text-2xl font-semibold mt-1 text-zinc-950 dark:text-white break-words">{value}</div>
+      {hint ? <div className="mt-1 text-xs text-zinc-500 dark:text-zinc-400 break-words">{hint}</div> : null}
     </div>
   );
 }

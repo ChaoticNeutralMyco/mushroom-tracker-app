@@ -62,7 +62,27 @@ export async function deleteAllUserFirestore(uid, progress = () => {}) {
     "processBatches",
     "inventoryMovements",
 
+    // post-processing / sales aliases used by older experiments and test helpers
+    "packageRuns",
+    "packagedLots",
+    "finishedInventory",
+    "finishedProducts",
+    "productBatches",
+    "products",
+    "sales",
+    "salesOrders",
+    "salesRecords",
+    "outboundLogs",
+    "outboundMovements",
+    "ledger",
+    "inventoryLedger",
+    "supply_audits",
+
     // misc app support
+    "settings",
+    "preferences",
+    "prefs",
+    "storageLocations",
     "storage_locations",
 
     // strain library / storage (cover common variants)
@@ -100,6 +120,18 @@ export async function deleteGrowDataOnly(progress = () => {}) {
     "materialLots",
     "processBatches",
     "inventoryMovements",
+    "packageRuns",
+    "packagedLots",
+    "finishedInventory",
+    "finishedProducts",
+    "productBatches",
+    "sales",
+    "salesOrders",
+    "salesRecords",
+    "outboundLogs",
+    "outboundMovements",
+    "ledger",
+    "inventoryLedger",
   ];
 
   let deleted = 0;

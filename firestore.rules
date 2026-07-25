@@ -6,30 +6,49 @@ service cloud.firestore {
     function isSignedIn() {
       return request.auth != null;
     }
+
     function isOwner(uid) {
       return isSignedIn() && request.auth.uid == uid;
     }
 
-    // Per-user data tree
+    // The authenticated user may manage their own profile document.
     match /users/{uid} {
-      allow read, write: if isOwner(uid);
+      allow read, create, update, delete: if isOwner(uid);
 
-      match /grows/{growId} {
-        allow read, write: if isOwner(uid);
-        match /photos/{photoId} {
-          allow read, write: if isOwner(uid);
-        }
+      // Subscription entitlements are readable by the owning user but must be
+      // written by trusted server code through the Firebase Admin SDK.
+      match /billing/{document=**} {
+        allow read: if isOwner(uid);
+        allow create, update, delete: if false;
       }
 
-      match /tasks/{taskId} {
-        allow read, write: if isOwner(uid);
+      // Current application data lives under users/{uid}/... . This recursive
+      // owner rule covers present and nested collections such as grows,
+      // environmentLogs, recipes/items, supplies, tasks, photos, notes,
+      // strains, species, library, settings, storage locations, material lots,
+      // process batches, inventory movements, supply audits, and clean queue.
+      // Billing is deliberately excluded from client writes above.
+      match /{collectionId}/{document=**} {
+        allow read, create, update, delete:
+          if isOwner(uid) && collectionId != 'billing';
       }
     }
 
-    // Optional public docs (read-only)
-    match /public/{docId} {
+    // Tester codes must not be enumerable, redeemable, or editable directly
+    // by browser clients. A future trusted backend should validate them.
+    match /testerCodes/{document=**} {
+      allow read, write: if false;
+    }
+
+    // Optional public reference documents remain read-only.
+    match /public/{document=**} {
       allow read: if true;
       allow write: if false;
+    }
+
+    // Deny any path that was not explicitly allowed above.
+    match /{document=**} {
+      allow read, write: if false;
     }
   }
 }

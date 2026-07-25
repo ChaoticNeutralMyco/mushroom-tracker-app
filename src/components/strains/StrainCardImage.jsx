@@ -1,4 +1,5 @@
 // src/components/strains/StrainCardImage.jsx
+// assets-v49-default-dark-remove-broken-reishi
 import React, { useMemo, useState } from "react";
 import { getCardFrontURL, getCardFrontURLFromCode } from "../../lib/strain-cards";
 
@@ -16,7 +17,7 @@ export default function StrainCardImage({
     return getCardFrontURL(name);
   }, [name, code]);
 
-  const defaultFallback = "/images/cards/fronts/default-front.png";
+  const defaultFallback = "/images/cards/fronts/builder-base-dark.png";
   const finalFallback = "/images/cards/fronts/GT-front.png";
 
   return (
@@ -32,7 +33,7 @@ export default function StrainCardImage({
       }}
       onError={(e) => {
         const current = e.currentTarget.getAttribute("src") || "";
-        if (!current.includes("default-front.png")) {
+        if (!current.includes("builder-base-dark.png")) {
           setSrc(defaultFallback);
         } else if (!current.includes("GT-front.png")) {
           setSrc(finalFallback);

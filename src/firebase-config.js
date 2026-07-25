@@ -11,7 +11,7 @@ import {
   setPersistence,
   browserLocalPersistence,
   inMemoryPersistence,
-  // connectAuthEmulator, // enable if you actually run auth emulator
+  connectAuthEmulator,
 } from "firebase/auth";
 import { getStorage, connectStorageEmulator } from "firebase/storage";
 import { initializeAppCheck, ReCaptchaV3Provider } from "firebase/app-check";
@@ -68,19 +68,27 @@ if (APP_CHECK_PUBLIC_KEY) {
 
 // Emulators (only when explicitly enabled)
 const useEmu = bool(import.meta.env.VITE_USE_FIREBASE_EMULATORS);
+const useAuthEmu = useEmu && bool(import.meta.env.VITE_USE_AUTH_EMULATOR);
+
 if (useEmu) {
   const host = "127.0.0.1";
   const fsPort = num(import.meta.env.VITE_EMULATOR_FIRESTORE_PORT, 8080);
   const stPort = num(import.meta.env.VITE_EMULATOR_STORAGE_PORT, 9199);
+  const authPort = num(import.meta.env.VITE_EMULATOR_AUTH_PORT, 9099);
 
   connectFirestoreEmulator(db, host, fsPort);
   connectStorageEmulator(storage, host, stPort);
-  // connectAuthEmulator(auth, `http://${host}:9099`, { disableWarnings: true });
+
+  if (useAuthEmu) {
+    connectAuthEmulator(auth, `http://${host}:${authPort}`, {
+      disableWarnings: true,
+    });
+  }
 }
 
 if (import.meta.env.DEV) {
   console.log(
-    `[firebase] FS=${useEmu ? "emu" : "prod"} ST=${useEmu ? "emu" : "prod"} AUTH=prod bucket=${storageBucket}`
+    `[firebase] FS=${useEmu ? "emu" : "prod"} ST=${useEmu ? "emu" : "prod"} AUTH=${useAuthEmu ? "emu" : "prod"} bucket=${storageBucket}`
   );
 }
 

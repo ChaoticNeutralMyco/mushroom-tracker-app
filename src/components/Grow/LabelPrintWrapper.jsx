@@ -1,9 +1,15 @@
 // src/components/Grow/LabelPrintWrapper.jsx
+// labels-v48-packaged-sku-children-only
 import React, { useEffect, useMemo, useState } from "react";
+import { useLocation } from "react-router-dom";
 import { auth, db } from "../../firebase-config";
 import { collection, onSnapshot } from "firebase/firestore";
 import { onAuthStateChanged } from "firebase/auth";
 import LabelPrint from "./LabelPrint";
+import PackagingLabelPreview, {
+  buildPackagingLabelDataFromFinishedGood,
+  DEMO_PACKAGING_LABEL_DATA,
+} from "./PackagingLabelPreview";
 import { isActiveGrow } from "../../lib/growFilters";
 import {
   getLotWorkflowState,
@@ -119,7 +125,155 @@ const getFinishedLabelEligibility = (it) => {
   return { printable: true, reason: "" };
 };
 
+const getFinishedName = (it) =>
+  String(it?.name || it?.batchName || it?.variant || it?.label || it?.title || "Finished Lot").trim();
+
+const getLabelSortOrder = (it) => {
+  const n = Number(it?.labelSortOrder ?? it?.sortOrder ?? 9999);
+  return Number.isFinite(n) ? n : 9999;
+};
+
+const sortLabelLots = (a, b) => {
+  const orderDiff = getLabelSortOrder(a) - getLabelSortOrder(b);
+  if (orderDiff !== 0) return orderDiff;
+  return getFinishedName(a).localeCompare(getFinishedName(b));
+};
+
+const ensureApproxLabel = (value, fallback = "") => {
+  const text = String(value || fallback || "").trim();
+  if (!text) return text;
+  return text.startsWith("≈") ? text : `≈ ${text}`;
+};
+
+const stripApproxLabel = (value, fallback = "") =>
+  String(value || fallback || "")
+    .trim()
+    .replace(/^≈\s*/, "");
+
+const isCapsulePackageLot = (lot = {}) => {
+  const type = String(lot?.productType || lot?.finishedGoodType || lot?.lotType || "").toLowerCase();
+  return type.includes("capsule") || Number(lot?.capsulesPerPackage || lot?.labelMetadata?.capsulesPerPackage || 0) > 0;
+};
+
+const getApproxCapsuleLabel = (lot = {}, built = {}) => {
+  const explicit = built?.perCapsule || lot?.labelMetadata?.perCapsule || lot?.perCapsule;
+  if (explicit) return ensureApproxLabel(explicit);
+  const grams = Number(
+    lot?.averageWeightPerCapsuleG ??
+      lot?.labelMetadata?.averageWeightPerCapsuleG ??
+      lot?.displayAverageCapsuleWeightG ??
+      lot?.actualAverageCapsuleWeightG ??
+      lot?.gramsPerUnit ??
+      0
+  );
+  if (grams > 0) {
+    const mg = Math.round(grams * 1000 * 100) / 100;
+    return `≈ ${String(mg).replace(/\.0+$/, "")} mg`;
+  }
+  return "";
+};
+
+const PACKAGED_SKU_TYPES = new Set(["retail", "sample", "promo", "internal"]);
+
+const getPackagedSkuType = (lot = {}) =>
+  String(
+    lot?.skuType ||
+      lot?.packageSkuType ||
+      lot?.package?.skuType ||
+      lot?.labelMetadata?.skuType ||
+      ""
+  )
+    .trim()
+    .toLowerCase();
+
+const getPackageSizeQuantity = (lot = {}) => {
+  const candidates = [
+    lot?.packageSize,
+    lot?.packageQuantity,
+    lot?.unitsPerPackage,
+    lot?.capsulesPerPackage,
+    lot?.package?.packageSize,
+    lot?.package?.unitsPerPackage,
+    lot?.labelMetadata?.packageSize,
+    lot?.labelMetadata?.capsulesPerPackage,
+  ];
+
+  for (const value of candidates) {
+    const n = Number(value);
+    if (Number.isFinite(n) && n > 0) return n;
+  }
+
+  const label = String(
+    lot?.packageSizeLabel ||
+      lot?.package?.packageSizeLabel ||
+      lot?.labelMetadata?.packageSizeLabel ||
+      ""
+  ).trim();
+
+  const match = label.match(/\d+(?:\.\d+)?/);
+  const parsed = match ? Number(match[0]) : 0;
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 0;
+};
+
+const isPackagedSkuChildLot = (lot = {}) => {
+  if (!lot || !isFinishedGoodsLot(lot)) return false;
+
+  const sourceType = String(lot?.sourceType || "").trim().toLowerCase();
+  const manufacturingStage = String(lot?.manufacturingStage || "")
+    .trim()
+    .toLowerCase();
+  const skuType = getPackagedSkuType(lot);
+
+  const hasChildRelationship =
+    sourceType === "finished_package" ||
+    manufacturingStage === "packaged_inventory" ||
+    Boolean(lot?.packageRunId && lot?.parentLotId) ||
+    lot?.package?.isPackaged === true;
+
+  const hasPackageRunIdentity =
+    Boolean(lot?.packageRunId) ||
+    Boolean(lot?.parentLotId) ||
+    sourceType === "finished_package";
+
+  const hasValidSkuType = PACKAGED_SKU_TYPES.has(skuType);
+  const hasPackageSize = getPackageSizeQuantity(lot) > 0;
+  const hasAvailablePackages = getFinishedQtyNum(lot) > 0;
+
+  return (
+    hasChildRelationship &&
+    hasPackageRunIdentity &&
+    hasValidSkuType &&
+    hasPackageSize &&
+    hasAvailablePackages
+  );
+};
+
+const buildPackagingDataForLot = (lot) => {
+  if (!lot) return { ...DEMO_PACKAGING_LABEL_DATA };
+
+  const built = buildPackagingLabelDataFromFinishedGood(lot);
+  if (!isCapsulePackageLot(lot)) return built;
+
+  const perCapsule = getApproxCapsuleLabel(lot, built);
+  const totalWeight = stripApproxLabel(
+    built?.totalWeight || lot?.labelMetadata?.totalWeight || lot?.totalWeight
+  );
+
+  return {
+    ...built,
+    perCapsule,
+    totalWeight,
+    approximatePerCapsule: true,
+    approximateTotalWeight: false,
+  };
+};
+
 export default function LabelPrintWrapper(props) {
+  const location = useLocation();
+  const requestedPackagingLotId = useMemo(
+    () => new URLSearchParams(location.search).get("labelLotId") || "",
+    [location.search]
+  );
   const hasGrowsProp = Object.prototype.hasOwnProperty.call(props || {}, "grows");
   const hasLibraryProp = Object.prototype.hasOwnProperty.call(props || {}, "libraryItems");
   const hasFinishedGoodsProp = Object.prototype.hasOwnProperty.call(props || {}, "finishedGoods");
@@ -131,6 +285,7 @@ export default function LabelPrintWrapper(props) {
   const [fetchedGrows, setFetchedGrows] = useState([]);
   const [fetchedLibraryItems, setFetchedLibraryItems] = useState([]);
   const [fetchedFinishedGoods, setFetchedFinishedGoods] = useState([]);
+  const [selectedPackagingLotId, setSelectedPackagingLotId] = useState("");
   const [templateId, setTemplateId] = useState(readTemplateId);
   const [uid, setUid] = useState(() => auth.currentUser?.uid || null);
 
@@ -273,8 +428,57 @@ export default function LabelPrintWrapper(props) {
       }
     }
 
-    return { active, printable, blocked };
+    return {
+      active: active.slice().sort(sortLabelLots),
+      printable: printable.sort(sortLabelLots),
+      blocked: blocked.sort(sortLabelLots),
+    };
   }, [finishedGoodsSource]);
+
+  const packagingOptions = useMemo(
+    () => finishedGoodsBuckets.printable.filter(isPackagedSkuChildLot),
+    [finishedGoodsBuckets.printable]
+  );
+
+  useEffect(() => {
+    if (!packagingOptions.length) {
+      setSelectedPackagingLotId("");
+      return;
+    }
+
+    setSelectedPackagingLotId((prev) => {
+      if (requestedPackagingLotId && packagingOptions.some((lot) => lot.id === requestedPackagingLotId)) {
+        return requestedPackagingLotId;
+      }
+      if (prev && packagingOptions.some((lot) => lot.id === prev)) return prev;
+      return packagingOptions[0]?.id || "";
+    });
+  }, [packagingOptions, requestedPackagingLotId]);
+
+  const selectedPackagingLot = useMemo(() => {
+    if (!selectedPackagingLotId) return packagingOptions[0] || null;
+    return packagingOptions.find((lot) => lot.id === selectedPackagingLotId) || packagingOptions[0] || null;
+  }, [packagingOptions, selectedPackagingLotId]);
+
+  const packagingLabelData = useMemo(
+    () => buildPackagingDataForLot(selectedPackagingLot),
+    [selectedPackagingLot]
+  );
+
+  const packagingLabelItems = useMemo(
+    () =>
+      packagingOptions.map((lot) => ({
+        id: lot.id,
+        name: getFinishedName(lot),
+        data: buildPackagingDataForLot(lot),
+        maxQuantity: Math.max(1, Math.floor(getFinishedQtyNum(lot) || 1)),
+      })),
+    [packagingOptions]
+  );
+
+  const packagingSourceLabel = selectedPackagingLot
+    ? getFinishedName(selectedPackagingLot)
+    : "No finished lot selected yet. Showing the blank template only.";
 
   const meta = templateMeta[templateId] || templateMeta["5160"];
 
@@ -286,13 +490,62 @@ export default function LabelPrintWrapper(props) {
           {meta.title} — {meta.size} · {meta.note} ·{" "}
           <span className="font-medium">{activeGrows.length}</span> grow labels ·{" "}
           <span className="font-medium">{activeLibrary.length}</span> stored item labels ·{" "}
-          <span className="font-medium">{finishedGoodsBuckets.printable.length}</span> printable finished inventory labels
+          <span className="font-medium">{finishedGoodsBuckets.printable.length}</span> printable finished inventory labels ·{" "}
+          <span className="font-medium">{packagingOptions.length}</span> packaged SKU labels
           {finishedGoodsBuckets.blocked.length > 0 ? (
             <>
               {" "}· <span className="font-medium">{finishedGoodsBuckets.blocked.length}</span> blocked finished lots
             </>
           ) : null}
         </div>
+      </div>
+
+      <div className="rounded-2xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 p-4 space-y-3">
+        <div className="flex flex-wrap items-end justify-between gap-3">
+          <div>
+            <div className="font-semibold">Packaging labels — Avery 5659</div>
+            <div className="text-xs text-zinc-500 dark:text-zinc-400">
+              Only packaged child SKUs created by a package run are eligible. Parent finished batches never appear here. Uses <span className="font-medium">public/Packaging Label.png</span> unchanged on Avery 5659 sheets with six 3×3 labels per US Letter page.
+            </div>
+
+          </div>
+
+          {packagingOptions.length > 0 ? (
+            <label className="space-y-1 text-sm min-w-[260px]">
+              <span className="text-xs uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
+                Packaged SKU
+              </span>
+              <select
+                value={selectedPackagingLot?.id || ""}
+                onChange={(e) => setSelectedPackagingLotId(e.target.value)}
+                className="w-full rounded-xl border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-900 px-3 py-2"
+              >
+                {packagingOptions.map((lot) => (
+                  <option key={lot.id} value={lot.id}>
+                    {getFinishedName(lot)}
+                  </option>
+                ))}
+              </select>
+            </label>
+          ) : null}
+        </div>
+
+        {packagingOptions.length > 0 ? (
+          <PackagingLabelPreview
+            data={packagingLabelData}
+            sourceLabel={packagingSourceLabel}
+            items={packagingLabelItems}
+            selectedId={selectedPackagingLot?.id || ""}
+            onSelectedIdChange={setSelectedPackagingLotId}
+          />
+        ) : (
+          <div className="rounded-xl border border-dashed border-zinc-300 dark:border-zinc-700 bg-zinc-50 dark:bg-zinc-950/40 px-4 py-8 text-center">
+            <div className="font-semibold">No packaged SKU children are available to print.</div>
+            <div className="mt-1 text-sm text-zinc-500 dark:text-zinc-400">
+              Create a retail, sample, promo, or internal package run from a finished parent batch. Only the resulting packaged child lot will appear in the Avery 5659 printer.
+            </div>
+          </div>
+        )}
       </div>
 
       <LabelPrint

@@ -1,20 +1,28 @@
-﻿# --- Node / Vite ---
+# --- Node / Vite ---
 node_modules/
 dist/
 .vite/
+dev-dist/
 *.log
 *.local
 
-# --- Vercel local build output ---
-.vercel/output/
-
-# --- Env / tooling ---
-.env*
+# --- Local environment files ---
+.env
+.env.*
 !.env.example
+
+# --- Vercel / Firebase local output ---
+.vercel/
+.firebase/
+firebase-debug.log
+firestore-debug.log
+
+# --- Editors / OS ---
 .DS_Store
 Thumbs.db
 .idea/
 .vscode/
+.vs/
 
 # --- Rust / Tauri ---
 /target/
@@ -29,29 +37,35 @@ Thumbs.db
 **/*.dll
 **/*.exe
 
-# Android/iOS build products (if present)
-/src-tauri/gen/android/
-/src-tauri/gen/ios/
-
-# --- Tests / coverage ---
-coverage/
-playwright-report/
-test-results/
-
-# --- Misc ---
-*.patch
-
-deploy/
-
-dev-dist/
-
-.vs/
-
-playwright-report-ci/
-release/
-keystore.properties/
-# Android signing keys - DO NOT COMMIT
+# --- Android / signing / installers ---
+keystore.properties
 android/app/my-release-key.jks
 *.jks
 *.keystore
+*.apk
+*.aab
+*.msi
 
+# --- Tests / coverage / saved auth ---
+coverage/
+playwright-report/
+playwright-report-ci/
+test-results/
+tests/e2e/.auth/
+
+# --- Local snapshots, patch packages, backups, quarantine ---
+/_backup/
+/_backups/
+/_unused/
+/quarantine/
+/_cnm_*/
+/release/
+/deploy/
+/src*.zip
+/audit-inbound.csv
+/CHECKSUMS.txt
+/FILE_SIZES.txt
+/MANIFEST.txt
+
+# --- Misc ---
+*.patch

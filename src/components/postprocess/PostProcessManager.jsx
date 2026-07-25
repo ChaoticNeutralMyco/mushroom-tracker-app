@@ -1,4 +1,11 @@
 // src/components/postprocess/PostProcessManager.jsx
+// postprocess-v42-collapsible-postprocess-sales-focus
+// postprocess-v41-active-sales-with-historical-rollups
+// postprocess-v40-fefo-rotation-and-audit
+// postprocess-v39-sales-reporting-and-history-clarity
+// postprocess-v38-sales-package-dose-and-label-link
+// postprocess-v30-capsule-packaging-cards-and-costing
+// postprocess-v28-capsule-package-dose-clarity
 import React, { useEffect, useMemo, useState } from "react";
 import { Link, useLocation } from "react-router-dom";
 import { collection, doc, onSnapshot, updateDoc } from "firebase/firestore";
@@ -16,6 +23,7 @@ import {
   Tags,
   ChevronDown,
   ChevronRight,
+  X,
 } from "lucide-react";
 import { auth, db } from "../../firebase-config";
 import {
@@ -26,6 +34,7 @@ import {
   createDryLotFromGrow,
   createExtractionBatch,
   createProductBatch,
+  finalizeProductBatchOutput,
   createReworkBatch,
   finalizeExtractionBatchOutput,
   formatQty,
@@ -43,9 +52,11 @@ import {
   getRecipeSnapshot,
   isActiveMaterialLot,
   isActiveProcessBatch,
+  isArchivedOrDepletedMaterialLot,
   isFinishedGoodsLot,
   isLowStockLot,
   parseAnyDate,
+  createPackagedFinishedLot,
   recordFinishedInventoryMovement,
   toLocalYYYYMMDD,
 } from "../../lib/postprocess";
@@ -80,6 +91,23 @@ function sanitizeNumber(value, allowNegative = false) {
     : Math.round(Math.max(0, n) * 1000) / 1000;
 }
 
+function clampQuantityToAvailable(rawValue, available, { integer = false } = {}) {
+  if (rawValue === "") return { value: "", warning: "", capped: false };
+  const maxAvailable = Math.max(0, Number(available) || 0);
+  const parsed = Number(rawValue);
+  if (!Number.isFinite(parsed)) return { value: "", warning: "Enter a valid quantity.", capped: false };
+  const normalized = integer ? Math.max(0, Math.floor(parsed)) : Math.max(0, Math.round(parsed * 1000) / 1000);
+  if (normalized > maxAvailable) {
+    const capped = integer ? Math.floor(maxAvailable) : Math.round(maxAvailable * 1000) / 1000;
+    return {
+      value: String(capped),
+      warning: `Only ${capped} available. Quantity was capped to the maximum available.`,
+      capped: true,
+    };
+  }
+  return { value: String(normalized), warning: "", capped: false };
+}
+
 function chipClass(active) {
   return `chip ${active ? "chip--active" : ""}`;
 }
@@ -88,19 +116,69 @@ function formatBatchStatus(status) {
   return String(status || "planned").replace(/_/g, " ");
 }
 
-function SectionCard({ title, subtitle, action, children }) {
+function SectionCard({
+  title,
+  subtitle,
+  action,
+  children,
+  collapsible = true,
+  defaultOpen = true,
+}) {
+  const [isOpen, setIsOpen] = useState(defaultOpen);
+
   return (
     <section className="rounded-2xl border border-zinc-200 dark:border-zinc-800 bg-zinc-50/70 dark:bg-zinc-950/40 p-4 space-y-4">
       <div className="flex flex-wrap items-start justify-between gap-3">
-        <div>
-          <h3 className="text-base font-semibold">{title}</h3>
-          {subtitle ? (
-            <p className="text-sm text-zinc-600 dark:text-zinc-400">{subtitle}</p>
+        {collapsible ? (
+          <button
+            type="button"
+            onClick={() => setIsOpen((current) => !current)}
+            className="min-w-0 flex-1 text-left rounded-xl focus:outline-none focus:ring-2 focus:ring-purple-500/70"
+            aria-expanded={isOpen}
+          >
+            <div className="flex items-start gap-2">
+              {isOpen ? (
+                <ChevronDown className="mt-0.5 h-4 w-4 shrink-0" />
+              ) : (
+                <ChevronRight className="mt-0.5 h-4 w-4 shrink-0" />
+              )}
+              <div className="min-w-0">
+                <h3 className="text-base font-semibold">{title}</h3>
+                {subtitle ? (
+                  <p className="text-sm text-zinc-600 dark:text-zinc-400">{subtitle}</p>
+                ) : null}
+              </div>
+            </div>
+          </button>
+        ) : (
+          <div className="min-w-0 flex-1">
+            <h3 className="text-base font-semibold">{title}</h3>
+            {subtitle ? (
+              <p className="text-sm text-zinc-600 dark:text-zinc-400">{subtitle}</p>
+            ) : null}
+          </div>
+        )}
+
+        <div className="flex flex-wrap items-center justify-end gap-2">
+          {action}
+          {collapsible ? (
+            <button
+              type="button"
+              onClick={() => setIsOpen((current) => !current)}
+              className="rounded-lg border border-zinc-300 dark:border-zinc-700 px-3 py-1.5 text-xs hover:bg-zinc-100 dark:hover:bg-zinc-800"
+              aria-label={`${isOpen ? "Collapse" : "Expand"} ${title}`}
+            >
+              {isOpen ? "Collapse" : "Expand"}
+            </button>
           ) : null}
         </div>
-        {action}
       </div>
-      {children}
+
+      {isOpen || !collapsible ? (
+        <div className="space-y-4 border-t border-zinc-200 dark:border-zinc-800 pt-4">
+          {children}
+        </div>
+      ) : null}
     </section>
   );
 }
@@ -132,26 +210,46 @@ function EmptyState({ title, body, action }) {
   );
 }
 
-function WorkflowStep({ number, title, body, done, next }) {
+function workflowStepToneClasses(tone = "empty") {
+  if (tone === "good") {
+    return {
+      card: "border-emerald-300/80 dark:border-emerald-800/70 bg-emerald-50/80 dark:bg-emerald-950/20",
+      badge: "bg-emerald-600 text-white",
+      pill: "text-emerald-700 dark:text-emerald-300",
+    };
+  }
+
+  if (tone === "warn") {
+    return {
+      card: "border-amber-300/80 dark:border-amber-800/70 bg-amber-50/80 dark:bg-amber-950/20",
+      badge: "bg-amber-500 text-zinc-950",
+      pill: "text-amber-700 dark:text-amber-300",
+    };
+  }
+
+  return {
+    card: "border-purple-300/70 dark:border-purple-800/60 bg-purple-50/70 dark:bg-purple-950/15",
+    badge: "bg-purple-600 text-white",
+    pill: "text-purple-700 dark:text-purple-300",
+  };
+}
+
+function WorkflowStep({ number, title, body, statusText = "Empty", tone = "empty", next }) {
+  const classes = workflowStepToneClasses(tone);
+
   return (
-    <div className="rounded-2xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 p-4">
+    <div className={`rounded-2xl border p-4 ${classes.card}`}>
       <div className="flex items-start gap-3">
         <div
-          className={`h-8 w-8 rounded-full flex items-center justify-center text-sm font-semibold ${
-            done
-              ? "accent-bg"
-              : next
-                ? "accent-bg"
-                : "bg-zinc-200 dark:bg-zinc-800 text-zinc-700 dark:text-zinc-300"
-          }`}
+          className={`h-8 w-8 rounded-full flex items-center justify-center text-sm font-semibold ${classes.badge}`}
         >
           {number}
         </div>
         <div>
-          <div className="font-semibold flex items-center gap-2">
+          <div className="font-semibold flex flex-wrap items-center gap-2">
             <span>{title}</span>
-            {done ? <span className="text-xs accent-text">Done</span> : null}
-            {!done && next ? <span className="text-xs accent-text">Next</span> : null}
+            <span className={`text-xs font-semibold ${classes.pill}`}>{statusText}</span>
+            {next ? <span className="text-xs accent-text">Next</span> : null}
           </div>
           <div className="mt-1 text-sm text-zinc-600 dark:text-zinc-400">{body}</div>
         </div>
@@ -208,11 +306,83 @@ function CollapsibleGroup({
   );
 }
 
+function InlineDetails({ title = "Details", subtitle = "", children, defaultOpen = false }) {
+  return (
+    <details open={defaultOpen} className="rounded-xl border border-zinc-200 dark:border-zinc-800 bg-zinc-50/70 dark:bg-zinc-950/30">
+      <summary className="cursor-pointer list-none px-3 py-2 text-sm font-semibold flex items-center justify-between gap-3">
+        <span>{title}</span>
+        {subtitle ? <span className="text-xs font-normal text-zinc-500 dark:text-zinc-400">{subtitle}</span> : null}
+      </summary>
+      <div className="border-t border-zinc-200 dark:border-zinc-800 p-3 space-y-3">
+        {children}
+      </div>
+    </details>
+  );
+}
+
+
+function PostProcessDetailModal({ title, subtitle, onClose, children, maxWidth = "max-w-6xl" }) {
+  return (
+    <div
+      className="fixed inset-0 z-[100] p-3 sm:p-6 overflow-y-auto backdrop-blur-sm"
+      role="presentation"
+      style={{ backgroundColor: "rgba(0, 0, 0, 0.82)" }}
+      onMouseDown={onClose}
+    >
+      <div
+        role="dialog"
+        aria-modal="true"
+        className={`mx-auto ${maxWidth} rounded-2xl border shadow-2xl dark`}
+        style={{
+          borderColor: "rgba(var(--accent-rgb), 0.45)",
+          backgroundColor: "rgba(8, 10, 18, 0.97)",
+          color: "#f4f4f5",
+          boxShadow: "0 24px 80px rgba(0,0,0,0.65), 0 0 0 1px rgba(var(--accent-rgb),0.18)",
+        }}
+        onMouseDown={(event) => event.stopPropagation()}
+      >
+        <div
+          className="sticky top-0 z-10 flex flex-wrap items-start justify-between gap-3 border-b backdrop-blur px-4 py-4 sm:px-5"
+          style={{
+            borderColor: "rgba(var(--accent-rgb), 0.35)",
+            background: "linear-gradient(135deg, rgba(var(--accent-rgb), 0.26), rgba(8, 10, 18, 0.98))",
+          }}
+        >
+          <div className="min-w-0">
+            <div className="text-xl font-semibold break-words" style={{ color: "var(--accent-200)" }}>
+              {title}
+            </div>
+            {subtitle ? <div className="mt-1 text-sm text-zinc-300">{subtitle}</div> : null}
+          </div>
+          <button type="button" onClick={onClose} className="btn text-sm shrink-0">
+            <X className="h-4 w-4" />
+            Close
+          </button>
+        </div>
+
+        <div className="p-4 sm:p-5 space-y-5">{children}</div>
+      </div>
+    </div>
+  );
+}
+
+function DetailNameButton({ children, onClick }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className="text-left text-lg font-semibold text-purple-700 dark:text-purple-300 hover:underline focus:outline-none focus:ring-2 focus:ring-purple-500/70 rounded-md"
+    >
+      {children}
+    </button>
+  );
+}
+
 function formatTotalsByUnit(items = []) {
   const totals = {};
   (Array.isArray(items) ? items : []).forEach((item) => {
     const unit = String(item?.unit || "").trim() || "units";
-    const value = Number(item?.total ?? item?.quantity ?? 0) || 0;
+    const value = Number(item?.selectedQuantity ?? item?.total ?? item?.quantity ?? 0) || 0;
     totals[unit] = (totals[unit] || 0) + value;
   });
 
@@ -222,6 +392,24 @@ function formatTotalsByUnit(items = []) {
   });
 
   return parts.join(" · ");
+}
+
+function getDefaultExtractionOutputUnit(extractionType = "") {
+  const type = String(extractionType || "").trim().toLowerCase();
+  if (["powder", "dry_powder", "dry powder", "resin"].includes(type)) return "g";
+  if (["dual", "dual_extract", "hot_water", "hot water", "ethanol", "tincture", "liquid"].includes(type)) return "mL";
+  return "mL";
+}
+
+function getExtractionInputTotalForUnit(items = [], unit = "g") {
+  const targetUnit = normalizePackageUnit(unit);
+  return Math.round(
+    (Array.isArray(items) ? items : []).reduce((sum, item) => {
+      const itemUnit = normalizePackageUnit(item?.unit || "g");
+      if (itemUnit !== targetUnit) return sum;
+      return sum + (Number(item?.selectedQuantity ?? item?.total ?? item?.quantity ?? 0) || 0);
+    }, 0) * 1000
+  ) / 1000;
 }
 
 function roundCurrency(value) {
@@ -279,6 +467,901 @@ function getLotUnitCost(lot = {}) {
     return roundCurrency(Number(batchTotal) / quantity);
   }
   return 0;
+}
+
+
+function inferCapsuleFillWeightGFromText(...values) {
+  const text = values
+    .map((value) => String(value || "").trim())
+    .filter(Boolean)
+    .join(" ");
+  if (!text) return 0;
+
+  const explicitMgMatch = text.match(/(?:^|[^0-9])([1-9][0-9]{1,3})\s*(?:mg|milligrams?)\b/i);
+  if (explicitMgMatch) {
+    const mg = Math.max(0, Number(explicitMgMatch[1]) || 0);
+    if (mg >= 25 && mg <= 1500) return Math.round((mg / 1000) * 10000) / 10000;
+  }
+
+  const gramsMatch = text.match(/(?:^|[^0-9])([0-9]+(?:\.[0-9]+)?)\s*g(?:ram|rams)?\b/i);
+  if (gramsMatch) {
+    const grams = Math.max(0, Number(gramsMatch[1]) || 0);
+    if (grams > 0 && grams <= 2) return Math.round(grams * 10000) / 10000;
+  }
+
+  const codeMatch = text.match(/(?:^|[-_\s])([1-9][0-9]{2,3})(?:mg)?(?:$|[-_\s])/i);
+  if (codeMatch) {
+    const mg = Math.max(0, Number(codeMatch[1]) || 0);
+    if (mg >= 100 && mg <= 1500) return Math.round((mg / 1000) * 10000) / 10000;
+  }
+
+  return 0;
+}
+
+function calculateCapsuleAverageFromTotals(totalPowderUsedG = 0, capsulesMade = 0) {
+  const total = Math.max(0, Number(totalPowderUsedG) || 0);
+  const capsules = Math.max(0, Math.floor(Number(capsulesMade) || 0));
+  if (total <= 0 || capsules <= 0) return 0;
+  return Math.round((total / capsules) * 10000) / 10000;
+}
+
+function roundCapsuleAverageG(value = 0) {
+  const n = Math.max(0, Number(value) || 0);
+  return n > 0 ? Math.round(n * 10000) / 10000 : 0;
+}
+
+function capsuleMgToGrams(value = 0) {
+  const mg = Math.max(0, Number(value) || 0);
+  if (mg >= 25 && mg <= 1500) return roundCapsuleAverageG(mg / 1000);
+  return 0;
+}
+
+function getExplicitCapsuleFillWeightG(lot = {}) {
+  const targetFill = Number(
+    lot?.targetCapsuleFillG ??
+      lot?.productionMetrics?.targetCapsuleFillG ??
+      lot?.formulaTotals?.targetCapsuleFillG ??
+      lot?.labelMetadata?.targetCapsuleFillG ??
+      0
+  );
+  if (Number.isFinite(targetFill) && targetFill > 0) return roundCapsuleAverageG(targetFill);
+
+  const mgFill = capsuleMgToGrams(
+    lot?.mgPerUnit ??
+      lot?.capsuleFillMg ??
+      lot?.productionMetrics?.mgPerUnit ??
+      lot?.labelMetadata?.mgPerUnit ??
+      lot?.labelMetadata?.capsuleFillMg ??
+      0
+  );
+  if (mgFill > 0) return mgFill;
+
+  return inferCapsuleFillWeightGFromText(
+    lot?.perCapsule,
+    lot?.labelMetadata?.perCapsule,
+    lot?.labelMetadata?.averageWeightPerCapsuleG,
+    lot?.name,
+    lot?.batchName,
+    lot?.lotCode,
+    lot?.batchLot,
+    lot?.variant,
+    lot?.variantTag,
+    lot?.labelMetadata?.productName
+  );
+}
+
+function resolveCapsuleAverageForPackagingG(candidateAverageG = 0, lot = {}) {
+  const candidate = roundCapsuleAverageG(candidateAverageG);
+  const explicitFill = getExplicitCapsuleFillWeightG(lot);
+
+  // Legacy/seeded records can carry a stale calculated average while the actual
+  // capsule fill is encoded as 500 mg / target fill / per-capsule label. When
+  // that explicit fill is higher, use it for package-count math so 3.5 g at
+  // 0.5 g/cap recommends 7 capsules instead of 12.
+  if (explicitFill > 0 && (candidate <= 0 || explicitFill > candidate + 0.049)) {
+    return explicitFill;
+  }
+
+  return candidate;
+}
+
+function getAverageSourceItemWeightG(lot = {}) {
+  const direct = Number(
+    lot?.actualAverageCapsuleWeightG ??
+      lot?.actualAverageWeightPerCapsuleG ??
+      lot?.productionMetrics?.actualAverageCapsuleWeightG ??
+      lot?.labelMetadata?.actualAverageCapsuleWeightG ??
+      lot?.package?.actualAverageCapsuleWeightG ??
+      lot?.package?.averageWeightPerItemG ??
+      lot?.package?.averageWeightPerCapsuleG ??
+      lot?.gramsPerUnit ??
+      lot?.labelMetadata?.averageWeightPerCapsuleG ??
+      lot?.labelMetadata?.perUnitGrams ??
+      0
+  );
+  if (Number.isFinite(direct) && direct > 0) return resolveCapsuleAverageForPackagingG(direct, lot);
+
+  const fromProductionTotals = calculateCapsuleAverageFromTotals(
+    lot?.totalPowderUsedG ?? lot?.productionMetrics?.totalPowderUsedG ?? 0,
+    lot?.capsulesMade ?? lot?.actualOutputCount ?? lot?.outputCount ?? lot?.initialQuantity ?? 0
+  );
+  if (fromProductionTotals > 0) return resolveCapsuleAverageForPackagingG(fromProductionTotals, lot);
+
+  const formulaAverage = Number(
+    lot?.formulaTotals?.gramsPerCapsule ??
+      lot?.productionMetrics?.formulaTotalGramsPerCapsule ??
+      lot?.targetCapsuleFillG ??
+      lot?.productionMetrics?.targetCapsuleFillG ??
+      lot?.labelMetadata?.targetCapsuleFillG ??
+      0
+  );
+  if (Number.isFinite(formulaAverage) && formulaAverage > 0) return resolveCapsuleAverageForPackagingG(formulaAverage, lot);
+
+  const inferredFromText = getExplicitCapsuleFillWeightG(lot);
+  if (inferredFromText > 0) return inferredFromText;
+
+  const totalWeightRaw = String(lot?.totalWeight || lot?.labelMetadata?.totalWeight || "").trim();
+  const totalMatch = totalWeightRaw.match(/([0-9]+(?:\.[0-9]+)?)/);
+  const capsulesRaw = String(lot?.capsuleCount || lot?.labelMetadata?.capsuleCount || lot?.initialQuantity || "").trim();
+  const capsuleMatch = capsulesRaw.match(/([0-9]+(?:\.[0-9]+)?)/);
+  const totalWeight = totalMatch ? Number(totalMatch[1]) : 0;
+  const capsuleCount = capsuleMatch ? Number(capsuleMatch[1]) : 0;
+  const fromLabelTotals = calculateCapsuleAverageFromTotals(totalWeight, capsuleCount);
+  if (fromLabelTotals > 0) return resolveCapsuleAverageForPackagingG(fromLabelTotals, lot);
+
+  return 0;
+}
+
+function formatWeightG(value) {
+  const n = Number(value);
+  if (!Number.isFinite(n) || n <= 0) return "0 g";
+  const rounded = Math.round(n * 1000) / 1000;
+  return `${rounded} g`;
+}
+
+function formatMg(value) {
+  const n = Number(value);
+  if (!Number.isFinite(n) || n <= 0) return "0 mg";
+  const rounded = Math.round(n * 100) / 100;
+  return `${String(rounded).replace(/\.00?$/, "")} mg`;
+}
+
+function readNestedNumber(record = {}, paths = []) {
+  for (const path of paths) {
+    const value = String(path || "").split(".").reduce((current, key) => current?.[key], record);
+    const n = Number(value);
+    if (Number.isFinite(n) && n > 0) return n;
+  }
+  return 0;
+}
+
+function getRecipeBatchCostDefaults(recipe = {}) {
+  return {
+    packagingCost: readNestedNumber(recipe, ["packagingCost", "packagingCostPerBatch", "packagingCostPerRun", "costs.packagingCost", "costing.packagingCost"]),
+    laborCost: readNestedNumber(recipe, ["laborCost", "laborCostPerBatch", "laborCostPerRun", "costs.laborCost", "costing.laborCost"]),
+    overheadCost: readNestedNumber(recipe, ["overheadCost", "overheadCostPerBatch", "costs.overheadCost", "costing.overheadCost"]),
+    otherCost: readNestedNumber(recipe, ["otherCost", "otherCostPerBatch", "costs.otherCost", "costing.otherCost"]),
+  };
+}
+
+
+function formatCleanWeightG(value, digits = 1) {
+  const n = Number(value);
+  if (!Number.isFinite(n) || n <= 0) return "0 g";
+  const factor = 10 ** digits;
+  const rounded = Math.round(n * factor) / factor;
+  return `${String(rounded).replace(/\.0$/, "")} g`;
+}
+
+function getRecommendedCapsulesForTargetWeight(targetWeightG = 0, actualAverageCapsuleWeightG = 0) {
+  const target = Math.max(0, Number(targetWeightG) || 0);
+  const actualAverage = Math.max(0, Number(actualAverageCapsuleWeightG) || 0);
+  if (target <= 0 || actualAverage <= 0) return 0;
+  return Math.max(1, Math.round(target / actualAverage));
+}
+
+function getConservativeDisplayCapsuleWeightG(actualAverageCapsuleWeightG = 0) {
+  const actualAverage = Math.max(0, Number(actualAverageCapsuleWeightG) || 0);
+  if (actualAverage <= 0) return 0;
+  const commonCleanWeights = [1, 0.9, 0.8, 0.75, 0.7, 0.6, 0.5, 0.4, 0.3, 0.25, 0.2, 0.15, 0.1, 0.05];
+  const cleanWeight = commonCleanWeights.find((candidate) => candidate <= actualAverage + 1e-9);
+  if (cleanWeight) return Math.round(cleanWeight * 100) / 100;
+  return Math.round(actualAverage * 1000) / 1000;
+}
+
+function buildCapsuleDisplayDose({ actualAverageCapsuleWeightG = 0, capsulesPerPackage = 0 } = {}) {
+  const actualAverage = Math.round(Math.max(0, Number(actualAverageCapsuleWeightG) || 0) * 10000) / 10000;
+  const capsuleCount = Math.max(0, Math.floor(Number(capsulesPerPackage) || 0));
+  const displayAverage = getConservativeDisplayCapsuleWeightG(actualAverage);
+  const displayTotal = displayAverage > 0 && capsuleCount > 0
+    ? Math.round(displayAverage * capsuleCount * 10) / 10
+    : 0;
+  return {
+    actualAverageCapsuleWeightG: actualAverage,
+    displayAverageCapsuleWeightG: displayAverage,
+    displayTotalWeightG: displayTotal,
+    perCapsuleLabel: displayAverage > 0 ? `≈ ${formatCleanWeightG(displayAverage, displayAverage < 0.1 ? 3 : 1)}` : "Not set",
+    totalWeightLabel: displayTotal > 0 ? `≈ ${formatCleanWeightG(displayTotal, 1)}` : "Not set",
+  };
+}
+
+function getProductionFormulaConfig(productType = "capsule") {
+  const key = String(productType || "capsule").trim().toLowerCase();
+  if (key === "gummy" || key === "gummies") {
+    return {
+      key: "gummy",
+      title: "Gummy formula calculator",
+      outputLabel: "Gummies made",
+      unitLabel: "gummy",
+      unitLabelPlural: "gummies",
+      amountLabel: "source qty / gummy",
+      presets: [25, 50, 75, 100],
+      presetSuffix: "gummies",
+    };
+  }
+  if (key === "chocolate" || key === "chocolates") {
+    return {
+      key: "chocolate",
+      title: "Chocolate formula calculator",
+      outputLabel: "Chocolate pieces made",
+      unitLabel: "piece",
+      unitLabelPlural: "pieces",
+      amountLabel: "source qty / piece",
+      presets: [12, 24, 48, 96],
+      presetSuffix: "pieces",
+    };
+  }
+  if (key === "tincture" || key === "tinctures") {
+    return {
+      key: "tincture",
+      title: "Tincture formula calculator",
+      outputLabel: "Finished tincture volume (mL)",
+      unitLabel: "mL",
+      unitLabelPlural: "mL",
+      amountLabel: "source qty / finished mL",
+      presets: [30, 60, 120, 240],
+      presetSuffix: "mL",
+    };
+  }
+  return {
+    key: "capsule",
+    title: "Capsule goal-weight / formula calculator",
+    outputLabel: "Capsules made",
+    unitLabel: "capsule",
+    unitLabelPlural: "capsules",
+    amountLabel: "source qty / capsule",
+    presets: [25, 50, 75, 100],
+    presetSuffix: "caps",
+  };
+}
+
+function formatFormulaQuantity(value = 0, unit = "g") {
+  const normalizedUnit = normalizePackageUnit(unit || "g");
+  const digits = normalizedUnit === "g" || normalizedUnit === "mL" ? 3 : 2;
+  return formatQty(value, unit || normalizedUnit || "unit", digits);
+}
+
+function buildCapsuleFormulaPlan(form = {}, sourceLots = []) {
+  const config = getProductionFormulaConfig(form.productType);
+  const outputQuantity = Math.max(0, Number(form.outputCount) || 0);
+  const sourceById = new Map((Array.isArray(sourceLots) ? sourceLots : []).map((lot) => [lot.id, lot]));
+  const rawRows = Array.isArray(form.formulaRows) ? form.formulaRows : [];
+
+  const rows = rawRows
+    .map((row, index) => {
+      const sourceLot = sourceById.get(row?.sourceLotId) || null;
+      const sourceUnit = sourceLot?.unit || row?.sourceUnit || "g";
+      const normalizedSourceUnit = normalizePackageUnit(sourceUnit);
+      const amountPerUnit = Math.max(0, Number(row?.amountPerUnit ?? row?.gramsPerCapsule) || 0);
+      const totalRequired = Math.round(amountPerUnit * outputQuantity * 1000) / 1000;
+      const available = sourceLot ? getLotAvailableQuantity(sourceLot) : 0;
+      const shortage = sourceLot ? Math.max(0, Math.round((totalRequired - available) * 1000) / 1000) : 0;
+      return {
+        id: row?.id || `formula_${index + 1}`,
+        ingredientName: String(row?.ingredientName || row?.name || "").trim(),
+        sourceLotId: row?.sourceLotId || "",
+        sourceLotName: sourceLot?.name || "",
+        sourceUnit,
+        normalizedSourceUnit,
+        amountPerUnit: Math.round(amountPerUnit * 100000) / 100000,
+        gramsPerCapsule: config.key === "capsule" && normalizedSourceUnit === "g" ? Math.round(amountPerUnit * 100000) / 100000 : 0,
+        percent: 0,
+        totalRequired,
+        totalPowderG: normalizedSourceUnit === "g" ? totalRequired : 0,
+        available,
+        shortage,
+        unit: sourceUnit,
+      };
+    })
+    .filter((row) => row.ingredientName || row.sourceLotId || row.amountPerUnit > 0);
+
+  const perUnitTotals = {};
+  const batchTotals = {};
+  rows.forEach((row) => {
+    const unit = row.sourceUnit || "g";
+    perUnitTotals[unit] = Math.round(((perUnitTotals[unit] || 0) + row.amountPerUnit) * 100000) / 100000;
+    batchTotals[unit] = Math.round(((batchTotals[unit] || 0) + row.totalRequired) * 1000) / 1000;
+  });
+
+  const totalPerCapsuleG = Math.round(rows.filter((row) => row.normalizedSourceUnit === "g").reduce((sum, row) => sum + row.amountPerUnit, 0) * 100000) / 100000;
+  const totalPowderNeededG = Math.round(rows.filter((row) => row.normalizedSourceUnit === "g").reduce((sum, row) => sum + row.totalRequired, 0) * 1000) / 1000;
+  const totalLiquidNeededMl = Math.round(rows.filter((row) => row.normalizedSourceUnit === "mL").reduce((sum, row) => sum + row.totalRequired, 0) * 1000) / 1000;
+  const inventoryGuards = rows.filter((row) => row.sourceLotId && row.shortage > 0);
+  const displayDose = buildCapsuleDisplayDose({ actualAverageCapsuleWeightG: totalPerCapsuleG, capsulesPerPackage: outputQuantity });
+  const perUnitSummary = Object.entries(perUnitTotals).map(([unit, total]) => `${formatFormulaQuantity(total, unit)} / ${config.unitLabel}`).join(" · ") || "Build formula";
+  const batchTotalSummary = Object.entries(batchTotals).map(([unit, total]) => formatFormulaQuantity(total, unit)).join(" · ") || "0";
+
+  const rowsWithShares = rows.map((row) => {
+    const unitTotal = perUnitTotals[row.sourceUnit] || 0;
+    return {
+      ...row,
+      percent: unitTotal > 0 ? Math.round((row.amountPerUnit / unitTotal) * 10000) / 100 : 0,
+    };
+  });
+
+  return {
+    config,
+    capsuleCount: outputQuantity,
+    outputQuantity,
+    targetFillG: totalPerCapsuleG,
+    rows: rowsWithShares,
+    totalPerCapsuleG,
+    totalPowderNeededG,
+    totalLiquidNeededMl,
+    perUnitTotals,
+    batchTotals,
+    perUnitSummary,
+    batchTotalSummary,
+    targetDeltaG: 0,
+    formulaMatchesTarget: rows.length === 0 || rows.some((row) => row.amountPerUnit > 0),
+    inventoryGuards,
+    displayDose,
+  };
+}
+
+function getDuplicateFormulaLabels(rows = []) {
+  const seenNames = new Map();
+  const seenSources = new Map();
+  const duplicates = new Set();
+  (Array.isArray(rows) ? rows : []).forEach((row) => {
+    const name = String(row?.ingredientName || row?.name || "").trim().toLowerCase();
+    if (name) {
+      if (seenNames.has(name)) duplicates.add(String(row?.ingredientName || row?.name || name));
+      seenNames.set(name, true);
+    }
+    const source = String(row?.sourceLotId || "").trim();
+    if (source) {
+      if (seenSources.has(source)) duplicates.add(row?.ingredientName || row?.sourceLotName || "same source lot");
+      seenSources.set(source, true);
+    }
+  });
+  return Array.from(duplicates);
+}
+
+function suggestedRetailPrice(unitCost = 0, desiredMarginPercent = 60) {
+  const cost = Math.max(0, Number(unitCost) || 0);
+  const margin = Math.min(95, Math.max(1, Number(desiredMarginPercent) || 60));
+  if (cost <= 0) return 0;
+  return Math.round((cost / (1 - margin / 100)) * 100) / 100;
+}
+
+function getLockedPackageCost(lot = {}) {
+  return roundCurrency(
+    lot?.package?.costPerPackage ??
+      lot?.package?.totalCostPerPackage ??
+      lot?.pricing?.unitCost ??
+      lot?.unitCost ??
+      lot?.costPerUnit ??
+      0
+  );
+}
+
+function getLockedPackageMsrp(lot = {}) {
+  return roundCurrency(
+    lot?.suggestedMsrpPerPackage ??
+      lot?.package?.suggestedMsrpPerPackage ??
+      lot?.labelMetadata?.suggestedMsrpPerPackage ??
+      lot?.msrpPerUnit ??
+      lot?.pricing?.suggestedMsrpPerUnit ??
+      0
+  );
+}
+
+function getLockedPackagePrice(lot = {}) {
+  const explicit = roundCurrency(
+    lot?.pricePerUnit ??
+      lot?.package?.defaultSalePricePerPackage ??
+      lot?.labelMetadata?.defaultSalePricePerPackage ??
+      lot?.pricing?.pricePerUnit ??
+      0
+  );
+  if (explicit > 0) return explicit;
+  return getSkuType(lot) === "retail" ? getLockedPackageMsrp(lot) : 0;
+}
+
+function getOutboundQuantity(lot = {}, key = "") {
+  const value = Number(lot?.outboundSummary?.[key] || 0);
+  return Number.isFinite(value) && value > 0 ? value : 0;
+}
+
+function getRemainingProjectedRevenue(lot = {}) {
+  const available = Math.max(0, Number(getLotAvailableQuantity(lot)) || 0);
+  const lockedPrice = Math.max(0, Number(getLockedPackagePrice(lot)) || 0);
+  return roundCurrency(available * lockedPrice);
+}
+
+function pricesDiffer(a = 0, b = 0) {
+  return Math.abs(roundCurrency(a) - roundCurrency(b)) >= 0.01;
+}
+
+function getDefaultMovementFormForLot(lot = {}, today = "") {
+  const skuType = getSkuType(lot);
+  const base = normalizeMovementForm(today);
+  const defaultPrice = getLockedPackagePrice(lot);
+  const unitPrice = defaultPrice > 0 ? String(defaultPrice) : "";
+  const priceDefaults = {
+    unitPrice,
+    priceManuallyChanged: false,
+    priceOverrideType: "",
+    priceOverrideReason: "",
+  };
+
+  if (skuType === "sample") {
+    return { ...base, ...priceDefaults, movementType: "sample", destinationType: "internal" };
+  }
+  if (skuType === "promo") {
+    return { ...base, ...priceDefaults, movementType: "sample", destinationType: "event" };
+  }
+  if (skuType === "internal") {
+    return { ...base, ...priceDefaults, movementType: "sample", destinationType: "internal" };
+  }
+  return { ...base, ...priceDefaults, movementType: "sell", destinationType: "customer" };
+}
+
+function getSalePriceOverrideState(lot = {}, form = {}) {
+  const defaultPrice = getLockedPackagePrice(lot);
+  const actualPrice = roundCurrency(form?.unitPrice === "" || form?.unitPrice === undefined ? defaultPrice : Number(form?.unitPrice) || 0);
+  const unitCost = getLockedPackageCost(lot);
+  const isSell = String(form?.movementType || "").toLowerCase() === "sell";
+  const priceManuallyChanged = Boolean(form?.priceManuallyChanged);
+  const override = isSell && priceManuallyChanged && pricesDiffer(actualPrice, defaultPrice);
+  const belowCost = isSell && priceManuallyChanged && actualPrice > 0 && unitCost > 0 && actualPrice < unitCost;
+  const requiresMemo = override || belowCost;
+  return {
+    defaultPrice,
+    actualPrice,
+    unitCost,
+    override,
+    belowCost,
+    nonRetailSale: isSell && getSkuType(lot) !== "retail",
+    requiresMemo,
+    priceManuallyChanged,
+    difference: roundCurrency(actualPrice - defaultPrice),
+  };
+}
+
+function getReleaseStateForSales(lot = {}) {
+  const workflow = lot?.workflow && typeof lot.workflow === "object" ? lot.workflow : {};
+  const releaseRequired = Boolean(workflow?.releaseRequired ?? lot?.releaseRequired ?? false);
+  const releaseStatus = String(workflow?.releaseStatus || lot?.releaseStatus || (releaseRequired ? "pending" : "released")).trim().toLowerCase() || (releaseRequired ? "pending" : "released");
+  return {
+    releaseRequired,
+    releaseStatus,
+    blocked: releaseRequired && releaseStatus !== "released",
+  };
+}
+
+function getSalesBlockReason(lot = {}, today = "") {
+  const workflow = lot?.workflow && typeof lot.workflow === "object" ? lot.workflow : {};
+  const recalled = Boolean(workflow?.recalled ?? lot?.recalled);
+  const quarantined = Boolean(workflow?.quarantined ?? lot?.quarantined);
+  const qcHold = Boolean(workflow?.qcHold ?? lot?.qcHold);
+  if (recalled) return "This package run is recalled and cannot be sold.";
+  if (quarantined) return "This package run is quarantined and cannot be sold.";
+  if (qcHold) return "This package run is on QC hold and cannot be sold.";
+
+  const releaseState = getReleaseStateForSales(lot);
+  if (releaseState.blocked) {
+    return "This package run has not been released for sale.";
+  }
+
+  const qcStatus = String(lot?.qc?.status || lot?.qcStatus || "").trim().toLowerCase();
+  if (["fail", "failed", "rejected"].includes(qcStatus)) return "This package run failed QC and cannot be sold.";
+
+  const shelfLife = lot?.shelfLife && typeof lot.shelfLife === "object" ? lot.shelfLife : {};
+  const bestBy = shelfLife?.bestBy || shelfLife?.expirationDate || lot?.bestBy || lot?.expirationDate || "";
+  const bestByDate = parseAnyDate(bestBy);
+  const todayDate = parseAnyDate(today || toLocalYYYYMMDD(new Date()));
+  if (bestByDate && todayDate) {
+    const target = new Date(bestByDate);
+    const current = new Date(todayDate);
+    target.setHours(0, 0, 0, 0);
+    current.setHours(0, 0, 0, 0);
+    if (target < current) return "This package run is past best-by date and cannot be sold.";
+  }
+
+  return "";
+}
+
+function normalizePackageUnit(unit = "") {
+  const raw = String(unit || "").trim().toLowerCase();
+  if (!raw) return "unit";
+  if (["g", "gram", "grams"].includes(raw)) return "g";
+  if (["oz", "ounce", "ounces"].includes(raw)) return "oz";
+  if (["ml", "milliliter", "milliliters"].includes(raw)) return "mL";
+  if (["capsule", "capsules", "cap", "caps"].includes(raw)) return "capsules";
+  if (["piece", "pieces", "count", "unit", "units"].includes(raw)) return "unit";
+  return raw;
+}
+
+function getPackageCapsulesPerPackage(lot = {}) {
+  const n = Number(
+    lot?.capsulesPerPackage ??
+      lot?.package?.capsulesPerPackage ??
+      lot?.labelMetadata?.capsulesPerPackage ??
+      0
+  );
+  return Number.isFinite(n) && n > 0 ? Math.floor(n) : 0;
+}
+
+function getPackageActualWeightG(lot = {}) {
+  const direct = Number(
+    lot?.actualPackageWeightG ??
+      lot?.package?.actualWeightG ??
+      lot?.labelMetadata?.actualPackageWeightG ??
+      0
+  );
+  if (Number.isFinite(direct) && direct > 0) return Math.round(direct * 1000) / 1000;
+
+  const totalWeight = String(
+    lot?.totalWeight ?? lot?.labelMetadata?.totalWeight ?? ""
+  ).trim();
+  const parsed = Number(totalWeight.match(/([0-9]+(?:\.[0-9]+)?)/)?.[1] || 0);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 0;
+}
+
+function getPackageWeightLabel(lot = {}) {
+  const weight = getPackageActualWeightG(lot);
+  if (weight <= 0) return "Not set";
+  return `≈ ${formatCleanWeightG(weight, weight < 1 ? 3 : 1)}`;
+}
+
+function getPackagePerCapsuleLabel(lot = {}) {
+  const direct = String(
+    lot?.perCapsule ?? lot?.labelMetadata?.perCapsule ?? ""
+  ).trim();
+  if (direct) return direct;
+
+  const grams = Number(
+    lot?.averageWeightPerCapsuleG ??
+      lot?.package?.averageWeightPerCapsuleG ??
+      lot?.labelMetadata?.averageWeightPerCapsuleG ??
+      0
+  );
+  if (!Number.isFinite(grams) || grams <= 0) return "Not set";
+  return `≈ ${formatCleanWeightG(grams, grams < 0.1 ? 3 : 1)}`;
+}
+
+function getPackageTargetSizeLabel(lot = {}) {
+  const size = Number(
+    lot?.targetPackageSize ??
+      lot?.package?.targetSize ??
+      lot?.labelMetadata?.targetPackageSize ??
+      0
+  );
+  const unit = normalizePackageUnit(
+    lot?.targetPackageSizeUnit ??
+      lot?.package?.targetUnit ??
+      lot?.labelMetadata?.targetPackageSizeUnit ??
+      ""
+  );
+  if (!Number.isFinite(size) || size <= 0) return "Not set";
+  return `${size} ${unit}`.trim();
+}
+
+function getPackageSizeLabel(lot = {}) {
+  const size = lot?.packageSize ?? lot?.package?.size ?? lot?.labelMetadata?.packageSize ?? "";
+  const unit = normalizePackageUnit(
+    lot?.packageSizeUnit ?? lot?.package?.unit ?? lot?.labelMetadata?.packageSizeUnit ?? ""
+  );
+  const count = Number(lot?.packageCount ?? lot?.package?.count ?? lot?.initialQuantity ?? 0) || 0;
+  const explicit = String(lot?.packageSizeLabel || lot?.package?.label || lot?.labelMetadata?.packageSizeLabel || "").trim();
+  if (explicit) return explicit;
+
+  const capsulesPerPackage = getPackageCapsulesPerPackage(lot);
+  const actualWeightG = getPackageActualWeightG(lot);
+  if (capsulesPerPackage > 0 && actualWeightG > 0) {
+    return `${capsulesPerPackage} capsules · ≈ ${formatCleanWeightG(actualWeightG, actualWeightG < 1 ? 3 : 1)}`;
+  }
+
+  if (size !== "" && size !== null && size !== undefined && Number(size) > 0) return `${size} ${unit}`.trim();
+  return count > 0 ? `${count} sellable units` : "Sellable unit";
+}
+
+function getPackageUnitName(lot = {}, meta = {}) {
+  const unit = String(lot?.packageUnitLabel || lot?.sellableUnitLabel || "").trim();
+  if (unit) return unit;
+  return meta?.pieceLabelPlural || "units";
+}
+
+function getSkuType(lot = {}) {
+  const raw = String(
+    lot?.skuType ||
+      lot?.packageSkuType ||
+      lot?.package?.skuType ||
+      lot?.labelMetadata?.skuType ||
+      "retail"
+  )
+    .trim()
+    .toLowerCase();
+  if (["sample", "samples"].includes(raw)) return "sample";
+  if (["promo", "promotion", "event"].includes(raw)) return "promo";
+  if (["internal", "internal_use", "testing", "retention"].includes(raw)) return "internal";
+  return "retail";
+}
+
+function getSkuTypeLabel(value = "") {
+  const key = String(value || "retail").trim().toLowerCase();
+  if (key === "sample") return "Sample";
+  if (key === "promo") return "Promo / event";
+  if (key === "internal") return "Internal / testing";
+  return "Retail";
+}
+
+function getSalesProductKey(lot = {}) {
+  return [
+    lot?.productType || lot?.finishedGoodType || lot?.lotType,
+    lot?.strainName || lot?.strain || lot?.sourceStrain,
+    lot?.variantTag || lot?.variant,
+    lot?.batchName || lot?.sourceBatchId || lot?.sourceLotId || "batch",
+  ]
+    .map(normalizeSalesKeyPart)
+    .filter(Boolean)
+    .join("|");
+}
+
+function getSalesProductLabel(lot = {}) {
+  return (
+    String(lot?.strainName || lot?.strain || lot?.sourceStrain || "").trim() ||
+    String(lot?.batchName || lot?.name || "Finished product").trim() ||
+    "Finished product"
+  );
+}
+
+function getSkuGroupKey(lot = {}) {
+  return [getSkuType(lot), getPackageSizeLabel(lot)]
+    .map(normalizeSalesKeyPart)
+    .filter(Boolean)
+    .join("|");
+}
+
+function getSkuGroupLabel(lot = {}) {
+  return `${getSkuTypeLabel(getSkuType(lot))} · ${getPackageSizeLabel(lot)}`;
+}
+
+function isPackagedForSale(lot = {}) {
+  if (lot?.package?.isPackaged === true) return true;
+  if (String(lot?.sourceType || "").trim().toLowerCase() === "finished_package") return true;
+  if (lot?.packageRunId && (lot?.parentLotId || lot?.sourceLotId)) return true;
+  return false;
+}
+
+function normalizePackageForm(today, sourceLotId = "") {
+  return {
+    sourceLotId,
+    packageRecipeId: "",
+    skuType: "retail",
+    packageSize: "",
+    packageSizeUnit: "g",
+    packageCount: "",
+    sourceQuantity: "",
+    capsulesPerPackage: "",
+    packageUnitLabel: "packages",
+    lotCode: "",
+    pricePerUnit: "",
+    msrpPerUnit: "",
+    desiredMarginPercent: "60",
+    packagingCostPerPackage: "",
+    laborCostPerPackage: "",
+    otherCostPerPackage: "",
+    date: today,
+    notes: "",
+  };
+}
+
+function isCountBasedSource(sourceLot = {}) {
+  const sourceUnit = normalizePackageUnit(sourceLot?.unit || "count");
+  const meta = getProductTypeMeta(sourceLot?.productType || sourceLot?.finishedGoodType || sourceLot?.lotType);
+  return sourceUnit === "unit" || sourceUnit === "capsules" || meta.key === "capsule";
+}
+
+function getSourceUnitText(sourceLot = {}, meta = {}) {
+  return sourceLot?.unitLabel || sourceLot?.unit || meta.pieceLabelPlural || "units";
+}
+
+function buildPackagePreview(form = {}, sourceLot = {}) {
+  const packageCount = Math.max(0, Math.floor(Number(form.packageCount) || 0));
+  const packageSize = Math.max(0, Number(form.packageSize) || 0);
+  const rawCapsulesPerPackage = Math.max(0, Math.floor(Number(form.capsulesPerPackage) || 0));
+  const explicitSourceQuantity = Number(form.sourceQuantity);
+  const available = getLotAvailableQuantity(sourceLot);
+  const unit = normalizePackageUnit(form.packageSizeUnit || "g");
+  const sourceUnit = normalizePackageUnit(sourceLot?.unit || "count");
+  const countBasedSource = isCountBasedSource(sourceLot);
+  const averageItemWeightG = getAverageSourceItemWeightG(sourceLot);
+  const hasExplicitSourceQuantity = Number.isFinite(explicitSourceQuantity) && explicitSourceQuantity > 0;
+  const recommendedCapsulesPerPackage = unit === "g" && countBasedSource && averageItemWeightG > 0
+    ? getRecommendedCapsulesForTargetWeight(packageSize, averageItemWeightG)
+    : (unit === "capsules" || unit === "unit")
+      ? Math.max(0, Math.floor(packageSize))
+      : 0;
+  const estimatedCapsulesPerPackage = rawCapsulesPerPackage > 0
+    ? rawCapsulesPerPackage
+    : recommendedCapsulesPerPackage;
+  const manualCapsuleOverride = unit === "g" && rawCapsulesPerPackage > 0 && (recommendedCapsulesPerPackage <= 0 || rawCapsulesPerPackage !== recommendedCapsulesPerPackage);
+
+  let sourceQuantity = 0;
+
+  if (countBasedSource) {
+    sourceQuantity = estimatedCapsulesPerPackage > 0 ? packageCount * estimatedCapsulesPerPackage : 0;
+  } else if (hasExplicitSourceQuantity) {
+    sourceQuantity = explicitSourceQuantity;
+  } else if (unit === "g" && sourceUnit === "g") {
+    sourceQuantity = packageCount * packageSize;
+  } else {
+    sourceQuantity = packageCount * packageSize;
+  }
+
+  const displayDose = buildCapsuleDisplayDose({
+    actualAverageCapsuleWeightG: averageItemWeightG,
+    capsulesPerPackage: estimatedCapsulesPerPackage,
+  });
+  const actualWeightPerPackageG = estimatedCapsulesPerPackage > 0 && averageItemWeightG > 0
+    ? Math.round(estimatedCapsulesPerPackage * averageItemWeightG * 1000) / 1000
+    : unit === "g" && !countBasedSource
+      ? packageSize
+      : 0;
+  const totalWeightPerPackageG = displayDose.displayTotalWeightG || (unit === "g" ? packageSize : actualWeightPerPackageG);
+
+  const roundedSourceQuantity = Math.round(Math.max(0, sourceQuantity) * 1000) / 1000;
+  const sourceUnitCost = getLotUnitCost(sourceLot);
+  const totalMaterialCost = Math.round(roundedSourceQuantity * sourceUnitCost * 10000) / 10000;
+  const materialCostPerPackage = packageCount > 0 ? Math.round((totalMaterialCost / packageCount) * 10000) / 10000 : 0;
+  const packagingCostPerPackage = roundCurrency(Math.max(0, Number(form.packagingCostPerPackage) || 0));
+  const laborCostPerPackage = roundCurrency(Math.max(0, Number(form.laborCostPerPackage) || 0));
+  const otherCostPerPackage = roundCurrency(Math.max(0, Number(form.otherCostPerPackage) || 0));
+  const packageRecipeCostPerPackage = roundCurrency(Math.max(0, Number(form.packageRecipeCostPerPackage) || 0));
+  const extraCostPerPackage = roundCurrency(packagingCostPerPackage + laborCostPerPackage + otherCostPerPackage + packageRecipeCostPerPackage);
+  const costPerPackage = roundCurrency(materialCostPerPackage + extraCostPerPackage);
+  const suggestedMsrp = suggestedRetailPrice(costPerPackage, Number(form.desiredMarginPercent) || 60);
+
+  let guardMessage = "";
+  if (packageCount <= 0) guardMessage = "Enter the number of packages to create.";
+  else if (packageSize <= 0) guardMessage = "Enter the target weight or capsule count per package.";
+  else if (countBasedSource && unit === "g" && averageItemWeightG <= 0) guardMessage = "Set the finished batch average capsule weight before creating gram-target package runs.";
+  else if (countBasedSource && estimatedCapsulesPerPackage <= 0) guardMessage = "Enter a target weight or capsule count so source capsules can be calculated.";
+  else if (manualCapsuleOverride && !String(form.notes || "").trim()) guardMessage = `Manual capsule override needs a package note. Recommended ${recommendedCapsulesPerPackage} capsules/package from actual batch average.`;
+  else if (roundedSourceQuantity <= 0) guardMessage = "Enter package count and package size so the source usage can be calculated.";
+  else if (roundedSourceQuantity > available) guardMessage = `Not enough source inventory. This package run needs ${roundedSourceQuantity}, but only ${available} is available.`;
+
+  return {
+    packageCount,
+    packageSize,
+    capsulesPerPackage: estimatedCapsulesPerPackage,
+    recommendedCapsulesPerPackage,
+    manualCapsuleOverride,
+    sourceQuantity: roundedSourceQuantity,
+    available,
+    remainingAfter: Math.round(Math.max(0, available - Math.max(0, roundedSourceQuantity)) * 1000) / 1000,
+    sourceUnitCost,
+    totalMaterialCost,
+    materialCostPerPackage,
+    packagingCostPerPackage,
+    laborCostPerPackage,
+    otherCostPerPackage,
+    packageRecipeCostPerPackage,
+    extraCostPerPackage,
+    costPerPackage,
+    suggestedMsrp,
+    averageItemWeightG,
+    actualWeightPerPackageG,
+    totalWeightPerPackageG,
+    averageWeightPerCapsuleG: displayDose.displayAverageCapsuleWeightG || averageItemWeightG,
+    displayDose,
+    countBasedSource,
+    guardMessage,
+    canCreate: !guardMessage,
+  };
+}
+
+function normalizeSalesKeyPart(value = "") {
+  return String(value || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+}
+
+function getSalesSkuKey(lot = {}) {
+  const productIdentity =
+    lot?.labelMetadata?.productName ||
+    lot?.productName ||
+    lot?.strainName ||
+    lot?.strain ||
+    lot?.sourceStrain ||
+    lot?.batchName ||
+    lot?.name ||
+    "finished-product";
+  return [
+    lot?.productType || lot?.finishedGoodType || lot?.lotType,
+    productIdentity,
+    lot?.variantTag || lot?.variant,
+    getSkuType(lot),
+    getPackageSizeLabel(lot) || "default",
+  ]
+    .map(normalizeSalesKeyPart)
+    .filter(Boolean)
+    .join("|");
+}
+
+function getInventoryAgeMs(lot = {}) {
+  const source =
+    lot?.packDate ||
+    lot?.labelMetadata?.packDate ||
+    lot?.package?.packagedDate ||
+    lot?.createdDate ||
+    lot?.date ||
+    lot?.updatedDate ||
+    "";
+  const parsed = parseAnyDate(source);
+  return parsed ? parsed.getTime() : 0;
+}
+
+function getLotBestByValue(lot = {}) {
+  return String(
+    lot?.shelfLife?.bestBy ||
+      lot?.shelfLife?.bestByDate ||
+      lot?.shelfLife?.expirationDate ||
+      lot?.bestBy ||
+      lot?.expirationDate ||
+      lot?.labelMetadata?.bestBy ||
+      lot?.labelMetadata?.bestByDate ||
+      ""
+  ).trim();
+}
+
+function getLotBestByMs(lot = {}) {
+  const parsed = parseAnyDate(getLotBestByValue(lot));
+  if (!parsed) return Number.POSITIVE_INFINITY;
+  const normalized = new Date(parsed);
+  normalized.setHours(0, 0, 0, 0);
+  return normalized.getTime();
+}
+
+function compareFefoPriority(a = {}, b = {}) {
+  const bestByDifference = getLotBestByMs(a) - getLotBestByMs(b);
+  if (Number.isFinite(bestByDifference) && bestByDifference !== 0) return bestByDifference;
+  if (Number.isFinite(getLotBestByMs(a)) && !Number.isFinite(getLotBestByMs(b))) return -1;
+  if (!Number.isFinite(getLotBestByMs(a)) && Number.isFinite(getLotBestByMs(b))) return 1;
+
+  const ageDifference = getInventoryAgeMs(a) - getInventoryAgeMs(b);
+  if (ageDifference !== 0) return ageDifference;
+  return String(a?.id || "").localeCompare(String(b?.id || ""));
+}
+
+function getFefoBlockingLot(lot = {}, activeLots = [], today = "") {
+  const key = getSalesSkuKey(lot);
+  if (!key || !lot?.id) return null;
+
+  return (
+    (Array.isArray(activeLots) ? activeLots : [])
+      .filter((candidate) => candidate?.id !== lot.id)
+      .filter((candidate) => getLotAvailableQuantity(candidate) > 0)
+      .filter((candidate) => getSalesSkuKey(candidate) === key)
+      .filter((candidate) => !getSalesBlockReason(candidate, today))
+      .filter((candidate) => compareFefoPriority(candidate, lot) < 0)
+      .sort(compareFefoPriority)[0] || null
+  );
 }
 
 function computeRecipeCost(recipe, outputCount, supplyById) {
@@ -521,6 +1604,7 @@ function LotInventoryControls({
           ))}
         </div>
       )}
+
     </div>
   );
 }
@@ -538,6 +1622,12 @@ function normalizeMovementForm(today) {
     destinationName: "",
     destinationLocation: "",
     reason: "",
+    priceOverrideType: "",
+    priceOverrideReason: "",
+    priceManuallyChanged: false,
+    fefoOverride: false,
+    fefoOverrideReason: "",
+    destroyMethod: "discarded",
   };
 }
 
@@ -700,6 +1790,18 @@ function parseDateValue(value) {
   return parsed;
 }
 
+function addYearsToLocalDate(value, years = 1) {
+  const parsed = parseDateValue(value);
+  if (!parsed) return "";
+  const next = new Date(parsed);
+  next.setFullYear(next.getFullYear() + years);
+  return toLocalYYYYMMDD(next);
+}
+
+function getDefaultBestByDate(madeOn = "", fallbackDate = "") {
+  return addYearsToLocalDate(madeOn || fallbackDate, 1);
+}
+
 function normalizeQcStatus(status = "") {
   const normalized = String(status || "").trim().toLowerCase();
   if (["pass", "fail", "hold", "pending"].includes(normalized)) return normalized;
@@ -732,8 +1834,9 @@ function getLotQcSummary(lot = {}) {
 function getShelfLifeSummary(lot = {}) {
   const shelfLife = lot?.shelfLife || {};
   const madeOn = shelfLife?.madeOn || lot?.createdDate || lot?.date || "";
-  const bestBy = shelfLife?.bestBy || shelfLife?.bestByDate || "";
-  const expirationDate = shelfLife?.expirationDate || shelfLife?.expiresOn || "";
+  const legacyExpiration = shelfLife?.expirationDate || shelfLife?.expiresOn || "";
+  const bestBy = shelfLife?.bestBy || shelfLife?.bestByDate || legacyExpiration || getDefaultBestByDate(madeOn, lot?.createdDate || lot?.date || "");
+  const expirationDate = bestBy;
   const storageCondition = shelfLife?.storageCondition || "";
   const storageNotes = shelfLife?.storageNotes || "";
 
@@ -782,8 +1885,8 @@ function normalizeQualityForm(lot = {}, today = "") {
     qcCheckedDate: qc?.checkedDate || today,
     qcNotes: qc?.notes || "",
     madeOn: shelf.madeOn || today,
-    bestBy: shelf.bestBy || "",
-    expirationDate: shelf.expirationDate || "",
+    bestBy: shelf.bestBy || getDefaultBestByDate(shelf.madeOn || today, today),
+    expirationDate: shelf.bestBy || getDefaultBestByDate(shelf.madeOn || today, today),
     storageCondition: shelf.storageCondition || "",
     storageNotes: shelf.storageNotes || "",
   };
@@ -807,7 +1910,7 @@ function LotQualityPanel({ lot, form, onChange, onSave, busy }) {
         <div className="text-xs text-zinc-500 dark:text-zinc-400 text-right">
           <div>Potency: {potencySummary}</div>
           <div>QC: {qcSummary.status}</div>
-          <div>Best by: {shelfSummary.bestBy || shelfSummary.expirationDate || "—"}</div>
+          <div>Best by: {shelfSummary.bestBy || "—"}</div>
         </div>
       </div>
 
@@ -905,13 +2008,19 @@ function LotQualityPanel({ lot, form, onChange, onSave, busy }) {
         </label>
       </div>
 
-      <div className="grid grid-cols-1 xl:grid-cols-5 gap-3 text-sm">
+      <div className="grid grid-cols-1 xl:grid-cols-4 gap-3 text-sm">
         <label className="space-y-1 block">
           <span className="text-zinc-600 dark:text-zinc-400">Made on</span>
           <input
             type="date"
             value={form.madeOn}
-            onChange={(e) => onChange({ ...form, madeOn: e.target.value })}
+            onChange={(e) => {
+              const nextMadeOn = e.target.value;
+              const previousDefault = getDefaultBestByDate(form.madeOn, today);
+              const shouldAutoBestBy = !form.bestBy || form.bestBy === previousDefault || form.bestBy === form.expirationDate;
+              const nextBestBy = shouldAutoBestBy ? getDefaultBestByDate(nextMadeOn, today) : form.bestBy;
+              onChange({ ...form, madeOn: nextMadeOn, bestBy: nextBestBy, expirationDate: nextBestBy });
+            }}
             className="w-full rounded-xl border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-900 px-3 py-2"
           />
         </label>
@@ -920,16 +2029,7 @@ function LotQualityPanel({ lot, form, onChange, onSave, busy }) {
           <input
             type="date"
             value={form.bestBy}
-            onChange={(e) => onChange({ ...form, bestBy: e.target.value })}
-            className="w-full rounded-xl border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-900 px-3 py-2"
-          />
-        </label>
-        <label className="space-y-1 block">
-          <span className="text-zinc-600 dark:text-zinc-400">Expiration</span>
-          <input
-            type="date"
-            value={form.expirationDate}
-            onChange={(e) => onChange({ ...form, expirationDate: e.target.value })}
+            onChange={(e) => onChange({ ...form, bestBy: e.target.value, expirationDate: e.target.value })}
             className="w-full rounded-xl border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-900 px-3 py-2"
           />
         </label>
@@ -1002,11 +2102,22 @@ export default function PostProcessManager({ grows = [] }) {
   const [productionBusy, setProductionBusy] = useState(false);
   const [reworkBusy, setReworkBusy] = useState(false);
   const [finalizeBusyId, setFinalizeBusyId] = useState("");
+  const [productionActionMessage, setProductionActionMessage] = useState("");
   const [movementBusyId, setMovementBusyId] = useState("");
-  const [pricingBusyId, setPricingBusyId] = useState("");
+  const [packageBusy, setPackageBusy] = useState(false);
   const [reservationBusyId, setReservationBusyId] = useState("");
   const [thresholdBusyId, setThresholdBusyId] = useState("");
   const [qualityBusyId, setQualityBusyId] = useState("");
+  const [releaseBusyId, setReleaseBusyId] = useState("");
+  const [selectedDryLotId, setSelectedDryLotId] = useState("");
+  const [selectedExtractLotId, setSelectedExtractLotId] = useState("");
+  const [selectedExtractionBatchId, setSelectedExtractionBatchId] = useState("");
+  const [selectedProductionBatchId, setSelectedProductionBatchId] = useState("");
+  const [selectedSalesProductKey, setSelectedSalesProductKey] = useState("");
+  const [selectedFinishedLotId, setSelectedFinishedLotId] = useState(focusFinishedLotId || "");
+  const [createExtractionModalOpen, setCreateExtractionModalOpen] = useState(false);
+  const [extractionOutputEdited, setExtractionOutputEdited] = useState(false);
+  const [createProductionModalOpen, setCreateProductionModalOpen] = useState(false);
 
   const [extractionForm, setExtractionForm] = useState({
     name: "",
@@ -1028,8 +2139,16 @@ export default function PostProcessManager({ grows = [] }) {
     variant: "",
     date: today,
     status: "completed",
-    outputCount: "",
+    outputCount: "100",
+    targetCapsuleFillG: "0.5",
+    formulaRows: [
+      { id: "formula_1", ingredientName: "", sourceLotId: "", amountPerUnit: "", gramsPerCapsule: "", percent: "" },
+    ],
     mgPerUnit: "",
+    packageSize: "",
+    packageSizeUnit: "capsules",
+    packageCount: "",
+    packageUnitLabel: "",
     recipeId: "",
     packagingCost: "",
     laborCost: "",
@@ -1049,7 +2168,11 @@ export default function PostProcessManager({ grows = [] }) {
 
   const [finalizeForms, setFinalizeForms] = useState({});
   const [movementForms, setMovementForms] = useState({});
-  const [pricingForms, setPricingForms] = useState({});
+  const [movementWarnings, setMovementWarnings] = useState({});
+  const [consumptionWarnings, setConsumptionWarnings] = useState({});
+  const [salesProductModes, setSalesProductModes] = useState({});
+  const [packageForm, setPackageForm] = useState(() => normalizePackageForm(today));
+  const [packageCreatorOpenLotId, setPackageCreatorOpenLotId] = useState("");
   const [reservationForms, setReservationForms] = useState({});
   const [thresholdForms, setThresholdForms] = useState({});
   const [qualityForms, setQualityForms] = useState({});
@@ -1057,12 +2180,74 @@ export default function PostProcessManager({ grows = [] }) {
   useEffect(() => {
     if (focusFinishedLotId) {
       setActiveTab("finished");
+      setSelectedFinishedLotId(focusFinishedLotId);
       return;
     }
     if (focusGrowId) {
       setActiveTab("dry");
     }
   }, [focusFinishedLotId, focusGrowId]);
+
+
+  const hasPostProcessModalOpen = Boolean(
+    selectedDryLotId ||
+      selectedExtractLotId ||
+      selectedExtractionBatchId ||
+      selectedProductionBatchId ||
+      selectedFinishedLotId ||
+      selectedSalesProductKey ||
+      createExtractionModalOpen ||
+      createProductionModalOpen
+  );
+
+  function closePostProcessDetail() {
+    setSelectedDryLotId("");
+    setSelectedExtractLotId("");
+    setSelectedExtractionBatchId("");
+    setSelectedProductionBatchId("");
+    setSelectedFinishedLotId("");
+    setSelectedSalesProductKey("");
+    setPackageCreatorOpenLotId("");
+    setProductionActionMessage("");
+    setCreateExtractionModalOpen(false);
+    setCreateProductionModalOpen(false);
+  }
+
+  useEffect(() => {
+    if (!hasPostProcessModalOpen) return undefined;
+    const onKeyDown = (event) => {
+      if (event.key === "Escape") closePostProcessDetail();
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [hasPostProcessModalOpen]);
+
+  useEffect(() => {
+    if (!selectedFinishedLotId) {
+      setPackageCreatorOpenLotId("");
+    }
+  }, [selectedFinishedLotId]);
+
+  useEffect(() => {
+    const nextUnit = getDefaultExtractionOutputUnit(extractionForm.extractionType);
+    if (extractionForm.outputUnit !== nextUnit) {
+      setExtractionForm((prev) => ({ ...prev, outputUnit: nextUnit }));
+    }
+  }, [extractionForm.extractionType, extractionForm.outputUnit]);
+
+  useEffect(() => {
+    setProductionActionMessage("");
+  }, [selectedProductionBatchId, createProductionModalOpen]);
+
+  useEffect(() => {
+    const root = document.getElementById("root");
+    const targets = [document.documentElement, document.body, root].filter(Boolean);
+    targets.forEach((target) => target.classList.toggle("modal-open", hasPostProcessModalOpen));
+
+    return () => {
+      targets.forEach((target) => target.classList.remove("modal-open"));
+    };
+  }, [hasPostProcessModalOpen]);
 
   useEffect(() => {
     if (!userId) return undefined;
@@ -1122,6 +2307,14 @@ export default function PostProcessManager({ grows = [] }) {
     [finishedTypes, materialLots]
   );
 
+  const materialLotById = useMemo(() => {
+    const map = new Map();
+    materialLots.forEach((lot) => {
+      if (lot?.id) map.set(lot.id, lot);
+    });
+    return map;
+  }, [materialLots]);
+
   const activeDryLots = useMemo(
     () => dryLots.filter((lot) => isActiveMaterialLot(lot)),
     [dryLots]
@@ -1135,6 +2328,73 @@ export default function PostProcessManager({ grows = [] }) {
   const activeFinishedGoodsLots = useMemo(
     () => finishedGoodsLots.filter((lot) => isActiveMaterialLot(lot)),
     [finishedGoodsLots]
+  );
+
+  const selectedDryLot = useMemo(
+    () => activeDryLots.find((lot) => lot.id === selectedDryLotId) || null,
+    [activeDryLots, selectedDryLotId]
+  );
+
+  const selectedExtractLot = useMemo(
+    () => activeExtractLots.find((lot) => lot.id === selectedExtractLotId) || null,
+    [activeExtractLots, selectedExtractLotId]
+  );
+
+
+  const saleReadyFinishedGoodsLots = useMemo(
+    () => activeFinishedGoodsLots.filter((lot) => isPackagedForSale(lot)),
+    [activeFinishedGoodsLots]
+  );
+
+  const salesExpiringSoonLots = useMemo(
+    () => saleReadyFinishedGoodsLots.filter((lot) => isExpiringSoonLot(lot)),
+    [saleReadyFinishedGoodsLots]
+  );
+
+  const packageSourceLots = useMemo(
+    () =>
+      activeFinishedGoodsLots.filter(
+        (lot) => getLotAvailableQuantity(lot) > 0 && !isPackagedForSale(lot)
+      ),
+    [activeFinishedGoodsLots]
+  );
+
+  const finishedBatchCards = useMemo(() => {
+    return finishedGoodsLots
+      .filter((lot) => !isPackagedForSale(lot))
+      .filter((lot) => isActiveMaterialLot(lot) && getLotAvailableQuantity(lot) > 0)
+      .sort((a, b) => getInventoryAgeMs(b) - getInventoryAgeMs(a));
+  }, [finishedGoodsLots]);
+
+  const selectedFinishedLot = useMemo(
+    () => finishedBatchCards.find((lot) => lot.id === selectedFinishedLotId) || null,
+    [finishedBatchCards, selectedFinishedLotId]
+  );
+
+
+  useEffect(() => {
+    if (!selectedFinishedLotId || selectedFinishedLot || finishedBatchCards.length === 0) return;
+    setSelectedFinishedLotId("");
+  }, [finishedBatchCards.length, selectedFinishedLot, selectedFinishedLotId]);
+
+  const depletedOrArchivedMaterialLots = useMemo(
+    () => materialLots.filter((lot) => isArchivedOrDepletedMaterialLot(lot)),
+    [materialLots]
+  );
+
+  const depletedDryLots = useMemo(
+    () => depletedOrArchivedMaterialLots.filter((lot) => String(lot?.lotType || "") === "dry_material"),
+    [depletedOrArchivedMaterialLots]
+  );
+
+  const depletedExtractLots = useMemo(
+    () => depletedOrArchivedMaterialLots.filter((lot) => String(lot?.lotType || "") === "extract"),
+    [depletedOrArchivedMaterialLots]
+  );
+
+  const depletedFinishedGoodsLots = useMemo(
+    () => depletedOrArchivedMaterialLots.filter((lot) => isFinishedGoodsLot(lot)),
+    [depletedOrArchivedMaterialLots]
   );
 
   const extractionBatches = useMemo(
@@ -1166,6 +2426,18 @@ export default function PostProcessManager({ grows = [] }) {
     () => activeExtractionBatches.filter((batch) => !batch?.outputLotId),
     [activeExtractionBatches]
   );
+
+  const selectedExtractionBatch = useMemo(
+    () =>
+      activeExtractionBatches.find((batch) => batch.id === selectedExtractionBatchId) || null,
+    [activeExtractionBatches, selectedExtractionBatchId]
+  );
+
+  const selectedProductionBatch = useMemo(
+    () => activeProductionBatches.find((batch) => batch.id === selectedProductionBatchId) || null,
+    [activeProductionBatches, selectedProductionBatchId]
+  );
+
 
   const availableDryLots = useMemo(
     () => activeDryLots.filter((lot) => getLotAvailableQuantity(lot) > 0),
@@ -1219,6 +2491,30 @@ export default function PostProcessManager({ grows = [] }) {
     [availableDryLots, extractionForm.lotQuantities]
   );
 
+  const extractionPreview = useMemo(() => {
+    const outputUnit = getDefaultExtractionOutputUnit(extractionForm.extractionType);
+    const selectedInputLabel = formatTotalsByUnit(selectedExtractionLots) || "None";
+    const sameUnitInput = getExtractionInputTotalForUnit(selectedExtractionLots, outputUnit);
+    const outputAmount = Number(extractionForm.outputAmount) || 0;
+    const outputLabel = outputAmount > 0 ? formatQty(outputAmount, outputUnit, outputUnit === "g" ? 2 : 1) : "Not set";
+    const yieldPercent = sameUnitInput > 0 && outputAmount > 0 ? Math.round((outputAmount / sameUnitInput) * 10000) / 100 : 0;
+    return { outputUnit, selectedInputLabel, sameUnitInput, outputAmount, outputLabel, yieldPercent };
+  }, [extractionForm.extractionType, extractionForm.outputAmount, selectedExtractionLots]);
+
+  useEffect(() => {
+    const nextUnit = getDefaultExtractionOutputUnit(extractionForm.extractionType);
+    if (nextUnit !== "g" || extractionOutputEdited) return;
+    const inputTotal = getExtractionInputTotalForUnit(selectedExtractionLots, "g");
+    const nextAmount = inputTotal > 0 ? String(Math.round(inputTotal * 1000) / 1000) : "";
+    if (String(extractionForm.outputAmount || "") !== nextAmount) {
+      setExtractionForm((prev) => ({
+        ...prev,
+        outputAmount: nextAmount,
+        outputYieldPercent: inputTotal > 0 ? "100" : prev.outputYieldPercent,
+      }));
+    }
+  }, [extractionForm.extractionType, extractionForm.outputAmount, extractionOutputEdited, selectedExtractionLots]);
+
   const selectedProductionLots = useMemo(
     () =>
       availableProductionSourceLots
@@ -1251,6 +2547,39 @@ export default function PostProcessManager({ grows = [] }) {
     () => computeRecipeCost(selectedRecipe, Number(productionForm.outputCount) || 0, supplyById),
     [selectedRecipe, productionForm.outputCount, supplyById]
   );
+
+  const packageRecipeById = recipeById;
+
+  const selectedPackageRecipe = useMemo(
+    () => packageRecipeById.get(packageForm.packageRecipeId) || null,
+    [packageForm.packageRecipeId, packageRecipeById]
+  );
+
+  const selectedPackageRecipeCosting = useMemo(
+    () => computeRecipeCost(selectedPackageRecipe, Number(packageForm.packageCount) || 0, supplyById),
+    [selectedPackageRecipe, packageForm.packageCount, supplyById]
+  );
+
+  const packageCostedForm = useMemo(() => {
+    const packageCount = Math.max(0, Math.floor(Number(packageForm.packageCount) || 0));
+    const recipeCostPerPackage = packageCount > 0 ? roundCurrency((Number(selectedPackageRecipeCosting.totalCost) || 0) / packageCount) : 0;
+    return {
+      ...packageForm,
+      packageRecipeCostPerPackage: recipeCostPerPackage,
+      packageRecipeCostTotal: roundCurrency(selectedPackageRecipeCosting.totalCost || 0),
+      packageRecipeName: selectedPackageRecipeCosting.recipeName || "",
+    };
+  }, [packageForm, selectedPackageRecipeCosting]);
+
+  const defaultPackageRecipeId = useMemo(() => {
+    const candidates = recipes.filter((recipe) => /packag|label|bag|jar|bottle|capsule/i.test(String(recipe?.name || "")));
+    return candidates[0]?.id || "";
+  }, [recipes]);
+
+  useEffect(() => {
+    if (!packageCreatorOpenLotId || packageForm.packageRecipeId || !defaultPackageRecipeId) return;
+    setPackageForm((prev) => ({ ...prev, packageRecipeId: defaultPackageRecipeId }));
+  }, [defaultPackageRecipeId, packageCreatorOpenLotId, packageForm.packageRecipeId]);
 
   const productionInputTotals = useMemo(() => {
     const totals = {};
@@ -1334,10 +2663,27 @@ export default function PostProcessManager({ grows = [] }) {
           quantity: lot.selectedQuantity,
         })),
         targetOutputQuantity: Number(productionForm.outputCount) || 0,
-        outputUnit: "count",
+        outputUnit: getProductTypeMeta(productionForm.productType).outputUnit,
       }),
-    [availableProductionSourceLots, selectedProductionLots, productionForm.outputCount]
+    [availableProductionSourceLots, selectedProductionLots, productionForm.outputCount, productionForm.productType]
   );
+
+  const productionCapsulePlan = useMemo(
+    () => buildCapsuleFormulaPlan(productionForm, availableProductionSourceLots),
+    [availableProductionSourceLots, productionForm]
+  );
+
+  const productionAutoMgPerUnit = useMemo(() => {
+    const outputQuantity = Math.max(0, Number(productionForm.outputCount) || 0);
+    if (outputQuantity <= 0) return 0;
+    if (productionCapsulePlan.totalPowderNeededG > 0) {
+      return Math.round((productionCapsulePlan.totalPowderNeededG * 1000 / outputQuantity) * 100) / 100;
+    }
+    const gramsSelected = selectedProductionLots
+      .filter((lot) => normalizePackageUnit(lot?.unit || "g") === "g")
+      .reduce((sum, lot) => sum + (Number(lot?.selectedQuantity) || 0), 0);
+    return gramsSelected > 0 ? Math.round((gramsSelected * 1000 / outputQuantity) * 100) / 100 : 0;
+  }, [productionCapsulePlan.totalPowderNeededG, productionForm.outputCount, selectedProductionLots]);
 
   const productionSupplySnapshot = useMemo(
     () =>
@@ -1390,14 +2736,135 @@ export default function PostProcessManager({ grows = [] }) {
     (sum, lot) => sum + (Number(lot?.allocatedQuantity) || 0),
     0
   );
-  const totalFinishedUnits = activeFinishedGoodsLots.reduce(
+  const totalUnpackagedFinishedUnits = packageSourceLots.reduce(
     (sum, lot) => sum + getLotAvailableQuantity(lot),
     0
   );
-  const totalProjectedRevenue = activeFinishedGoodsLots.reduce(
-    (sum, lot) => sum + (Number(lot?.pricing?.projectedRevenue || 0) || 0),
+  const totalSaleReadyUnits = saleReadyFinishedGoodsLots.reduce(
+    (sum, lot) => sum + getLotAvailableQuantity(lot),
     0
   );
+  const packagedFinishedGoodsLots = useMemo(
+    () => finishedGoodsLots.filter((lot) => isPackagedForSale(lot)),
+    [finishedGoodsLots]
+  );
+  const totalSoldUnits = packagedFinishedGoodsLots.reduce(
+    (sum, lot) => sum + getOutboundQuantity(lot, "sold"),
+    0
+  );
+  const totalDestroyedUnits = packagedFinishedGoodsLots.reduce(
+    (sum, lot) => sum + getOutboundQuantity(lot, "destroyed"),
+    0
+  );
+  const totalSampledUnits = packagedFinishedGoodsLots.reduce(
+    (sum, lot) => sum + getOutboundQuantity(lot, "sampled"),
+    0
+  );
+  const totalProjectedRevenue = roundCurrency(
+    saleReadyFinishedGoodsLots.reduce(
+      (sum, lot) => sum + getRemainingProjectedRevenue(lot),
+      0
+    )
+  );
+  const packageSourceLot = packageSourceLots.find((lot) => lot.id === packageForm.sourceLotId) || packageSourceLots[0] || null;
+  const packagePreview = buildPackagePreview(packageCostedForm, packageSourceLot || {});
+
+  const packageRunsBySourceLotId = useMemo(() => {
+    const map = new Map();
+    saleReadyFinishedGoodsLots.forEach((lot) => {
+      const sourceId = String(lot?.sourceLotId || lot?.parentLotId || lot?.package?.sourceLotId || "");
+      if (!sourceId) return;
+      if (!map.has(sourceId)) map.set(sourceId, []);
+      map.get(sourceId).push(lot);
+    });
+    map.forEach((rows) => rows.sort(compareFefoPriority));
+    return map;
+  }, [saleReadyFinishedGoodsLots]);
+
+  const salesProductGroups = useMemo(() => {
+    const productMap = new Map();
+
+    packagedFinishedGoodsLots.forEach((lot) => {
+      const productKey = getSalesProductKey(lot);
+      const active = isActiveMaterialLot(lot) && getLotAvailableQuantity(lot) > 0;
+
+      if (!productMap.has(productKey)) {
+        productMap.set(productKey, {
+          key: productKey,
+          label: getSalesProductLabel(lot),
+          variant: lot?.variant || lot?.variantTag || "",
+          lots: [],
+          activeLots: [],
+          skuMap: new Map(),
+        });
+      }
+
+      const product = productMap.get(productKey);
+      product.lots.push(lot);
+      if (active) product.activeLots.push(lot);
+
+      const skuKey = getSkuGroupKey(lot);
+      if (!product.skuMap.has(skuKey)) {
+        product.skuMap.set(skuKey, {
+          key: skuKey,
+          label: getSkuGroupLabel(lot),
+          skuType: getSkuType(lot),
+          lots: [],
+          activeLots: [],
+        });
+      }
+
+      const sku = product.skuMap.get(skuKey);
+      sku.lots.push(lot);
+      if (active) sku.activeLots.push(lot);
+    });
+
+    return Array.from(productMap.values())
+      .map((product) => {
+        const skus = Array.from(product.skuMap.values()).map((sku) => ({
+          ...sku,
+          lots: sku.lots.slice().sort(compareFefoPriority),
+          activeLots: sku.activeLots.slice().sort(compareFefoPriority),
+        }));
+
+        return {
+          ...product,
+          lots: product.lots.slice().sort(compareFefoPriority),
+          activeLots: product.activeLots.slice().sort(compareFefoPriority),
+          skus,
+          activeSkus: skus.filter((sku) => sku.activeLots.length > 0),
+        };
+      })
+      .filter((product) => product.activeLots.length > 0);
+  }, [packagedFinishedGoodsLots]);
+
+  const selectedSalesProductGroup = useMemo(
+    () => salesProductGroups.find((product) => product.key === selectedSalesProductKey) || null,
+    [salesProductGroups, selectedSalesProductKey]
+  );
+
+  useEffect(() => {
+    if (selectedDryLotId && !selectedDryLot) setSelectedDryLotId("");
+    if (selectedExtractLotId && !selectedExtractLot) setSelectedExtractLotId("");
+    if (selectedExtractionBatchId && !selectedExtractionBatch) setSelectedExtractionBatchId("");
+    if (selectedProductionBatchId && !selectedProductionBatch) setSelectedProductionBatchId("");
+    if (selectedFinishedLotId && !selectedFinishedLot) setSelectedFinishedLotId("");
+    if (selectedSalesProductKey && !selectedSalesProductGroup) setSelectedSalesProductKey("");
+  }, [
+    selectedDryLotId,
+    selectedDryLot,
+    selectedExtractLotId,
+    selectedExtractLot,
+    selectedExtractionBatchId,
+    selectedExtractionBatch,
+    selectedProductionBatchId,
+    selectedProductionBatch,
+    selectedFinishedLotId,
+    selectedFinishedLot,
+    selectedSalesProductKey,
+    selectedSalesProductGroup,
+  ]);
+
   const totalRealizedRevenue = finishedGoodsLots.reduce(
     (sum, lot) => sum + (Number(lot?.outboundSummary?.revenue || 0) || 0),
     0
@@ -1439,24 +2906,66 @@ export default function PostProcessManager({ grows = [] }) {
     return Object.entries(totals).map(([unit, total]) => ({ unit, total }));
   }, [reservedLots]);
 
-  const batchesNeedingAttention = pendingExtractionOutputs.length + activeProductionBatches.filter((batch) => {
+  const activeProductionAttentionCount = activeProductionBatches.filter((batch) => {
     const status = getProcessBatchStatus(batch);
     return status === "planned" || status === "in_progress";
   }).length;
 
-  const nextAction = !dryLots.length
+  const batchesNeedingAttention = pendingExtractionOutputs.length + activeProductionAttentionCount;
+
+  const buildStageStatus = ({ activeCount = 0, pendingCount = 0, qcCount = 0, activeLabel = "active" } = {}) => {
+    if (qcCount > 0) return { text: `${qcCount} QC`, tone: "warn" };
+    if (pendingCount > 0) return { text: `${pendingCount} pending`, tone: "warn" };
+    if (activeCount > 0) return { text: `${activeCount} ${activeLabel}`, tone: "good" };
+    return { text: "Empty", tone: "empty" };
+  };
+
+  const stageStatuses = {
+    dry: buildStageStatus({
+      activeCount: activeDryLots.length,
+      activeLabel: "active",
+    }),
+    extraction: buildStageStatus({
+      activeCount: activeExtractionBatches.length,
+      pendingCount: pendingExtractionOutputs.length,
+      activeLabel: "active",
+    }),
+    extractOutput: buildStageStatus({
+      activeCount: activeExtractLots.length,
+      activeLabel: "active",
+    }),
+    production: buildStageStatus({
+      activeCount: activeProductionBatches.length,
+      pendingCount: activeProductionAttentionCount,
+      activeLabel: "active",
+    }),
+    finished: buildStageStatus({
+      activeCount: packageSourceLots.length,
+      qcCount: qcPendingLots.length,
+      activeLabel: "active",
+    }),
+    sales: buildStageStatus({
+      activeCount: saleReadyFinishedGoodsLots.length,
+      activeLabel: "active",
+    }),
+  };
+
+  const nextAction = harvestedEligibleGrows.length > 0
     ? "dry"
     : pendingExtractionOutputs.length > 0
-      ? "finalize"
-      : !activeExtractLots.length
+      ? "extraction"
+      : availableDryLots.length > 0
         ? "extraction"
-        : !activeProductionBatches.length
+        : availableProductionSourceLots.length > 0
           ? "production"
-          : !activeFinishedGoodsLots.length
+          : packageSourceLots.length > 0
             ? "finished"
-            : "finished";
+            : saleReadyFinishedGoodsLots.length > 0
+              ? "sales"
+              : null;
 
   function resetExtractionForm() {
+    setExtractionOutputEdited(false);
     setExtractionForm({
       name: "",
       extractionType: "dual",
@@ -1479,8 +2988,16 @@ export default function PostProcessManager({ grows = [] }) {
       variant: "",
       date: today,
       status: "completed",
-      outputCount: "",
+      outputCount: "100",
+      targetCapsuleFillG: "0.5",
+      formulaRows: [
+        { id: "formula_1", ingredientName: "", sourceLotId: "", amountPerUnit: "", gramsPerCapsule: "", percent: "" },
+      ],
       mgPerUnit: "",
+      packageSize: "",
+      packageSizeUnit: "capsules",
+      packageCount: "",
+      packageUnitLabel: "",
       recipeId: "",
       packagingCost: "",
       laborCost: "",
@@ -1519,6 +3036,75 @@ export default function PostProcessManager({ grows = [] }) {
     }
   }
 
+  function setConsumptionWarning(key, warning = "") {
+    setConsumptionWarnings((prev) => {
+      if (!warning && !prev[key]) return prev;
+      const next = { ...prev };
+      if (warning) next[key] = warning;
+      else delete next[key];
+      return next;
+    });
+  }
+
+  function handleExtractionLotQuantityChange(lot, rawValue) {
+    const available = Number(getLotAvailableQuantity(lot)) || 0;
+    const result = clampQuantityToAvailable(rawValue, available);
+    setExtractionForm((prev) => ({
+      ...prev,
+      lotQuantities: { ...prev.lotQuantities, [lot.id]: result.value },
+    }));
+    setConsumptionWarning(`extraction:${lot.id}`, result.warning);
+  }
+
+  function handleProductionLotQuantityChange(lot, rawValue) {
+    const available = Number(getLotAvailableQuantity(lot)) || 0;
+    const result = clampQuantityToAvailable(rawValue, available);
+    setProductionForm((prev) => ({
+      ...prev,
+      lotQuantities: { ...prev.lotQuantities, [lot.id]: result.value },
+    }));
+    setConsumptionWarning(`production:${lot.id}`, result.warning);
+  }
+
+  function handleReworkLotQuantityChange(lot, rawValue) {
+    const available = Number(getLotAvailableQuantity(lot)) || 0;
+    const result = clampQuantityToAvailable(rawValue, available, { integer: true });
+    setReworkForm((prev) => ({
+      ...prev,
+      lotQuantities: { ...prev.lotQuantities, [lot.id]: result.value },
+    }));
+    setConsumptionWarning(`rework:${lot.id}`, result.warning);
+  }
+
+  function updatePackageFormWithInventoryGuard(sourceLot, patch, warningLabel = "Package quantity") {
+    const candidate = { ...packageForm, ...patch };
+    const preview = buildPackagePreview(candidate, sourceLot);
+    const available = Number(getLotAvailableQuantity(sourceLot)) || 0;
+    let next = candidate;
+    let warning = "";
+
+    if (preview.sourceQuantity > available && preview.packageCount > 0) {
+      const sourcePerPackage = preview.sourceQuantity / preview.packageCount;
+      const maxPackages = sourcePerPackage > 0 ? Math.max(0, Math.floor(available / sourcePerPackage)) : 0;
+
+      if (Object.prototype.hasOwnProperty.call(patch, "capsulesPerPackage")) {
+        const packageCount = Math.max(1, Math.floor(Number(candidate.packageCount) || 1));
+        const maxPerPackage = Math.max(0, Math.floor(available / packageCount));
+        next = { ...candidate, capsulesPerPackage: String(maxPerPackage) };
+        warning = `Only ${available} source units are available. Capsules per package was capped at ${maxPerPackage}.`;
+      } else if (Object.prototype.hasOwnProperty.call(patch, "sourceQuantity")) {
+        next = { ...candidate, sourceQuantity: String(available) };
+        warning = `Only ${available} source units are available. Source quantity was capped to the maximum available.`;
+      } else {
+        next = { ...candidate, packageCount: String(maxPackages) };
+        warning = `${warningLabel} would over-consume the source lot. Number of packages was capped at ${maxPackages}.`;
+      }
+    }
+
+    setPackageForm(next);
+    setConsumptionWarning(`package:${sourceLot.id}`, warning);
+  }
+
   async function handleCreateExtraction() {
     if (!userId) return;
     try {
@@ -1543,6 +3129,8 @@ export default function PostProcessManager({ grows = [] }) {
       setMessage(`Created extraction batch ${result?.name || ""}.`.trim());
       resetExtractionForm();
       setActiveTab("extractions");
+      setCreateExtractionModalOpen(false);
+      closePostProcessDetail();
     } catch (error) {
       setMessage(error?.message || "Failed to create extraction batch.");
     } finally {
@@ -1590,16 +3178,218 @@ export default function PostProcessManager({ grows = [] }) {
     }
   }
 
+  function updateFormulaRow(index, patch) {
+    setProductionForm((prev) => {
+      const rows = Array.isArray(prev.formulaRows) && prev.formulaRows.length > 0
+        ? prev.formulaRows
+        : [{ id: "formula_1", ingredientName: "", sourceLotId: "", amountPerUnit: "", gramsPerCapsule: "", percent: "" }];
+      const currentRow = rows[index] || {};
+      const rowKey = currentRow.id || `formula_${index + 1}`;
+      const nextPatch = { ...patch };
+
+      if (Object.prototype.hasOwnProperty.call(nextPatch, "ingredientName")) {
+        const normalizedName = String(nextPatch.ingredientName || "").trim().toLowerCase();
+        const duplicate = normalizedName && rows.some((row, rowIndex) => rowIndex !== index && String(row?.ingredientName || "").trim().toLowerCase() === normalizedName);
+        if (duplicate) {
+          setConsumptionWarning(`formula:${rowKey}`, "That ingredient is already in this formula. Each ingredient can only be added once.");
+          return prev;
+        }
+      }
+
+      if (nextPatch?.sourceLotId) {
+        const alreadyUsed = rows.some((row, rowIndex) => rowIndex !== index && String(row?.sourceLotId || "") === String(nextPatch.sourceLotId));
+        if (alreadyUsed) {
+          setConsumptionWarning(`formula:${rowKey}`, "That source lot is already linked to another formula row.");
+          return prev;
+        }
+      }
+
+      let candidateRow = { ...currentRow, ...nextPatch };
+      const amountRaw = candidateRow.amountPerUnit ?? candidateRow.gramsPerCapsule ?? "";
+      const sourceLot = availableProductionSourceLots.find((lot) => String(lot.id) === String(candidateRow.sourceLotId || ""));
+      const outputQuantity = Math.max(0, Number(prev.outputCount) || 0);
+      let warning = "";
+
+      if (sourceLot && outputQuantity > 0 && amountRaw !== "") {
+        const available = Number(getLotAvailableQuantity(sourceLot)) || 0;
+        const amountPerUnit = Math.max(0, Number(amountRaw) || 0);
+        if (amountPerUnit * outputQuantity > available) {
+          const cappedAmount = Math.floor((available / outputQuantity) * 100000) / 100000;
+          candidateRow = {
+            ...candidateRow,
+            amountPerUnit: String(cappedAmount),
+            gramsPerCapsule: String(cappedAmount),
+          };
+          warning = `Only ${formatFormulaQuantity(available, sourceLot?.unit || "g")} is available. Amount per ${getProductionFormulaConfig(prev.productType).unitLabel} was capped at ${cappedAmount}.`;
+        }
+      }
+
+      if (Object.prototype.hasOwnProperty.call(nextPatch, "gramsPerCapsule") || Object.prototype.hasOwnProperty.call(nextPatch, "amountPerUnit")) {
+        const resolved = candidateRow.amountPerUnit ?? candidateRow.gramsPerCapsule ?? "";
+        candidateRow.amountPerUnit = resolved;
+        candidateRow.gramsPerCapsule = resolved;
+      }
+
+      setConsumptionWarning(`formula:${rowKey}`, warning);
+      return {
+        ...prev,
+        formulaRows: rows.map((row, rowIndex) => (rowIndex === index ? candidateRow : row)),
+      };
+    });
+  }
+
+  function addFormulaRow() {
+    setProductionForm((prev) => {
+      const rows = Array.isArray(prev.formulaRows) ? prev.formulaRows : [];
+      const hasBlankRow = rows.some((row) => !String(row?.ingredientName || "").trim() && !String(row?.sourceLotId || "").trim());
+      const duplicateLabels = getDuplicateFormulaLabels(rows);
+      if (duplicateLabels.length > 0) {
+        setMessage(`Remove duplicate formula rows before adding another ingredient: ${duplicateLabels.join(", ")}.`);
+        return prev;
+      }
+      if (hasBlankRow) {
+        setMessage("Finish the blank formula row before adding another ingredient.");
+        return prev;
+      }
+      return {
+        ...prev,
+        formulaRows: [
+          ...rows,
+          { id: `formula_${Date.now()}`, ingredientName: "", sourceLotId: "", amountPerUnit: "", gramsPerCapsule: "", percent: "" },
+        ],
+      };
+    });
+  }
+
+  function removeFormulaRow(index) {
+    setProductionForm((prev) => {
+      const rows = (Array.isArray(prev.formulaRows) ? prev.formulaRows : []).filter((_, rowIndex) => rowIndex !== index);
+      return {
+        ...prev,
+        formulaRows: rows.length > 0 ? rows : [{ id: "formula_1", ingredientName: "", sourceLotId: "", amountPerUnit: "", gramsPerCapsule: "", percent: "" }],
+      };
+    });
+  }
+
+  function applyFormulaToSourceLots() {
+    setProductionForm((prev) => {
+      const duplicateLabels = getDuplicateFormulaLabels(prev.formulaRows);
+      if (duplicateLabels.length > 0) {
+        setMessage(`Remove duplicate formula rows before applying source quantities: ${duplicateLabels.join(", ")}.`);
+        return prev;
+      }
+      const plan = buildCapsuleFormulaPlan(prev, availableProductionSourceLots);
+      const nextLotQuantities = { ...prev.lotQuantities };
+      const nextRows = (Array.isArray(prev.formulaRows) ? prev.formulaRows : []).map((row) => ({ ...row }));
+      let applied = 0;
+      let capped = 0;
+
+      plan.rows.forEach((row) => {
+        if (!row.sourceLotId || row.totalRequired <= 0) return;
+        const safeTotal = Math.min(row.totalRequired, row.available);
+        nextLotQuantities[row.sourceLotId] = String(Math.round(safeTotal * 1000) / 1000);
+        applied += 1;
+        if (row.totalRequired > row.available && plan.outputQuantity > 0) {
+          const cappedPerUnit = Math.floor((row.available / plan.outputQuantity) * 100000) / 100000;
+          const rowIndex = nextRows.findIndex((entry) => String(entry?.id) === String(row.id));
+          if (rowIndex >= 0) {
+            nextRows[rowIndex].amountPerUnit = String(cappedPerUnit);
+            nextRows[rowIndex].gramsPerCapsule = String(cappedPerUnit);
+          }
+          setConsumptionWarning(`formula:${row.id}`, `Formula exceeded available inventory and was capped to ${formatFormulaQuantity(row.available, row.sourceUnit)} total.`);
+          capped += 1;
+        }
+      });
+
+      setMessage(
+        applied > 0
+          ? `Applied formula totals to ${applied} source lot${applied === 1 ? "" : "s"}${capped > 0 ? `; ${capped} row${capped === 1 ? " was" : "s were"} capped to available inventory` : ""}.`
+          : "Link formula rows to source lots and enter an amount per output unit before applying totals."
+      );
+      return { ...prev, formulaRows: nextRows, lotQuantities: nextLotQuantities };
+    });
+  }
+
+  function applyProductionRecipe(recipeId) {
+    const recipe = recipeById.get(recipeId) || null;
+    const defaults = getRecipeBatchCostDefaults(recipe || {});
+    setProductionForm((prev) => ({
+      ...prev,
+      recipeId,
+      packagingCost: defaults.packagingCost > 0 ? String(defaults.packagingCost) : prev.packagingCost,
+      laborCost: defaults.laborCost > 0 ? String(defaults.laborCost) : prev.laborCost,
+      overheadCost: defaults.overheadCost > 0 ? String(defaults.overheadCost) : prev.overheadCost,
+      otherCost: defaults.otherCost > 0 ? String(defaults.otherCost) : prev.otherCost,
+    }));
+    setMessage(
+      recipe
+        ? `Applied recipe/BOM: ${recipe.name || recipeId}. Its supply costs are included in Recipe/BOM cost; manual fields are extra costs only.`
+        : "Recipe/BOM cleared."
+    );
+  }
+
+  function buildProductionInputLotsForSubmit() {
+    const merged = new Map();
+    productionCapsulePlan.rows.forEach((row) => {
+      if (row.sourceLotId && row.totalRequired > 0) {
+        merged.set(row.sourceLotId, (merged.get(row.sourceLotId) || 0) + row.totalRequired);
+      }
+    });
+    selectedProductionLots.forEach((lot) => {
+      const value = Number(lot.selectedQuantity) || 0;
+      if (lot.id && value > 0 && !merged.has(lot.id)) {
+        merged.set(lot.id, value);
+      }
+    });
+    return Array.from(merged.entries()).map(([lotId, quantity]) => ({
+      lotId,
+      quantity: Math.round((Number(quantity) || 0) * 1000) / 1000,
+    })).filter((entry) => entry.lotId && entry.quantity > 0);
+  }
+
   async function handleCreateProduction() {
     if (!userId) return;
+    const capsuleRunCounts = [25, 50, 75, 100];
+    const requestedCapsules = Math.floor(Number(productionForm.outputCount) || 0);
+    if (productionForm.productType === "capsule" && !capsuleRunCounts.includes(requestedCapsules)) {
+      setMessage("Capsule production runs must be 25, 50, 75, or 100 capsules for the current capsule machine workflow.");
+      return;
+    }
+    const formulaDuplicateLabels = getDuplicateFormulaLabels(productionForm.formulaRows);
+    if (formulaDuplicateLabels.length > 0) {
+      setMessage(`Each formula ingredient/source can only be added once. Remove duplicates: ${formulaDuplicateLabels.join(", ")}.`);
+      return;
+    }
+    if (productionCapsulePlan.rows.length > 0 && !productionCapsulePlan.rows.some((row) => row.amountPerUnit > 0)) {
+      setMessage(`Enter a source amount per ${productionCapsulePlan.config.unitLabel} so the formula and source usage can be calculated.`);
+      return;
+    }
+    if (productionCapsulePlan.inventoryGuards.length > 0) {
+      const labels = productionCapsulePlan.inventoryGuards
+        .slice(0, 4)
+        .map((entry) => `${entry.sourceLotName || entry.sourceLotId} (${formatFormulaQuantity(entry.shortage, entry.sourceUnit)} short)`)
+        .join(", ");
+      setMessage(`Resolve formula source-lot shortages before creating this batch: ${labels}.`);
+      return;
+    }
     if (productionSupplySnapshot?.blockingShortages?.length > 0) {
       const labels = productionSupplySnapshot.blockingShortages
         .slice(0, 4)
         .map((entry) => `${entry.supplyName} (${formatQty(entry.shortageQuantity, entry.unit, entry.unit === "count" ? 0 : 2)} short)`)
         .join(", ");
-      setMessage(`Resolve packaging or ingredient shortages before creating this batch: ${labels}.`);
+      setMessage(`Resolve recipe or ingredient shortages before creating this batch: ${labels}.`);
       return;
     }
+    const submitInputLots = buildProductionInputLotsForSubmit();
+    if (submitInputLots.length === 0) {
+      setMessage("Select source lots or link formula rows to source lots before creating this production batch.");
+      return;
+    }
+    const resolvedMgPerUnit = Number(productionForm.mgPerUnit) || productionAutoMgPerUnit || 0;
+    const productMeta = getProductTypeMeta(productionForm.productType);
+    const resolvedPackageSize = "";
+    const resolvedPackageSizeUnit = productMeta.outputUnit;
+    const resolvedPackageUnitLabel = productMeta.pieceLabelPlural;
     try {
       setProductionBusy(true);
       setMessage("");
@@ -1613,11 +3403,15 @@ export default function PostProcessManager({ grows = [] }) {
         date: productionForm.date,
         status: productionForm.status,
         outputCount: productionForm.outputCount,
-        mgPerUnit: productionForm.mgPerUnit,
-        inputLots: selectedProductionLots.map((lot) => ({
-          lotId: lot.id,
-          quantity: lot.selectedQuantity,
-        })),
+        mgPerUnit: resolvedMgPerUnit,
+        packageSize: resolvedPackageSize,
+        packageSizeUnit: resolvedPackageSizeUnit,
+        packageCount: "",
+        packageUnitLabel: resolvedPackageUnitLabel,
+        totalPowderUsedG: productionCapsulePlan.totalPowderNeededG || selectedProductionLots.filter((lot) => normalizePackageUnit(lot?.unit || "g") === "g").reduce((sum, lot) => sum + (Number(lot.selectedQuantity) || 0), 0),
+        targetCapsuleFillG: productionForm.productType === "capsule" ? (productionCapsulePlan.totalPerCapsuleG || productionAutoMgPerUnit / 1000 || 0) : 0,
+        formulaIngredients: productionCapsulePlan.rows,
+        inputLots: submitInputLots,
         recipeId: selectedRecipeCosting.recipeId,
         recipeName: selectedRecipeCosting.recipeName,
         recipeYield: selectedRecipeCosting.recipeYield,
@@ -1633,9 +3427,9 @@ export default function PostProcessManager({ grows = [] }) {
         overheadCost: productionForm.overheadCost,
         otherCost: productionForm.otherCost,
         directCost: productionDirectCost,
-        pricePerUnit: productionForm.pricePerUnit,
-        msrpPerUnit: Number(productionForm.msrpPerUnit) || productionMsrpSuggestion,
-        desiredMarginPercent: productionForm.desiredMarginPercent,
+        pricePerUnit: "",
+        msrpPerUnit: "",
+        desiredMarginPercent: "60",
         bottleSize: productionForm.bottleSize,
         bottleSizeUnit: productionForm.bottleSizeUnit,
       });
@@ -1645,6 +3439,8 @@ export default function PostProcessManager({ grows = [] }) {
       );
       resetProductionForm();
       setActiveTab("finished");
+      setCreateProductionModalOpen(false);
+      closePostProcessDetail();
     } catch (error) {
       setMessage(error?.message || "Failed to create production batch.");
     } finally {
@@ -1652,6 +3448,106 @@ export default function PostProcessManager({ grows = [] }) {
     }
   }
 
+
+
+  async function handleFinalizeProductionOutput(batch, event = null) {
+    event?.preventDefault?.();
+    event?.stopPropagation?.();
+
+    if (!userId) {
+      setProductionActionMessage("Sign in before creating finished output.");
+      setMessage("Sign in before creating finished output.");
+      return;
+    }
+    if (!batch?.id) {
+      setProductionActionMessage("Missing production batch id. Refresh and try again.");
+      setMessage("Missing production batch id. Refresh and try again.");
+      return;
+    }
+
+    const parsedNameCount = Math.floor(
+      Number(String(batch?.name || "").match(/(\d+)\s*(?:count|capsule|capsules)/i)?.[1]) || 0
+    );
+    const fallbackOutputCount = Math.floor(
+      Number(batch?.outputCount) ||
+        Number(batch?.actualOutputCount) ||
+        Number(batch?.capsulesMade) ||
+        Number(batch?.expectedOutputCount) ||
+        Number(batch?.yieldMetrics?.actualQuantity) ||
+        Number(batch?.yieldMetrics?.expectedQuantity) ||
+        parsedNameCount ||
+        0
+    );
+    const fallbackPowderG =
+      Number(batch?.totalPowderUsedG) ||
+      (batch?.inputLots || [])
+        .filter((lot) => normalizePackageUnit(lot?.unit || "g") === "g")
+        .reduce((sum, lot) => sum + (Number(lot?.quantity) || 0), 0);
+    const fallbackTargetFillG =
+      Number(batch?.targetCapsuleFillG) ||
+      (fallbackOutputCount > 0 && fallbackPowderG > 0 ? fallbackPowderG / fallbackOutputCount : 0);
+    const form = finalizeForms[batch.id] || {};
+    const outputCount = Math.floor(Number(form.outputCount) || fallbackOutputCount || 0);
+    const totalPowderUsedG = Number(form.totalPowderUsedG) || fallbackPowderG || 0;
+    const targetCapsuleFillG = Number(form.targetCapsuleFillG) || fallbackTargetFillG || 0;
+    const mgPerUnit =
+      Number(form.mgPerUnit) ||
+      (outputCount > 0 && totalPowderUsedG > 0 ? (totalPowderUsedG * 1000) / outputCount : 0);
+
+    if (outputCount <= 0) {
+      const errorMessage = "Enter the finished output count before creating finished inventory output.";
+      setProductionActionMessage(errorMessage);
+      setMessage(errorMessage);
+      return;
+    }
+
+    try {
+      setFinalizeBusyId(batch.id);
+      setProductionActionMessage("Creating parent finished inventory output...");
+      setMessage("Creating parent finished inventory output...");
+
+      const result = await finalizeProductBatchOutput({
+        userId,
+        batchId: batch.id,
+        date: form.date || today,
+        outputCount,
+        totalPowderUsedG,
+        targetCapsuleFillG,
+        mgPerUnit,
+        notes: form.notes || "Finished output created from active production batch.",
+      });
+
+      setMessage(`Created finished inventory output for ${result?.name || batch?.name || "production batch"}. Package/SKU it from Finished Inventory.`);
+      setProductionActionMessage("");
+      setFinalizeForms((prev) => ({
+        ...prev,
+        [batch.id]: {
+          outputCount: "",
+          totalPowderUsedG: "",
+          targetCapsuleFillG: "",
+          mgPerUnit: "",
+          date: today,
+          notes: "",
+        },
+      }));
+      setSelectedDryLotId("");
+      setSelectedExtractLotId("");
+      setSelectedExtractionBatchId("");
+      setSelectedProductionBatchId("");
+      setSelectedSalesProductKey("");
+      setPackageCreatorOpenLotId("");
+      setCreateExtractionModalOpen(false);
+      setCreateProductionModalOpen(false);
+      setActiveTab("finished");
+      setSelectedFinishedLotId(result?.outputLotId || "");
+    } catch (error) {
+      const errorMessage = error?.message || "Failed to create finished inventory output from this production batch.";
+      setProductionActionMessage(errorMessage);
+      setMessage(errorMessage);
+    } finally {
+      setFinalizeBusyId("");
+    }
+  }
 
   async function handleCreateRework() {
     if (!userId) return;
@@ -1721,68 +3617,231 @@ export default function PostProcessManager({ grows = [] }) {
     }
   }
 
-  async function handleSaveLotPricing(lot) {
-    if (!userId || !lot?.id) return;
-    const draft = pricingForms[lot.id] || {
-      pricePerUnit: String(lot?.pricePerUnit ?? lot?.pricing?.pricePerUnit ?? ""),
-      msrpPerUnit: String(lot?.msrpPerUnit ?? lot?.pricing?.suggestedMsrpPerUnit ?? ""),
-    };
+  async function handleCreatePackageRun() {
+    if (!userId) return;
+    const sourceLot = packageSourceLots.find((lot) => lot.id === packageForm.sourceLotId) || packageSourceLot;
+    if (!sourceLot?.id) {
+      setMessage("Select a finished lot before creating packages.");
+      return;
+    }
 
-    const pricePerUnit = Math.max(0, Number(draft.pricePerUnit) || 0);
-    const msrpPerUnit = Math.max(0, Number(draft.msrpPerUnit) || 0);
-    const unitCost = getLotUnitCost(lot);
-    const quantity = Number(getLotAvailableQuantity(lot) || 0) || 0;
-    const pricing = buildPricingPreview({ unitCost, pricePerUnit, msrpPerUnit, quantity });
+    const packagePreview = buildPackagePreview(packageCostedForm, sourceLot);
+    if (!packagePreview.canCreate) {
+      setMessage(packagePreview.guardMessage || "Fix the package run before creating packages.");
+      return;
+    }
 
     try {
-      setPricingBusyId(lot.id);
+      setPackageBusy(true);
       setMessage("");
-      await updateDoc(doc(db, "users", userId, "materialLots", lot.id), {
-        pricePerUnit,
-        msrpPerUnit,
-        pricing,
-        updatedDate: today,
+      const result = await createPackagedFinishedLot({
+        userId,
+        sourceLotId: sourceLot.id,
+        skuType: packageForm.skuType,
+        packageSize: packageForm.packageSize,
+        packageSizeUnit: packageForm.packageSizeUnit,
+        packageCount: packageForm.packageCount,
+        sourceQuantity: packagePreview.sourceQuantity || packageForm.sourceQuantity,
+        capsulesPerPackage: packagePreview.capsulesPerPackage || packageForm.capsulesPerPackage,
+        packageUnitLabel: packageForm.packageUnitLabel,
+        lotCode: packageForm.lotCode,
+        pricePerUnit: packageForm.pricePerUnit,
+        msrpPerUnit: packageForm.msrpPerUnit,
+        desiredMarginPercent: packageForm.desiredMarginPercent,
+        packageRecipeId: packageCostedForm.packageRecipeId,
+        packageRecipeName: packageCostedForm.packageRecipeName,
+        packageRecipeCostPerPackage: packageCostedForm.packageRecipeCostPerPackage,
+        packageRecipeCostTotal: packageCostedForm.packageRecipeCostTotal,
+        packagingCostPerPackage: packageForm.packagingCostPerPackage,
+        laborCostPerPackage: packageForm.laborCostPerPackage,
+        otherCostPerPackage: packageForm.otherCostPerPackage,
+        date: packageForm.date,
+        notes: packageForm.notes,
       });
-      setMessage(`Updated pricing for ${lot?.name || lot.id}.`);
+      setMessage(`Created packaged inventory ${result?.name || result?.lotId || ""}.`.trim());
+      setPackageForm(normalizePackageForm(today));
+      setPackageCreatorOpenLotId("");
     } catch (error) {
-      setMessage(error?.message || "Failed to save pricing.");
+      setMessage(error?.message || "Failed to create packaged inventory.");
     } finally {
-      setPricingBusyId("");
+      setPackageBusy(false);
     }
+  }
+
+  function handleMovementQuantityChange(lot, form, rawValue) {
+    if (!lot?.id) return;
+    const available = Number(getLotAvailableQuantity(lot)) || 0;
+    const entered = Number(rawValue);
+    const normalizedForm = form || getDefaultMovementFormForLot(lot, today);
+
+    if (rawValue === "") {
+      setMovementWarnings((prev) => ({ ...prev, [lot.id]: "" }));
+      setMovementForms((prev) => ({
+        ...prev,
+        [lot.id]: { ...normalizedForm, quantity: "" },
+      }));
+      return;
+    }
+
+    if (Number.isFinite(entered) && entered > available) {
+      setMovementWarnings((prev) => ({
+        ...prev,
+        [lot.id]: `Only ${available} available. Quantity was capped to the maximum available.`,
+      }));
+      setMovementForms((prev) => ({
+        ...prev,
+        [lot.id]: { ...normalizedForm, quantity: String(available) },
+      }));
+      return;
+    }
+
+    setMovementWarnings((prev) => ({ ...prev, [lot.id]: "" }));
+    setMovementForms((prev) => ({
+      ...prev,
+      [lot.id]: { ...normalizedForm, quantity: rawValue },
+    }));
   }
 
   async function handleFinishedMovement(lot) {
     if (!userId || !lot?.id) return;
-    const form = movementForms[lot.id] || normalizeMovementForm(today);
+    const form = movementForms[lot.id] || getDefaultMovementFormForLot(lot, today);
     try {
       setMovementBusyId(lot.id);
       setMessage("");
+      const defaultPrice = getLockedPackagePrice(lot);
+      const pricePerUnit = form.movementType === "sell" ? (form.unitPrice === "" || form.unitPrice === undefined ? defaultPrice : sanitizeNumber(form.unitPrice)) : 0;
+      const priceAudit = getSalePriceOverrideState(lot, { ...form, unitPrice: pricePerUnit });
+      if (priceAudit.requiresMemo && !String(form.priceOverrideReason || "").trim()) {
+        if (priceAudit.belowCost) throw new Error("Selling below package cost requires a price override memo.");
+        throw new Error("Changing the locked package price requires a price override memo.");
+      }
+      const available = Number(getLotAvailableQuantity(lot)) || 0;
+      const enteredQuantity = sanitizeNumber(form.quantity);
+      const quantity = enteredQuantity > available ? available : enteredQuantity;
+      if (enteredQuantity > available) {
+        setMovementWarnings((prev) => ({
+          ...prev,
+          [lot.id]: `Only ${available} available. Quantity was capped to the maximum available.`,
+        }));
+        setMovementForms((prev) => ({
+          ...prev,
+          [lot.id]: { ...form, quantity: String(available) },
+        }));
+      }
+      const fefoBlocker = getFefoBlockingLot(lot, saleReadyFinishedGoodsLots, today);
+      const fefoOverrideApplied =
+        form.movementType === "sell" && Boolean(fefoBlocker) && Boolean(form.fefoOverride);
+      if (form.movementType === "sell" && fefoBlocker && !fefoOverrideApplied) {
+        throw new Error(
+          `FEFO requires selling the earlier-expiring ${getPackageSizeLabel(fefoBlocker)} lot first: ${fefoBlocker?.lotCode || fefoBlocker?.batchLot || fefoBlocker?.name || fefoBlocker.id} (best by ${getLotBestByValue(fefoBlocker) || "not set"}).`
+        );
+      }
+      if (fefoOverrideApplied && !String(form.fefoOverrideReason || "").trim()) {
+        throw new Error("Enter a FEFO override reason before selling a later-expiring package lot.");
+      }
+      const salesBlockReason = getSalesBlockReason(lot, today);
+      if (form.movementType === "sell" && salesBlockReason) {
+        throw new Error(salesBlockReason);
+      }
+      if (form.movementType === "destroy" && !String(form.reason || "").trim()) {
+        throw new Error("Enter a reason before destroying finished inventory.");
+      }
       await recordFinishedInventoryMovement({
         userId,
         lotId: lot.id,
         movementType: form.movementType,
-        quantity: form.quantity,
-        direction: form.direction,
+        quantity,
         date: form.date,
         note: form.note,
-        unitPrice: form.unitPrice,
+        revenue: form.movementType === "sell" ? pricePerUnit * quantity : 0,
+        pricePerUnit,
+        defaultPricePerUnit: priceAudit.defaultPrice,
+        priceOverrideType: form.priceOverrideType,
+        priceOverrideReason: form.priceOverrideReason,
+        fefoOverride: fefoOverrideApplied,
+        fefoOverrideReason: fefoOverrideApplied ? form.fefoOverrideReason : "",
+        fefoSkippedLotId: fefoOverrideApplied ? fefoBlocker?.id || "" : "",
+        fefoSkippedLotCode: fefoOverrideApplied
+          ? fefoBlocker?.lotCode || fefoBlocker?.batchLot || fefoBlocker?.name || ""
+          : "",
+        fefoSkippedBestBy: fefoOverrideApplied ? getLotBestByValue(fefoBlocker) : "",
+        fefoSelectedBestBy: fefoOverrideApplied ? getLotBestByValue(lot) : "",
         counterparty: form.destinationName || form.counterparty,
         reason: form.reason,
         destinationType: form.destinationType,
         destinationName: form.destinationName,
         destinationLocation: form.destinationLocation,
+        destroyMethod: form.destroyMethod,
       });
       setMessage(`${formatMovementType(form.movementType)} recorded for ${lot?.name || lot.id}.`);
       setMovementForms((prev) => ({
         ...prev,
-        [lot.id]: normalizeMovementForm(today),
+        [lot.id]: getDefaultMovementFormForLot(lot, today),
       }));
+      setMovementWarnings((prev) => ({ ...prev, [lot.id]: "" }));
+      if (form.movementType === "sell") {
+        setActiveTab("sales");
+        setSelectedSalesProductKey("");
+      }
     } catch (error) {
       setMessage(error?.message || "Failed to record finished inventory movement.");
     } finally {
       setMovementBusyId("");
     }
   }
+
+  async function handleReleasePackageForSale(lot) {
+    if (!userId || !lot?.id) return;
+
+    const qcStatus = String(lot?.qc?.status || lot?.qcStatus || "").trim().toLowerCase();
+    if (["fail", "failed", "rejected"].includes(qcStatus)) {
+      setMessage("This package failed QC and cannot be released for sale.");
+      return;
+    }
+
+    const shelfLife = lot?.shelfLife && typeof lot.shelfLife === "object" ? lot.shelfLife : {};
+    const bestBy = shelfLife?.bestBy || shelfLife?.expirationDate || lot?.bestBy || lot?.expirationDate || "";
+    const bestByDate = parseAnyDate(bestBy);
+    const todayDate = parseAnyDate(today);
+    if (bestByDate && todayDate) {
+      const target = new Date(bestByDate);
+      const current = new Date(todayDate);
+      target.setHours(0, 0, 0, 0);
+      current.setHours(0, 0, 0, 0);
+      if (target < current) {
+        setMessage("This package is past its best-by date and cannot be released for sale.");
+        return;
+      }
+    }
+
+    try {
+      setReleaseBusyId(lot.id);
+      setMessage("");
+      const existingWorkflow = lot?.workflow && typeof lot.workflow === "object" ? lot.workflow : {};
+      const releasedBy = auth?.currentUser?.email || auth?.currentUser?.uid || "App user";
+      await updateDoc(doc(db, "users", userId, "materialLots", lot.id), {
+        releaseRequired: true,
+        releaseStatus: "released",
+        releasedAt: today,
+        releasedBy,
+        workflow: {
+          ...existingWorkflow,
+          releaseRequired: true,
+          releaseStatus: "released",
+          releasedAt: today,
+          releasedBy,
+          notes: existingWorkflow?.notes || "Released from Sales after package/QC review.",
+        },
+        updatedDate: today,
+      });
+      setMessage(`Released ${lot?.lotCode || lot?.batchLot || lot?.name || "package run"} for sale.`);
+    } catch (error) {
+      setMessage(error?.message || "Failed to release package for sale.");
+    } finally {
+      setReleaseBusyId("");
+    }
+  }
+
 
   async function handleSaveReservation(lot) {
     if (!userId || !lot?.id) return;
@@ -1882,6 +3941,8 @@ export default function PostProcessManager({ grows = [] }) {
   async function handleSaveQuality(lot) {
     if (!userId || !lot?.id) return;
     const form = qualityForms[lot.id] || normalizeQualityForm(lot, today);
+    const resolvedMadeOn = form.madeOn || today;
+    const resolvedBestBy = form.bestBy || getDefaultBestByDate(resolvedMadeOn, today);
 
     try {
       setQualityBusyId(lot.id);
@@ -1901,11 +3962,23 @@ export default function PostProcessManager({ grows = [] }) {
           notes: form.qcNotes || "",
         },
         shelfLife: {
-          madeOn: form.madeOn || today,
-          bestBy: form.bestBy || "",
-          expirationDate: form.expirationDate || "",
+          madeOn: resolvedMadeOn,
+          bestBy: resolvedBestBy,
+          expirationDate: resolvedBestBy,
           storageCondition: form.storageCondition || "",
           storageNotes: form.storageNotes || "",
+        },
+        releaseRequired: true,
+        releaseStatus: normalizeQcStatus(form.qcStatus) === "pass" ? "released" : "pending",
+        releasedAt: normalizeQcStatus(form.qcStatus) === "pass" ? today : "",
+        releasedBy: normalizeQcStatus(form.qcStatus) === "pass" ? (auth?.currentUser?.email || auth?.currentUser?.uid || "App user") : "",
+        workflow: {
+          ...(lot?.workflow && typeof lot.workflow === "object" ? lot.workflow : {}),
+          releaseRequired: true,
+          releaseStatus: normalizeQcStatus(form.qcStatus) === "pass" ? "released" : "pending",
+          releasedAt: normalizeQcStatus(form.qcStatus) === "pass" ? today : "",
+          releasedBy: normalizeQcStatus(form.qcStatus) === "pass" ? (auth?.currentUser?.email || auth?.currentUser?.uid || "App user") : "",
+          notes: form.qcNotes || lot?.workflow?.notes || "",
         },
         updatedDate: today,
       });
@@ -1917,11 +3990,968 @@ export default function PostProcessManager({ grows = [] }) {
     }
   }
 
+  function applyPackagePreset(sourceLot, preset) {
+    setPackageCreatorOpenLotId(sourceLot?.id || "");
+    setPackageForm({
+      ...normalizePackageForm(today, sourceLot?.id || ""),
+      sourceLotId: sourceLot?.id || "",
+      skuType: preset.skuType || "retail",
+      packageSize: preset.size,
+      packageSizeUnit: preset.unit || "g",
+      capsulesPerPackage: preset.capsulesPerPackage || "",
+      packageUnitLabel: preset.skuType === "sample" ? "samples" : "packages",
+      lotCode: "",
+      msrpPerUnit: "",
+      notes: "",
+    });
+  }
+
+  function renderPackageRunCreator(sourceLot, meta = {}) {
+    const isOpen = packageCreatorOpenLotId === sourceLot.id;
+    const localPreview = isOpen ? buildPackagePreview(packageCostedForm, sourceLot) : buildPackagePreview(normalizePackageForm(today, sourceLot.id), sourceLot);
+    const sourceRuns = packageRunsBySourceLotId.get(sourceLot.id) || [];
+    const sourceAvailable = getLotAvailableQuantity(sourceLot);
+    const packageUnit = normalizePackageUnit(packageForm.packageSizeUnit || "g");
+    const capsuleSourceWeightPackage = localPreview.countBasedSource && packageUnit === "g";
+
+    return (
+      <div className="rounded-2xl border border-zinc-200 dark:border-zinc-800 p-4 space-y-4">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <div className="font-medium">Package runs / SKUs from this batch</div>
+            <p className="text-sm text-zinc-600 dark:text-zinc-400">
+              Keep the finished batch as the parent. Create retail, sample, promo, or internal SKUs from this source batch.
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={() => {
+              setPackageForm(normalizePackageForm(today, sourceLot.id));
+              setPackageCreatorOpenLotId(sourceLot.id);
+            }}
+            className="btn btn-accent text-sm"
+          >
+            Create package run
+          </button>
+        </div>
+
+        {sourceRuns.length > 0 ? (
+          <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-3">
+            {sourceRuns.map((run) => (
+              <div key={`source-run-${run.id}`} className="rounded-xl border border-zinc-200 dark:border-zinc-800 bg-white/60 dark:bg-zinc-950/50 p-3 text-sm">
+                <div className="flex items-start justify-between gap-2">
+                  <div>
+                    <div className="font-semibold">{getSkuTypeLabel(getSkuType(run))}</div>
+                    <div className="text-zinc-500 dark:text-zinc-400">{getPackageSizeLabel(run)}</div>
+                  </div>
+                  <div className="text-right font-semibold">
+                    {getLotAvailableQuantity(run)} {getPackageUnitName(run, meta)}
+                  </div>
+                </div>
+                <div className="mt-2 text-xs text-zinc-500 dark:text-zinc-400">
+                  {run?.lotCode || run?.batchLot || "No lot code"}
+                </div>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <div className="rounded-xl border border-dashed border-zinc-300 dark:border-zinc-700 p-3 text-sm text-zinc-600 dark:text-zinc-400">
+            No package runs created from this batch yet.
+          </div>
+        )}
+
+        {isOpen ? (
+          <div
+            className="rounded-2xl border p-4 space-y-4"
+            style={{
+              borderColor: "rgba(var(--accent-rgb), 0.35)",
+              backgroundColor: "rgba(10, 10, 18, 0.72)",
+            }}
+          >
+          <div className="flex flex-wrap gap-2">
+            {[
+              { label: "1/8 · 3.5 g", size: "3.5", unit: "g", skuType: "retail" },
+            { label: "1/4 · 7 g", size: "7", unit: "g", skuType: "retail" },
+            { label: "1/2 · 14 g", size: "14", unit: "g", skuType: "retail" },
+            { label: "Full · 28 g", size: "28", unit: "g", skuType: "retail" },
+            { label: "1 g sample", size: "1", unit: "g", skuType: "sample" },
+            { label: "2 cap sample", size: "2", unit: "capsules", skuType: "sample", capsulesPerPackage: "2" },
+          ].map((preset) => (
+            <button
+              key={`${sourceLot.id}-${preset.label}`}
+              type="button"
+              onClick={() => applyPackagePreset(sourceLot, preset)}
+              className="rounded-lg border border-zinc-300 dark:border-zinc-700 px-3 py-1.5 text-xs hover:bg-zinc-100 dark:hover:bg-zinc-800"
+            >
+              {preset.label}
+            </button>
+          ))}
+        </div>
+
+          <div className="space-y-3">
+            <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-6 gap-3">
+              <label className="space-y-1 text-sm block">
+                <span className="text-zinc-600 dark:text-zinc-400">SKU type</span>
+                <select
+                  value={packageForm.skuType}
+                  onChange={(e) => setPackageForm((prev) => ({ ...prev, skuType: e.target.value, packageUnitLabel: e.target.value === "sample" ? "samples" : prev.packageUnitLabel || "packages" }))}
+                  className="w-full rounded-xl border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-900 px-3 py-2"
+                >
+                  <option value="retail">Retail</option>
+                  <option value="sample">Sample / not for sale</option>
+                  <option value="promo">Promo / event</option>
+                  <option value="internal">Internal / testing</option>
+                </select>
+              </label>
+              <label className="space-y-1 text-sm block">
+                <span className="text-zinc-600 dark:text-zinc-400">Total weight / package</span>
+                <input type="number" min="0" step="0.001" value={packageForm.packageSize} onChange={(e) => updatePackageFormWithInventoryGuard(sourceLot, { packageSize: e.target.value }, "Package size")} placeholder="label weight, usually grams" className="w-full rounded-xl border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-900 px-3 py-2" />
+              </label>
+              <label className="space-y-1 text-sm block">
+                <span className="text-zinc-600 dark:text-zinc-400">Size unit</span>
+                <select value={packageForm.packageSizeUnit} onChange={(e) => updatePackageFormWithInventoryGuard(sourceLot, { packageSizeUnit: e.target.value }, "Package unit")} className="w-full rounded-xl border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-900 px-3 py-2">
+                  <option value="g">g</option>
+                  <option value="capsules">capsules</option>
+                  <option value="mL">mL</option>
+                  <option value="unit">unit</option>
+                </select>
+              </label>
+              <label className="space-y-1 text-sm block">
+                <span className="text-zinc-600 dark:text-zinc-400">Number of packages</span>
+                <input type="number" min="0" step="1" value={packageForm.packageCount} onChange={(e) => updatePackageFormWithInventoryGuard(sourceLot, { packageCount: e.target.value }, "Number of packages")} placeholder="How many packages" className={`w-full rounded-xl border bg-white dark:bg-zinc-900 px-3 py-2 ${consumptionWarnings[`package:${sourceLot.id}`] ? "border-rose-400 text-rose-900 dark:text-rose-100" : "border-zinc-300 dark:border-zinc-700"}`} />
+              </label>
+              <label className="space-y-1 text-sm block">
+                <span className="text-zinc-600 dark:text-zinc-400">Unit label</span>
+                <input type="text" value={packageForm.packageUnitLabel} onChange={(e) => setPackageForm((prev) => ({ ...prev, packageUnitLabel: e.target.value }))} placeholder="packages or samples" className="w-full rounded-xl border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-900 px-3 py-2" />
+              </label>
+              <label className="space-y-1 text-sm block">
+                <span className="text-zinc-600 dark:text-zinc-400">Capsules / package override</span>
+                <input type="number" min="0" step="1" value={packageForm.capsulesPerPackage} onChange={(e) => updatePackageFormWithInventoryGuard(sourceLot, { capsulesPerPackage: e.target.value }, "Capsules per package")} placeholder={localPreview.recommendedCapsulesPerPackage ? `Recommended ${localPreview.recommendedCapsulesPerPackage}` : "Auto from batch avg"} className={`w-full rounded-xl border bg-white dark:bg-zinc-900 px-3 py-2 ${consumptionWarnings[`package:${sourceLot.id}`] ? "border-rose-400 text-rose-900 dark:text-rose-100" : "border-zinc-300 dark:border-zinc-700"}`} />
+              </label>
+            </div>
+            <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-5 gap-3">
+              <label className="space-y-1 text-sm block">
+                <span className="text-zinc-600 dark:text-zinc-400">{capsuleSourceWeightPackage ? "Source capsules consumed" : "Source units consumed"}</span>
+                <input
+                  type="number"
+                  min="0"
+                  step="0.001"
+                  value={capsuleSourceWeightPackage ? localPreview.sourceQuantity || "" : packageForm.sourceQuantity}
+                  onChange={(e) => updatePackageFormWithInventoryGuard(sourceLot, { sourceQuantity: e.target.value }, "Source quantity")}
+                  placeholder={localPreview.sourceQuantity ? String(localPreview.sourceQuantity) : capsuleSourceWeightPackage ? "package count × capsules/package" : "Auto from source units"}
+                  disabled={capsuleSourceWeightPackage}
+                  className="w-full rounded-xl border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-900 px-3 py-2 disabled:opacity-80"
+                />
+                <div className="text-[11px] text-zinc-500 dark:text-zinc-500">{capsuleSourceWeightPackage ? "Auto-calculated from number of packages × capsules/package." : "Leave blank unless you need a manual override."}</div>
+              </label>
+              <label className="space-y-1 text-sm block">
+                <span className="text-zinc-600 dark:text-zinc-400">Package lot code</span>
+                <input type="text" value={packageForm.lotCode} onChange={(e) => setPackageForm((prev) => ({ ...prev, lotCode: e.target.value }))} placeholder="Optional auto code" className="w-full rounded-xl border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-900 px-3 py-2" />
+              </label>
+              <label className="space-y-1 text-sm block">
+                <span className="text-zinc-600 dark:text-zinc-400">Packaging recipe / BOM</span>
+                <select value={packageForm.packageRecipeId || ""} onChange={(e) => setPackageForm((prev) => ({ ...prev, packageRecipeId: e.target.value }))} className="w-full rounded-xl border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-900 px-3 py-2">
+                  <option value="">No packaging recipe</option>
+                  {recipes.map((recipe) => (
+                    <option key={`package-recipe-${recipe.id}`} value={recipe.id}>{recipe.name || recipe.id}</option>
+                  ))}
+                </select>
+                <div className="text-[11px] text-zinc-500 dark:text-zinc-500">{selectedPackageRecipeCosting.totalCost > 0 ? `${money(selectedPackageRecipeCosting.totalCost)} recipe cost for this run · ${money(packageCostedForm.packageRecipeCostPerPackage)} per package` : "Auto-selects a packaging/label recipe when one exists."}</div>
+              </label>
+              <label className="space-y-1 text-sm block">
+                <span className="text-zinc-600 dark:text-zinc-400">Extra packaging cost / package</span>
+                <input type="number" min="0" step="0.01" value={packageForm.packagingCostPerPackage} onChange={(e) => setPackageForm((prev) => ({ ...prev, packagingCostPerPackage: e.target.value }))} placeholder="bags, labels, jars" className="w-full rounded-xl border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-900 px-3 py-2" />
+              </label>
+              <label className="space-y-1 text-sm block">
+                <span className="text-zinc-600 dark:text-zinc-400">Extra labor / package</span>
+                <input type="number" min="0" step="0.01" value={packageForm.laborCostPerPackage} onChange={(e) => setPackageForm((prev) => ({ ...prev, laborCostPerPackage: e.target.value }))} placeholder="optional" className="w-full rounded-xl border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-900 px-3 py-2" />
+              </label>
+              <label className="space-y-1 text-sm block">
+                <span className="text-zinc-600 dark:text-zinc-400">Extra other cost / package</span>
+                <input type="number" min="0" step="0.01" value={packageForm.otherCostPerPackage} onChange={(e) => setPackageForm((prev) => ({ ...prev, otherCostPerPackage: e.target.value }))} placeholder="optional" className="w-full rounded-xl border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-900 px-3 py-2" />
+              </label>
+              <label className="space-y-1 text-sm block">
+                <span className="text-zinc-600 dark:text-zinc-400">Target margin %</span>
+                <input type="number" min="1" max="95" step="1" value={packageForm.desiredMarginPercent} onChange={(e) => setPackageForm((prev) => ({ ...prev, desiredMarginPercent: e.target.value }))} className="w-full rounded-xl border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-900 px-3 py-2" />
+              </label>
+              <label className="space-y-1 text-sm block">
+                <span className="text-zinc-600 dark:text-zinc-400">Suggested MSRP override</span>
+                <input type="number" min="0" step="0.01" value={packageForm.msrpPerUnit} onChange={(e) => setPackageForm((prev) => ({ ...prev, msrpPerUnit: e.target.value }))} placeholder={localPreview.suggestedMsrp ? String(localPreview.suggestedMsrp) : "Auto from cost"} className="w-full rounded-xl border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-900 px-3 py-2" />
+              </label>
+              <label className="space-y-1 text-sm block">
+                <span className="text-zinc-600 dark:text-zinc-400">Default sale price</span>
+                <input type="number" min="0" step="0.01" value={packageForm.pricePerUnit} onChange={(e) => setPackageForm((prev) => ({ ...prev, pricePerUnit: e.target.value }))} placeholder="auto from MSRP if blank" className="w-full rounded-xl border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-900 px-3 py-2" />
+              </label>
+              <label className="space-y-1 text-sm block">
+                <span className="text-zinc-600 dark:text-zinc-400">Package date</span>
+                <input type="date" value={packageForm.date} onChange={(e) => setPackageForm((prev) => ({ ...prev, date: e.target.value }))} className="w-full rounded-xl border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-900 px-3 py-2" />
+              </label>
+            </div>
+            <label className="space-y-1 text-sm block">
+              <span className="text-zinc-600 dark:text-zinc-400">Package notes</span>
+              <input type="text" value={packageForm.notes} onChange={(e) => setPackageForm((prev) => ({ ...prev, notes: e.target.value }))} placeholder="Optional packaging note" className="w-full rounded-xl border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-900 px-3 py-2" />
+            </label>
+            <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-6 gap-3 text-sm">
+              <DetailStat label="Source available" value={`${sourceAvailable} ${getSourceUnitText(sourceLot, meta)}`} />
+              <DetailStat label="Will consume" value={`${localPreview.sourceQuantity} ${getSourceUnitText(sourceLot, meta)}`} />
+              <DetailStat label="Remaining source" value={`${localPreview.remainingAfter} ${getSourceUnitText(sourceLot, meta)}`} />
+              <DetailStat label="Package run" value={`${localPreview.packageCount} ${packageForm.packageUnitLabel || "packages"} × ${packageForm.packageSize || "?"} ${normalizePackageUnit(packageForm.packageSizeUnit || "g")}`} />
+              <DetailStat label="Capsule avg used" value={localPreview.averageItemWeightG ? formatWeightG(localPreview.averageItemWeightG) : "Not set"} />
+              <DetailStat label="Recommended caps" value={localPreview.recommendedCapsulesPerPackage ? `${localPreview.recommendedCapsulesPerPackage}` : "Not set"} />
+              <DetailStat label="Capsules / package" value={localPreview.capsulesPerPackage ? `${localPreview.capsulesPerPackage}` : "Required for capsules"} />
+              <DetailStat label="Actual/package" value={localPreview.actualWeightPerPackageG ? formatWeightG(localPreview.actualWeightPerPackageG) : "Not set"} />
+              <DetailStat label="Label total" value={localPreview.displayDose?.totalWeightLabel || "Not set"} />
+              <DetailStat label="Label per capsule" value={localPreview.displayDose?.perCapsuleLabel || "Not set"} />
+              <DetailStat label="Material cost / package" value={money(localPreview.materialCostPerPackage)} />
+              <DetailStat label="Packaging recipe / package" value={money(localPreview.packageRecipeCostPerPackage || 0)} />
+              <DetailStat label="Extra cost / package" value={money(localPreview.extraCostPerPackage)} />
+              <DetailStat label="Total cost / package" value={money(localPreview.costPerPackage)} />
+              <DetailStat label="Suggested MSRP" value={localPreview.suggestedMsrp ? money(localPreview.suggestedMsrp) : "Set cost first"} />
+              <DetailStat label="Default sale price" value={packageForm.pricePerUnit ? money(packageForm.pricePerUnit) : localPreview.suggestedMsrp ? money(localPreview.suggestedMsrp) : "Auto from MSRP"} />
+            </div>
+            <div className="rounded-xl border border-zinc-200 dark:border-zinc-800 bg-white/60 dark:bg-zinc-950/40 p-3 text-xs text-zinc-600 dark:text-zinc-400">
+              Package creation locks material, packaging, labor, other cost, target margin, suggested MSRP, and default sale price for Sales and future Analytics. Sales can only override a one-time sale price with a required memo.
+            </div>
+            {consumptionWarnings[`package:${sourceLot.id}`] ? (
+              <div className="rounded-xl border border-rose-400/70 bg-rose-950/25 p-3 text-sm text-rose-200">
+                {consumptionWarnings[`package:${sourceLot.id}`]}
+              </div>
+            ) : null}
+            {localPreview.guardMessage ? (
+              <div className="rounded-xl border border-amber-300/70 bg-amber-50 dark:border-amber-900/70 dark:bg-amber-950/30 p-3 text-sm text-amber-900 dark:text-amber-200">
+                {localPreview.guardMessage}
+              </div>
+            ) : null}
+            <button type="button" onClick={handleCreatePackageRun} disabled={packageBusy || !localPreview.canCreate} className="btn btn-accent disabled:opacity-60 text-sm">
+              {packageBusy ? "Creating packages..." : `Create ${getSkuTypeLabel(packageForm.skuType)} Package Run`}
+            </button>
+            </div>
+          </div>
+        ) : null}
+      </div>
+    );
+  }
+
+
+
+  function renderLotDetailPanel(lot, { unitFallback = "g" } = {}) {
+    if (!lot) return null;
+    const unit = lot?.unit || unitFallback;
+
+    return (
+      <>
+        <div className="grid grid-cols-2 xl:grid-cols-6 gap-3 text-sm">
+          <DetailStat label="Initial qty" value={formatQty(lot?.initialQuantity, unit, getQtyDigits(unit))} />
+          <DetailStat label="Available" value={formatQty(getLotAvailableQuantity(lot), unit, getQtyDigits(unit))} />
+          <DetailStat label="Allocated" value={formatQty(lot?.allocatedQuantity, unit, getQtyDigits(unit))} />
+          <DetailStat label="Reserved" value={formatQty(getLotReservedQuantity(lot), unit, getQtyDigits(unit))} />
+          <DetailStat label="Unit cost" value={money(getLotUnitCost(lot))} />
+          <DetailStat label="Status" value={getLotStatus(lot)} />
+        </div>
+
+        <LotInventoryControls
+          lot={lot}
+          today={today}
+          reservationForm={reservationForms[lot.id] || normalizeReservationForm(today)}
+          onReservationChange={(nextForm) =>
+            setReservationForms((prev) => ({ ...prev, [lot.id]: nextForm }))
+          }
+          onSaveReservation={() => handleSaveReservation(lot)}
+          onRemoveReservation={(reservationId) => handleRemoveReservation(lot, reservationId)}
+          thresholdValue={thresholdForms[lot.id]}
+          onThresholdChange={(value) =>
+            setThresholdForms((prev) => ({ ...prev, [lot.id]: value }))
+          }
+          onSaveThreshold={() => handleSaveThreshold(lot)}
+          reservationBusyId={reservationBusyId}
+          thresholdBusyId={thresholdBusyId}
+        />
+
+        <CostRollupPanel record={lot} title="Stage cost rollup" />
+
+        <LotQualityPanel
+          lot={lot}
+          form={qualityForms[lot.id] || normalizeQualityForm(lot, today)}
+          onChange={(nextForm) =>
+            setQualityForms((prev) => ({ ...prev, [lot.id]: nextForm }))
+          }
+          onSave={() => handleSaveQuality(lot)}
+          busy={qualityBusyId === lot.id}
+        />
+      </>
+    );
+  }
+
+  function renderExtractionBatchDetail(batch) {
+    if (!batch) return null;
+    const form = finalizeForms[batch.id] || {
+      outputAmount: "",
+      outputUnit: "mL",
+      outputYieldPercent: "",
+      date: today,
+      notes: "",
+    };
+
+    return (
+      <>
+        <div className="grid grid-cols-2 xl:grid-cols-5 gap-3 text-sm">
+          <DetailStat label="Status" value={formatBatchStatus(getProcessBatchStatus(batch))} />
+          <DetailStat label="Date" value={batch?.date || "—"} />
+          <DetailStat label="Input" value={formatTotalsByUnit(batch?.inputLots || []) || "—"} />
+          <DetailStat label="Batch cost" value={money(batch?.batchTotalCost || batch?.costs?.batchTotalCost || 0)} />
+          <DetailStat label="Output lot" value={batch?.outputLotId || "Not created"} />
+        </div>
+
+        <div className="rounded-2xl border border-zinc-800 bg-zinc-950/40 p-4 space-y-3">
+          <div>
+            <div className="font-semibold">Record extract output</div>
+            <div className="text-sm text-zinc-400">
+              This opens from the batch card so the list stays clean. Output creates the extract lot for Production.
+            </div>
+          </div>
+          <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-5 gap-3">
+            <label className="space-y-1 text-sm block">
+              <span className="text-zinc-400">Output amount</span>
+              <input
+                type="number"
+                inputMode="decimal"
+                min="0"
+                step="0.01"
+                value={form.outputAmount}
+                onChange={(e) =>
+                  setFinalizeForms((prev) => ({
+                    ...prev,
+                    [batch.id]: { ...form, outputAmount: e.target.value },
+                  }))
+                }
+                className="w-full rounded-xl border border-zinc-700 bg-zinc-900 px-3 py-2"
+              />
+            </label>
+            <label className="space-y-1 text-sm block">
+              <span className="text-zinc-400">Output unit</span>
+              <select
+                value={form.outputUnit}
+                onChange={(e) =>
+                  setFinalizeForms((prev) => ({
+                    ...prev,
+                    [batch.id]: { ...form, outputUnit: e.target.value },
+                  }))
+                }
+                className="w-full rounded-xl border border-zinc-700 bg-zinc-900 px-3 py-2"
+              >
+                <option value="mL">mL</option>
+                <option value="g">g</option>
+              </select>
+            </label>
+            <label className="space-y-1 text-sm block">
+              <span className="text-zinc-400">Yield percent</span>
+              <input
+                type="number"
+                inputMode="decimal"
+                min="0"
+                step="0.01"
+                value={form.outputYieldPercent}
+                onChange={(e) =>
+                  setFinalizeForms((prev) => ({
+                    ...prev,
+                    [batch.id]: { ...form, outputYieldPercent: e.target.value },
+                  }))
+                }
+                className="w-full rounded-xl border border-zinc-700 bg-zinc-900 px-3 py-2"
+              />
+            </label>
+            <label className="space-y-1 text-sm block">
+              <span className="text-zinc-400">Date</span>
+              <input
+                type="date"
+                value={form.date}
+                onChange={(e) =>
+                  setFinalizeForms((prev) => ({
+                    ...prev,
+                    [batch.id]: { ...form, date: e.target.value },
+                  }))
+                }
+                className="w-full rounded-xl border border-zinc-700 bg-zinc-900 px-3 py-2"
+              />
+            </label>
+            <div className="flex items-end">
+              <button
+                type="button"
+                onClick={() => handleFinalizeExtraction(batch)}
+                disabled={finalizeBusyId === batch.id}
+                className="w-full rounded-lg bg-amber-600 hover:bg-amber-700 disabled:opacity-60 text-white px-4 py-2 text-sm"
+              >
+                {finalizeBusyId === batch.id ? "Saving..." : "Create Extract Lot"}
+              </button>
+            </div>
+          </div>
+          <label className="space-y-1 text-sm block">
+            <span className="text-zinc-400">Notes</span>
+            <textarea
+              value={form.notes}
+              onChange={(e) =>
+                setFinalizeForms((prev) => ({
+                  ...prev,
+                  [batch.id]: { ...form, notes: e.target.value },
+                }))
+              }
+              rows={3}
+              className="w-full rounded-xl border border-zinc-700 bg-zinc-900 px-3 py-2"
+            />
+          </label>
+        </div>
+
+        <CostRollupPanel record={batch} title="Extraction cost rollup" />
+      </>
+    );
+  }
+
+  function renderProductionBatchDetail(batch) {
+    if (!batch) return null;
+    const meta = getProductTypeMeta(batch?.productType);
+    const outputLot = batch?.outputLotId
+      ? finishedGoodsLots.find((lot) => lot.id === batch.outputLotId) || null
+      : null;
+    const parsedNameOutputCount = Math.floor(
+      Number(String(batch?.name || "").match(/(\d+)\s*(?:count|capsule|capsules)/i)?.[1]) || 0
+    );
+    const defaultOutputCount = Math.floor(
+      Number(batch?.outputCount) ||
+        Number(batch?.actualOutputCount) ||
+        Number(batch?.capsulesMade) ||
+        Number(batch?.expectedOutputCount) ||
+        Number(batch?.yieldMetrics?.actualQuantity) ||
+        Number(batch?.yieldMetrics?.expectedQuantity) ||
+        parsedNameOutputCount ||
+        0
+    );
+    const defaultTotalPowderG =
+      Number(batch?.totalPowderUsedG) ||
+      (batch?.inputLots || [])
+        .filter((lot) => normalizePackageUnit(lot?.unit || "g") === "g")
+        .reduce((sum, lot) => sum + (Number(lot?.quantity) || 0), 0);
+    const defaultTargetFillG =
+      Number(batch?.targetCapsuleFillG) ||
+      (defaultOutputCount > 0 && defaultTotalPowderG > 0
+        ? Math.round((defaultTotalPowderG / defaultOutputCount) * 1000) / 1000
+        : 0);
+    const finalizeForm = finalizeForms[batch.id] || {
+      outputCount: defaultOutputCount > 0 ? String(defaultOutputCount) : "",
+      totalPowderUsedG: defaultTotalPowderG > 0 ? String(Math.round(defaultTotalPowderG * 1000) / 1000) : "",
+      targetCapsuleFillG: defaultTargetFillG > 0 ? String(defaultTargetFillG) : "",
+      mgPerUnit: "",
+      date: today,
+      notes: "",
+    };
+    const finalizeOutputCount = Math.floor(Number(finalizeForm.outputCount) || 0);
+    const finalizeTotalPowderG = Number(finalizeForm.totalPowderUsedG) || 0;
+    const finalizeAvgMg =
+      Number(finalizeForm.mgPerUnit) ||
+      (finalizeOutputCount > 0 && finalizeTotalPowderG > 0
+        ? Math.round(((finalizeTotalPowderG * 1000) / finalizeOutputCount) * 100) / 100
+        : 0);
+
+    return (
+      <>
+        <div className="grid grid-cols-2 xl:grid-cols-6 gap-3 text-sm">
+          <DetailStat label="Status" value={formatBatchStatus(getProcessBatchStatus(batch))} />
+          <DetailStat label="Date" value={batch?.date || "—"} />
+          <DetailStat label="Output" value={Number(batch?.outputCount) > 0 ? `${Math.floor(Number(batch.outputCount) || 0)} ${meta.pieceLabelPlural}` : "Pending"} />
+          <DetailStat label="Input" value={formatTotalsByUnit(batch?.inputTotals || batch?.inputLots || []) || "—"} />
+          <DetailStat label="Batch cost" value={money(batch?.batchTotalCost || batch?.costs?.batchTotalCost || 0)} />
+          <DetailStat label="Output lot" value={outputLot?.name || "Not created"} />
+        </div>
+
+        <div className="grid grid-cols-1 xl:grid-cols-2 gap-4 text-sm">
+          <div className="rounded-2xl border border-zinc-800 bg-zinc-950/40 p-4">
+            <div className="font-medium mb-2">Consumed source lots</div>
+            <div className="space-y-2">
+              {(batch?.inputLots || []).length === 0 ? (
+                <div className="text-zinc-400">No source lots recorded.</div>
+              ) : (
+                (batch?.inputLots || []).map((lot) => (
+                  <div key={`${batch.id}-${lot.lotId}`} className="rounded-xl border border-zinc-800 p-3">
+                    <div className="flex items-center justify-between gap-3">
+                      <div>
+                        <div className="font-semibold">{lot?.lotName || lot?.lotId}</div>
+                        <div className="text-zinc-400">
+                          {String(lot?.lotType || "").replace(/_/g, " ")} · {lot?.growLabel || lot?.sourceBatchId || lot?.sourceGrowId || "Unknown source"}
+                        </div>
+                      </div>
+                      <div className="font-semibold">{formatQty(lot?.quantity, lot?.unit || "g")}</div>
+                    </div>
+                  </div>
+                ))
+              )}
+            </div>
+          </div>
+
+          <div className="space-y-3">
+            <div className="rounded-2xl border border-zinc-800 bg-zinc-950/40 p-4">
+              <div className="font-medium mb-2">Cost stack</div>
+              <div className="grid grid-cols-2 gap-3">
+                <DetailStat label="Source material" value={money(batch?.inputMaterialCostTotal || 0)} />
+                <DetailStat label="Recipe / BOM" value={money(batch?.recipeBatchCostTotal || batch?.recipeCost || 0)} />
+                <DetailStat label="Direct cost" value={money(batch?.directCostTotal || batch?.directCost || 0)} />
+                <DetailStat label="Projected profit" value={money(batch?.pricing?.projectedProfit || 0)} />
+              </div>
+            </div>
+            <CostRollupPanel record={batch} title="Stage cost rollup" />
+            <RecipeSnapshotPanel record={batch} />
+            <div className="rounded-2xl border border-zinc-800 bg-zinc-950/40 p-4">
+              <div className="font-medium mb-2">Notes</div>
+              <div className="text-zinc-300 whitespace-pre-wrap min-h-[88px]">{batch?.notes || batch?.variant || "No notes recorded."}</div>
+            </div>
+          </div>
+        </div>
+
+        {!outputLot ? (
+          <div className="rounded-2xl border border-amber-900/70 bg-amber-950/20 p-4 space-y-4">
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div>
+                <div className="font-semibold text-amber-100">Finish this production run</div>
+                <div className="text-sm text-amber-100/80">
+                  Record the actual output from this run, then create the parent finished batch. Package sizes, samples, MSRP, and sale pricing still happen later from Finished Inventory.
+                </div>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-5 gap-3">
+              <label className="space-y-1 text-sm block">
+                <span className="text-amber-100/80">Finished output count</span>
+                <input
+                  type="number"
+                  inputMode="numeric"
+                  min="0"
+                  step="1"
+                  value={finalizeForm.outputCount}
+                  onChange={(e) =>
+                    setFinalizeForms((prev) => ({
+                      ...prev,
+                      [batch.id]: { ...finalizeForm, outputCount: e.target.value },
+                    }))
+                  }
+                  placeholder="Example: 100"
+                  className="w-full rounded-xl border border-zinc-700 bg-zinc-900 px-3 py-2"
+                />
+              </label>
+
+              <label className="space-y-1 text-sm block">
+                <span className="text-amber-100/80">Total powder used (g)</span>
+                <input
+                  type="number"
+                  inputMode="decimal"
+                  min="0"
+                  step="0.01"
+                  value={finalizeForm.totalPowderUsedG}
+                  onChange={(e) =>
+                    setFinalizeForms((prev) => ({
+                      ...prev,
+                      [batch.id]: { ...finalizeForm, totalPowderUsedG: e.target.value },
+                    }))
+                  }
+                  placeholder="Example: 50"
+                  className="w-full rounded-xl border border-zinc-700 bg-zinc-900 px-3 py-2"
+                />
+              </label>
+
+              <label className="space-y-1 text-sm block">
+                <span className="text-amber-100/80">Target fill (g)</span>
+                <input
+                  type="number"
+                  inputMode="decimal"
+                  min="0"
+                  step="0.01"
+                  value={finalizeForm.targetCapsuleFillG}
+                  onChange={(e) =>
+                    setFinalizeForms((prev) => ({
+                      ...prev,
+                      [batch.id]: { ...finalizeForm, targetCapsuleFillG: e.target.value },
+                    }))
+                  }
+                  placeholder="Example: 0.5"
+                  className="w-full rounded-xl border border-zinc-700 bg-zinc-900 px-3 py-2"
+                />
+              </label>
+
+              <label className="space-y-1 text-sm block">
+                <span className="text-amber-100/80">Finished date</span>
+                <input
+                  type="date"
+                  value={finalizeForm.date || today}
+                  onChange={(e) =>
+                    setFinalizeForms((prev) => ({
+                      ...prev,
+                      [batch.id]: { ...finalizeForm, date: e.target.value },
+                    }))
+                  }
+                  className="w-full rounded-xl border border-zinc-700 bg-zinc-900 px-3 py-2"
+                />
+              </label>
+
+              <DetailStat
+                label="Auto avg mg / unit"
+                value={finalizeAvgMg > 0 ? formatMg(finalizeAvgMg) : "Enter output + powder"}
+              />
+            </div>
+
+            <label className="space-y-1 text-sm block">
+              <span className="text-amber-100/80">Finish notes</span>
+              <textarea
+                value={finalizeForm.notes || ""}
+                onChange={(e) =>
+                  setFinalizeForms((prev) => ({
+                    ...prev,
+                    [batch.id]: { ...finalizeForm, notes: e.target.value },
+                  }))
+                }
+                rows={2}
+                placeholder="Actual run notes, capsule machine notes, fill variance, etc."
+                className="w-full rounded-xl border border-zinc-700 bg-zinc-900 px-3 py-2"
+              />
+            </label>
+
+            <div className="grid grid-cols-1 md:grid-cols-4 gap-3 text-sm">
+              <DetailStat label="Output units" value={`${finalizeOutputCount || 0} ${meta.pieceLabelPlural}`} />
+              <DetailStat label="Actual avg fill" value={finalizeOutputCount > 0 && finalizeTotalPowderG > 0 ? `${Math.round((finalizeTotalPowderG / finalizeOutputCount) * 1000) / 1000} g` : "—"} />
+              <DetailStat label="Batch cost" value={money(batch?.batchTotalCost || batch?.costs?.batchTotalCost || 0)} />
+              <DetailStat label="Cost / unit" value={finalizeOutputCount > 0 ? money((Number(batch?.batchTotalCost || batch?.costs?.batchTotalCost || 0) || 0) / finalizeOutputCount) : "—"} />
+            </div>
+
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div className="text-xs text-amber-100/75">
+                Best by will default to one year after the finished date. This creates parent inventory only, not retail SKUs.
+              </div>
+              <button
+                type="button"
+                onClick={(event) => handleFinalizeProductionOutput(batch, event)}
+                disabled={finalizeBusyId === batch.id}
+                className="btn btn-accent disabled:opacity-60 text-sm"
+              >
+                {finalizeBusyId === batch.id ? "Creating output..." : "Create Finished Output"}
+              </button>
+            </div>
+            {productionActionMessage ? (
+              <div className={`rounded-xl border px-3 py-2 text-sm ${productionActionMessage.toLowerCase().includes("failed") || productionActionMessage.toLowerCase().includes("missing") || productionActionMessage.toLowerCase().includes("sign in") || productionActionMessage.toLowerCase().includes("error") || productionActionMessage.toLowerCase().includes("enter") ? "border-red-800 bg-red-950/30 text-red-100" : "border-violet-800 bg-violet-950/30 text-violet-100"}`}>
+                {productionActionMessage}
+              </div>
+            ) : null}
+          </div>
+        ) : null}
+      </>
+    );
+  }
+
+  function renderSalesProductDetail(product) {
+    if (!product) return null;
+    const activeMode = salesProductModes[product.key] || "retail";
+    const activeSkus = Array.isArray(product.activeSkus) ? product.activeSkus : [];
+    const retailSkus = activeSkus.filter((sku) => String(sku?.skuType || "retail") === "retail");
+    const sampleSkus = activeSkus.filter((sku) => String(sku?.skuType || "retail") !== "retail");
+    const visibleSkus = activeMode === "samples" ? sampleSkus : retailSkus;
+    const retailCount = retailSkus.reduce((sum, sku) => sum + sku.activeLots.reduce((lotSum, lot) => lotSum + getLotAvailableQuantity(lot), 0), 0);
+    const sampleCount = sampleSkus.reduce((sum, sku) => sum + sku.activeLots.reduce((lotSum, lot) => lotSum + getLotAvailableQuantity(lot), 0), 0);
+
+    return (
+      <div className="space-y-4">
+        <div className="grid grid-cols-2 xl:grid-cols-5 gap-3 text-sm">
+          <DetailStat
+            label="Available packages"
+            value={String(product.lots.reduce((sum, lot) => sum + getLotAvailableQuantity(lot), 0))}
+          />
+          <DetailStat
+            label="Sold"
+            value={String(product.lots.reduce((sum, lot) => sum + getOutboundQuantity(lot, "sold"), 0))}
+          />
+          <DetailStat
+            label="Sampled"
+            value={String(product.lots.reduce((sum, lot) => sum + getOutboundQuantity(lot, "sampled"), 0))}
+          />
+          <DetailStat
+            label="Destroyed"
+            value={String(product.lots.reduce((sum, lot) => sum + getOutboundQuantity(lot, "destroyed"), 0))}
+          />
+          <DetailStat
+            label="Remaining projection"
+            value={money(product.lots.reduce((sum, lot) => sum + getRemainingProjectedRevenue(lot), 0))}
+          />
+        </div>
+
+        <div className="rounded-2xl border border-zinc-800 bg-zinc-950/50 p-3">
+          <div className="flex flex-wrap gap-2">
+            <button
+              type="button"
+              onClick={() => setSalesProductModes((prev) => ({ ...prev, [product.key]: "retail" }))}
+              className={`rounded-xl border px-4 py-2 text-sm font-semibold ${activeMode === "retail" ? "border-purple-400 bg-purple-600 text-white" : "border-zinc-700 bg-zinc-900 text-zinc-200"}`}
+            >
+              Retail sales · {retailCount} available
+            </button>
+            <button
+              type="button"
+              onClick={() => setSalesProductModes((prev) => ({ ...prev, [product.key]: "samples" }))}
+              className={`rounded-xl border px-4 py-2 text-sm font-semibold ${activeMode === "samples" ? "border-purple-400 bg-purple-600 text-white" : "border-zinc-700 bg-zinc-900 text-zinc-200"}`}
+            >
+              Samples / promo / internal · {sampleCount} available
+            </button>
+          </div>
+          <div className="mt-2 text-xs text-zinc-400">
+            Retail and sample inventory are separated here so sample packages are not accidentally sold as retail SKUs.
+          </div>
+        </div>
+
+        {visibleSkus.length === 0 ? (
+          <EmptyState
+            title={activeMode === "samples" ? "No sample, promo, or internal SKUs" : "No retail SKUs"}
+            body={activeMode === "samples" ? "Create sample or promo package runs from Finished Inventory to track them separately here." : "Create retail package runs from Finished Inventory before recording retail sales."}
+          />
+        ) : null}
+
+        {visibleSkus.map((sku) => {
+          const skuAvailable = sku.lots.reduce((sum, lot) => sum + getLotAvailableQuantity(lot), 0);
+          const skuSold = sku.lots.reduce((sum, lot) => sum + getOutboundQuantity(lot, "sold"), 0);
+          const skuDestroyed = sku.lots.reduce((sum, lot) => sum + getOutboundQuantity(lot, "destroyed"), 0);
+          const skuProjectedRevenue = sku.lots.reduce((sum, lot) => sum + getRemainingProjectedRevenue(lot), 0);
+          return (
+            <div key={`sales-modal-sku-${product.key}-${sku.key}`} className="rounded-2xl border border-zinc-800 bg-zinc-950/40 p-4 space-y-3">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div>
+                  <div className="font-semibold">{sku.label}</div>
+                  <div className="text-xs text-zinc-400">FEFO applies inside this matching SKU only. Earliest best-by sells first; samples do not block retail packages.</div>
+                </div>
+                <div className="text-right text-sm">
+                  <div className="font-semibold">{skuAvailable} available</div>
+                  <div className="text-xs text-zinc-400">
+                    {skuSold} sold · {skuDestroyed} destroyed · {money(skuProjectedRevenue)} remaining
+                  </div>
+                </div>
+              </div>
+
+              <div className="space-y-3">
+                {sku.activeLots.map((lot, index) => {
+                  const meta = getProductTypeMeta(lot?.productType || lot?.finishedGoodType || lot?.lotType);
+                  const movementForm = movementForms[lot.id] || normalizeMovementForm(today);
+                  const outboundSummary = lot?.outboundSummary || {};
+                  const available = Number(getLotAvailableQuantity(lot)) || 0;
+                  const fefoBlocker = getFefoBlockingLot(lot, saleReadyFinishedGoodsLots, today);
+                  const fefoOverrideRequested = Boolean(movementForm.fefoOverride);
+                  const fefoOverrideMissingReason =
+                    movementForm.movementType === "sell" &&
+                    Boolean(fefoBlocker) &&
+                    fefoOverrideRequested &&
+                    !String(movementForm.fefoOverrideReason || "").trim();
+                  const sellBlockedByFefo =
+                    movementForm.movementType === "sell" &&
+                    Boolean(fefoBlocker) &&
+                    (!fefoOverrideRequested || fefoOverrideMissingReason);
+                  const salesBlockReason = getSalesBlockReason(lot, today);
+                  const releaseState = getReleaseStateForSales(lot);
+                  const sellBlockedByQuality = movementForm.movementType === "sell" && Boolean(salesBlockReason);
+                  const releaseBlockedOnly = sellBlockedByQuality && releaseState.blocked && salesBlockReason.includes("released");
+                  const priceAudit = getSalePriceOverrideState(lot, movementForm);
+
+                  return (
+                    <div key={`sales-modal-lot-${lot.id}`} className="rounded-xl border border-zinc-800 bg-zinc-900/70 p-3 space-y-3">
+                      <div className="flex flex-wrap items-start justify-between gap-3">
+                        <div>
+                          <div className="font-semibold">Package lot</div>
+                          <div className="text-sm text-zinc-300">{lot?.lotCode || lot?.batchLot || lot?.name || lot.id}</div>
+                          <div className="text-xs text-zinc-500">Best by {getLotBestByValue(lot) || "Not set"} · Packed {lot?.packDate || lot?.labelMetadata?.packDate || lot?.package?.packagedDate || lot?.createdDate || lot?.date || "Not set"}</div>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <Link
+                            to={`/?tab=labels&labelSource=finished_goods&labelLotId=${encodeURIComponent(lot.id)}`}
+                            className="rounded-lg border border-purple-400/60 bg-purple-500/10 px-3 py-2 text-xs font-semibold text-purple-100 hover:bg-purple-500/20"
+                          >
+                            View label preview
+                          </Link>
+                          <div className="text-right text-sm">
+                            <div className="font-semibold">{available} {getPackageUnitName(lot, meta)}</div>
+                            <div className="text-zinc-400 capitalize">{getLotStatus(lot)}</div>
+                          </div>
+                        </div>
+                      </div>
+
+                      <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-9 gap-3 text-sm">
+                        <DetailStat label="SKU type" value={getSkuTypeLabel(getSkuType(lot))} />
+                        <DetailStat label="Sellable package" value={getPackageSizeLabel(lot)} />
+                        <DetailStat label="Actual weight" value={getPackageWeightLabel(lot)} />
+                        <DetailStat label="Capsules / package" value={getPackageCapsulesPerPackage(lot) > 0 ? String(getPackageCapsulesPerPackage(lot)) : "Not set"} />
+                        <DetailStat label="Per capsule" value={getPackagePerCapsuleLabel(lot)} />
+                        <DetailStat label="Target entered" value={getPackageTargetSizeLabel(lot)} />
+                        <DetailStat label="Price / package" value={money(lot?.pricePerUnit || lot?.pricing?.pricePerUnit || 0)} />
+                        <DetailStat label="Sold / destroyed" value={`${outboundSummary?.sold || 0} / ${outboundSummary?.destroyed || 0}`} />
+                        <DetailStat label="Revenue" value={money(outboundSummary?.revenue || 0)} />
+                      </div>
+
+                      <div className="rounded-xl border border-zinc-800 p-3 space-y-3">
+                        <div className="flex flex-wrap items-start justify-between gap-3">
+                          <div>
+                            <div className="font-medium text-sm">Locked package pricing</div>
+                            <div className="text-xs text-zinc-500">Set when the package/SKU run was created. Sales can override a single sale price only with a required memo.</div>
+                          </div>
+                          <span className="rounded-full border border-zinc-700 px-2 py-1 text-xs text-zinc-400">Read only</span>
+                        </div>
+                        <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-3">
+                          <DetailStat label="Package cost" value={money(getLockedPackageCost(lot))} />
+                          <DetailStat label="Default sale price" value={money(getLockedPackagePrice(lot))} />
+                          <DetailStat label="MSRP / suggested" value={money(getLockedPackageMsrp(lot))} />
+                          <DetailStat label="Projected margin" value={money(getLockedPackagePrice(lot) - getLockedPackageCost(lot))} />
+                        </div>
+                      </div>
+
+                      {movementForm.movementType === "sell" && fefoBlocker ? (
+                        <div className="rounded-xl border border-amber-300/70 bg-amber-950/30 p-3 text-sm text-amber-100 space-y-3">
+                          <div>
+                            <div className="font-semibold">FEFO priority</div>
+                            <div className="mt-1">
+                              An earlier-expiring matching package remains: {fefoBlocker?.lotCode || fefoBlocker?.batchLot || fefoBlocker?.name || fefoBlocker.id} · best by {getLotBestByValue(fefoBlocker) || "not set"}. This package is best by {getLotBestByValue(lot) || "not set"}.
+                            </div>
+                          </div>
+                          <label className="flex items-start gap-2 rounded-lg border border-amber-400/40 bg-zinc-950/40 p-3">
+                            <input
+                              type="checkbox"
+                              checked={Boolean(movementForm.fefoOverride)}
+                              onChange={(e) =>
+                                setMovementForms((prev) => ({
+                                  ...prev,
+                                  [lot.id]: {
+                                    ...movementForm,
+                                    fefoOverride: e.target.checked,
+                                    fefoOverrideReason: e.target.checked ? movementForm.fefoOverrideReason : "",
+                                  },
+                                }))
+                              }
+                              className="mt-0.5"
+                            />
+                            <span>
+                              <span className="font-medium">Override FEFO for this sale</span>
+                              <span className="block text-xs text-amber-100/80">The skipped lot, both best-by dates, and the required reason will be retained in History.</span>
+                            </span>
+                          </label>
+                          {movementForm.fefoOverride ? (
+                            <label className="space-y-1 block">
+                              <span className="font-medium">FEFO override reason *</span>
+                              <input
+                                type="text"
+                                value={movementForm.fefoOverrideReason}
+                                onChange={(e) =>
+                                  setMovementForms((prev) => ({
+                                    ...prev,
+                                    [lot.id]: { ...movementForm, fefoOverrideReason: e.target.value },
+                                  }))
+                                }
+                                placeholder="Required reason for skipping the earlier-expiring matching lot"
+                                className="w-full rounded-xl border border-amber-400/70 bg-zinc-950 px-3 py-2 text-zinc-100"
+                              />
+                            </label>
+                          ) : null}
+                          <div className="text-xs text-amber-100/80">Destroy and other non-sale movements are not blocked by FEFO.</div>
+                        </div>
+                      ) : null}
+
+                      {sellBlockedByQuality ? (
+                        <div className="rounded-xl border border-red-400/80 bg-red-950/30 p-3 text-sm text-red-100 space-y-3">
+                          <div>Sale blocked: {salesBlockReason} Destroy, waste, sample, or adjustment actions are still available when appropriate.</div>
+                          {releaseBlockedOnly ? (
+                            <div className="rounded-lg border border-purple-400/60 bg-purple-950/30 p-3 text-purple-100">
+                              <div className="font-medium">Release path</div>
+                              <div className="mt-1 text-xs text-purple-100/80">Use this only after the package run has passed QC, shelf-life, and label/package review. Future role controls can make this approval-only.</div>
+                              <button type="button" onClick={() => handleReleasePackageForSale(lot)} disabled={releaseBusyId === lot.id} className="btn btn-accent mt-3 text-xs disabled:opacity-60">
+                                {releaseBusyId === lot.id ? "Releasing..." : "Release package for sale"}
+                              </button>
+                            </div>
+                          ) : null}
+                        </div>
+                      ) : null}
+
+                      <div className="rounded-xl border border-zinc-800 p-3 space-y-3">
+                        <div className="font-medium text-sm">Outbound action</div>
+                        <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-6 gap-3">
+                          <label className="space-y-1 text-sm block"><span className="text-zinc-400">Action</span><select value={movementForm.movementType} onChange={(e) => { const nextType = e.target.value; const defaultPrice = getLockedPackagePrice(lot); setMovementForms((prev) => ({ ...prev, [lot.id]: { ...movementForm, movementType: nextType, destinationType: nextType === "destroy" ? "disposal" : nextType === "sample" ? (getSkuType(lot) === "promo" ? "event" : "internal") : movementForm.destinationType, direction: nextType === "adjustment" ? movementForm.direction : "out", unitPrice: nextType === "sell" ? (movementForm.unitPrice || (defaultPrice > 0 ? String(defaultPrice) : "")) : movementForm.unitPrice, fefoOverride: nextType === "sell" ? movementForm.fefoOverride : false, fefoOverrideReason: nextType === "sell" ? movementForm.fefoOverrideReason : "" } })); }} className="w-full rounded-xl border border-zinc-700 bg-zinc-950 px-3 py-2"><option value="sell">Sell</option><option value="donate">Donate</option><option value="sample">Sample out</option><option value="waste">Waste</option><option value="destroy">Destroy</option><option value="adjustment">Manual adjustment</option></select></label>
+                          <label className="space-y-1 text-sm block"><span className="text-zinc-400">Quantity</span><input type="number" inputMode="decimal" min="0" step="1" max={available || undefined} value={movementForm.quantity} onChange={(e) => handleMovementQuantityChange(lot, movementForm, e.target.value)} className={`w-full rounded-xl border bg-zinc-950 px-3 py-2 ${movementWarnings[lot.id] ? "border-red-400 text-red-100" : "border-zinc-700"}`} /></label>
+                          <label className="space-y-1 text-sm block"><span className="text-zinc-400">Sale price</span><input type="number" inputMode="decimal" min="0" step="0.01" value={movementForm.unitPrice} onChange={(e) => setMovementForms((prev) => ({ ...prev, [lot.id]: { ...movementForm, unitPrice: e.target.value, priceManuallyChanged: true } }))} disabled={movementForm.movementType !== "sell"} placeholder={String(getLockedPackagePrice(lot) || "")} className={`w-full rounded-xl border bg-zinc-950 px-3 py-2 disabled:opacity-60 ${priceAudit.requiresMemo ? "border-amber-400 text-amber-100" : "border-zinc-700"}`} /></label>
+                          <label className="space-y-1 text-sm block"><span className="text-zinc-400">Date</span><input type="date" value={movementForm.date} onChange={(e) => setMovementForms((prev) => ({ ...prev, [lot.id]: { ...movementForm, date: e.target.value } }))} className="w-full rounded-xl border border-zinc-700 bg-zinc-950 px-3 py-2" /></label>
+                          <label className="space-y-1 text-sm block"><span className="text-zinc-400">Destination type</span><select value={movementForm.destinationType} onChange={(e) => setMovementForms((prev) => ({ ...prev, [lot.id]: { ...movementForm, destinationType: e.target.value } }))} className="w-full rounded-xl border border-zinc-700 bg-zinc-950 px-3 py-2"><option value="customer">Customer</option><option value="donation">Donation target</option><option value="event">Event</option><option value="wholesale">Wholesale</option><option value="internal">Internal use</option><option value="disposal">Disposal / destroy</option><option value="other">Other</option></select></label>
+                          <label className="space-y-1 text-sm block"><span className="text-zinc-400">Destination name</span><input type="text" value={movementForm.destinationName} onChange={(e) => setMovementForms((prev) => ({ ...prev, [lot.id]: { ...movementForm, destinationName: e.target.value, counterparty: e.target.value } }))} placeholder="Customer, store, event, donation target" className="w-full rounded-xl border border-zinc-700 bg-zinc-950 px-3 py-2" /></label>
+                        </div>
+
+                        {priceAudit.requiresMemo ? (
+                          <div className="rounded-xl border border-amber-400/80 bg-amber-950/25 p-3 space-y-3 text-sm text-amber-50">
+                            <div className="font-medium">Price override memo required</div>
+                            <div className="text-amber-100/90">
+                              Default package price is {money(priceAudit.defaultPrice)}. This sale is being recorded at {money(priceAudit.actualPrice)} because the sale price field was manually changed.
+                              {priceAudit.belowCost ? ` This is below package cost (${money(priceAudit.unitCost)}).` : ""}
+                            </div>
+                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                              <label className="space-y-1 block">
+                                <span>Override type</span>
+                                <select value={movementForm.priceOverrideType} onChange={(e) => setMovementForms((prev) => ({ ...prev, [lot.id]: { ...movementForm, priceOverrideType: e.target.value } }))} className="w-full rounded-xl border border-zinc-700 bg-zinc-950 px-3 py-2 text-zinc-100">
+                                  <option value="">Select reason type</option>
+                                  <option value="veteran_discount">Veteran discount</option>
+                                  <option value="event_special">Event special</option>
+                                  <option value="promo">Promo / comp</option>
+                                  <option value="damaged_label">Damaged label</option>
+                                  <option value="wholesale">Wholesale</option>
+                                  <option value="manual_correction">Manual correction</option>
+                                  <option value="other">Other</option>
+                                </select>
+                              </label>
+                              <label className="space-y-1 block">
+                                <span>Price override memo *</span>
+                                <input type="text" value={movementForm.priceOverrideReason} onChange={(e) => setMovementForms((prev) => ({ ...prev, [lot.id]: { ...movementForm, priceOverrideReason: e.target.value } }))} placeholder="Required audit note for price change" className="w-full rounded-xl border border-amber-400/70 bg-zinc-950 px-3 py-2 text-zinc-100" />
+                              </label>
+                            </div>
+                          </div>
+                        ) : null}
+
+                        {movementForm.movementType === "destroy" ? (
+                          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 rounded-xl border border-red-800/70 bg-red-950/20 p-3">
+                            <label className="space-y-1 text-sm block"><span className="text-red-100">Destroy method</span><select value={movementForm.destroyMethod} onChange={(e) => setMovementForms((prev) => ({ ...prev, [lot.id]: { ...movementForm, destroyMethod: e.target.value } }))} className="w-full rounded-xl border border-zinc-700 bg-zinc-950 px-3 py-2"><option value="discarded">Discarded</option><option value="expired">Expired</option><option value="compromised">Compromised package</option><option value="failed_qc">Failed QC / potency</option><option value="recall">Recall/removal</option><option value="other">Other</option></select></label>
+                            <div className="text-sm text-red-100">Destroy removes finished product from sellable inventory. A reason is required and the movement is retained in History.</div>
+                          </div>
+                        ) : null}
+
+                        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                          <label className="space-y-1 text-sm block"><span className="text-zinc-400">Destination location</span><input type="text" value={movementForm.destinationLocation} onChange={(e) => setMovementForms((prev) => ({ ...prev, [lot.id]: { ...movementForm, destinationLocation: e.target.value } }))} placeholder="Optional city, booth, clinic, etc." className="w-full rounded-xl border border-zinc-700 bg-zinc-950 px-3 py-2" /></label>
+                          <label className="space-y-1 text-sm block"><span className="text-zinc-400">Reason{movementForm.movementType === "destroy" ? " *" : ""}</span><input type="text" value={movementForm.reason} onChange={(e) => setMovementForms((prev) => ({ ...prev, [lot.id]: { ...movementForm, reason: e.target.value } }))} placeholder={movementForm.movementType === "destroy" ? "Required for destroy" : "Optional reason"} className="w-full rounded-xl border border-zinc-700 bg-zinc-950 px-3 py-2" /></label>
+                          <label className="space-y-1 text-sm block"><span className="text-zinc-400">Note</span><input type="text" value={movementForm.note} onChange={(e) => setMovementForms((prev) => ({ ...prev, [lot.id]: { ...movementForm, note: e.target.value } }))} placeholder="Optional note" className="w-full rounded-xl border border-zinc-700 bg-zinc-950 px-3 py-2" /></label>
+                        </div>
+
+                        {movementWarnings[lot.id] ? (
+                          <div className="rounded-xl border border-red-400/80 bg-red-950/30 p-3 text-sm text-red-100">
+                            {movementWarnings[lot.id]}
+                          </div>
+                        ) : null}
+
+                        <button type="button" onClick={() => handleFinishedMovement(lot)} disabled={movementBusyId === lot.id || sellBlockedByFefo || sellBlockedByQuality} className="btn btn-accent disabled:opacity-60 text-sm">
+                          {sellBlockedByFefo
+                            ? fefoOverrideRequested
+                              ? "FEFO override reason required"
+                              : "Sell earlier-expiring package first"
+                            : sellBlockedByQuality
+                              ? "Sale blocked"
+                              : movementBusyId === lot.id
+                                ? "Recording..."
+                                : "Record Sale / Outbound Movement"}
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    );
+  }
+
   const tabs = [
     { id: "dry", label: "Dry Material", icon: Package },
     { id: "extractions", label: "Extractions", icon: FlaskConical },
     { id: "production", label: "Production", icon: Factory },
     { id: "finished", label: "Finished Inventory", icon: Archive },
+    { id: "sales", label: "Sales", icon: DollarSign },
     { id: "history", label: "History", icon: History },
   ];
 
@@ -1933,8 +4963,8 @@ export default function PostProcessManager({ grows = [] }) {
           <p className="text-sm text-zinc-600 dark:text-zinc-400 max-w-4xl">
             Manufacturing now follows the real chain: harvested grow to dry material lot, dry lot
             to extraction, extraction to dry powder or liquid extract, extract or dry material to
-            production batch, then completed batches land in finished inventory for outbound
-            tracking, pricing, margin review, and label printing.
+            production batch, then completed batches land in finished inventory for QC, potency, pricing,
+            label printing, and handoff into the Sales tab for outbound tracking.
           </p>
         </div>
 
@@ -1960,6 +4990,8 @@ export default function PostProcessManager({ grows = [] }) {
         </div>
       ) : null}
 
+      {activeTab !== "sales" ? (
+        <>
       {lowStockLots.length > 0 ? (
         <div className="rounded-xl border border-amber-200 dark:border-amber-900/60 bg-amber-50 dark:bg-amber-950/30 px-4 py-3 text-sm">
           <span className="font-medium">Low stock alert:</span> {lowStockLots.length} active lot{lowStockLots.length === 1 ? "" : "s"} are at or below threshold.
@@ -1981,12 +5013,13 @@ export default function PostProcessManager({ grows = [] }) {
 
       {expiringSoonLots.length > 0 ? (
         <div className="rounded-xl border border-rose-200 dark:border-rose-900/60 bg-rose-50 dark:bg-rose-950/30 px-4 py-3 text-sm">
-          <span className="font-medium">Expiring soon:</span> {expiringSoonLots.length} active lot{expiringSoonLots.length === 1 ? "" : "s"} reach best-by or expiration within 30 days.
+          <span className="font-medium">Expiring soon:</span> {expiringSoonLots.length} active lot{expiringSoonLots.length === 1 ? "" : "s"} reach best-by within 30 days.
         </div>
       ) : null}
 
       <SectionCard
         title="Manufacturing chain"
+        defaultOpen={false}
         subtitle="Finished goods are now treated as their own inventory endpoint instead of just another output row."
         action={
           <div className="flex flex-wrap gap-2">
@@ -2006,14 +5039,6 @@ export default function PostProcessManager({ grows = [] }) {
                 Create Extraction
               </button>
             ) : null}
-            {nextAction === "finalize" ? (
-              <button
-                onClick={() => setActiveTab("extractions")}
-                className="btn text-sm"
-              >
-                Record Extract Output
-              </button>
-            ) : null}
             {nextAction === "production" ? (
               <button
                 onClick={() => setActiveTab("production")}
@@ -2030,6 +5055,14 @@ export default function PostProcessManager({ grows = [] }) {
                 Open Finished Inventory
               </button>
             ) : null}
+            {nextAction === "sales" ? (
+              <button
+                onClick={() => setActiveTab("sales")}
+                className="btn btn-accent text-sm"
+              >
+                Open Sales
+              </button>
+            ) : null}
           </div>
         }
       >
@@ -2038,40 +5071,50 @@ export default function PostProcessManager({ grows = [] }) {
             number="1"
             title="Dry Intake"
             body="Every harvested grow with dry weight becomes a dry-material lot that preserves remaining grams for downstream use."
-            done={dryLots.length > 0}
+            statusText={stageStatuses.dry.text}
+            tone={stageStatuses.dry.tone}
             next={nextAction === "dry"}
           />
           <WorkflowStep
             number="2"
             title="Extraction"
             body="Consume dry material into extraction batches and record method, source lots, and audit movements."
-            done={extractionBatches.length > 0}
+            statusText={stageStatuses.extraction.text}
+            tone={stageStatuses.extraction.tone}
             next={nextAction === "extraction"}
           />
           <WorkflowStep
             number="3"
-            title="Extract Output"
-            body="An extraction only becomes usable for production once an extract lot is created with a real output quantity."
-            done={pendingExtractionOutputs.length === 0 && extractionBatches.length > 0}
-            next={nextAction === "finalize"}
-          />
-          <WorkflowStep
-            number="4"
             title="Production"
             body="Make capsules, gummies, tinctures, or chocolates from dry lots or extract lots and capture batch cost."
-            done={productionBatches.length > 0}
+            statusText={stageStatuses.production.text}
+            tone={stageStatuses.production.tone}
             next={nextAction === "production"}
           />
           <WorkflowStep
-            number="5"
+            number="4"
             title="Finished Inventory"
-            body="Sell, donate, sample, waste, or adjust finished goods separately from manufacturing while keeping pricing and margin visible."
-            done={finishedGoodsLots.length > 0}
+            body="QC, potency, shelf life, and package runs live here before outbound movement."
+            statusText={stageStatuses.finished.text}
+            tone={stageStatuses.finished.tone}
             next={nextAction === "finished"}
+          />
+          <WorkflowStep
+            number="5"
+            title="Sales"
+            body="Sell, donate, sample, waste, or destroy packaged SKUs while FEFO keeps the earliest best-by matching SKUs first."
+            statusText={stageStatuses.sales.text}
+            tone={stageStatuses.sales.tone}
+            next={nextAction === "sales"}
           />
         </div>
       </SectionCard>
 
+      <SectionCard
+        title="Manufacturing overview"
+        subtitle="Cross-stage inventory, quality, production, and outbound totals."
+        defaultOpen={false}
+      >
       <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 2xl:grid-cols-6 gap-4">
         <SummaryCard
           label="Active dry lots"
@@ -2098,9 +5141,9 @@ export default function PostProcessManager({ grows = [] }) {
           icon={FlaskConical}
         />
         <SummaryCard
-          label="Pending outputs"
+          label="Extractions needing output"
           value={String(pendingExtractionOutputs.length)}
-          hint="Need final yield"
+          hint="Complete inside Extractions"
           icon={AlertTriangle}
         />
         <SummaryCard
@@ -2134,15 +5177,33 @@ export default function PostProcessManager({ grows = [] }) {
           icon={AlertTriangle}
         />
         <SummaryCard
-          label="Finished units"
-          value={String(totalFinishedUnits)}
-          hint="Sellable active inventory"
+          label="Unpackaged finished"
+          value={String(totalUnpackagedFinishedUnits)}
+          hint="Parent batch units still available"
           icon={Sparkles}
+        />
+        <SummaryCard
+          label="Packaged available"
+          value={String(totalSaleReadyUnits)}
+          hint="Sellable package units on hand"
+          icon={Tags}
+        />
+        <SummaryCard
+          label="Units sold"
+          value={String(totalSoldUnits)}
+          hint="Completed retail sales"
+          icon={DollarSign}
+        />
+        <SummaryCard
+          label="Units destroyed"
+          value={String(totalDestroyedUnits)}
+          hint="Recorded package destruction"
+          icon={AlertTriangle}
         />
         <SummaryCard
           label="Batches needing action"
           value={String(batchesNeedingAttention)}
-          hint="Pending outputs or active runs"
+          hint="Extraction or production actions"
           icon={ArrowRight}
         />
         <SummaryCard
@@ -2152,11 +5213,66 @@ export default function PostProcessManager({ grows = [] }) {
           icon={DollarSign}
         />
       </div>
+      </SectionCard>
+        </>
+      ) : (
+        <SectionCard
+          title="Sales overview"
+          subtitle="Sales-only package availability, outbound totals, shelf-life risk, and revenue."
+          defaultOpen={false}
+        >
+          <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4">
+            <SummaryCard
+              label="Available packages"
+              value={String(totalSaleReadyUnits)}
+              hint="Active packaged inventory"
+              icon={Tags}
+            />
+            <SummaryCard
+              label="Units sold"
+              value={String(totalSoldUnits)}
+              hint="Completed retail sales"
+              icon={DollarSign}
+            />
+            <SummaryCard
+              label="Units sampled"
+              value={String(totalSampledUnits)}
+              hint="Samples moved outbound"
+              icon={Sparkles}
+            />
+            <SummaryCard
+              label="Units destroyed"
+              value={String(totalDestroyedUnits)}
+              hint="Recorded package destruction"
+              icon={AlertTriangle}
+            />
+            <SummaryCard
+              label="Expiring soon"
+              value={String(salesExpiringSoonLots.length)}
+              hint={salesExpiringSoonLots.length > 0 ? "Packaged lots within 30 days" : "No near-term package shelf issues"}
+              icon={AlertTriangle}
+            />
+            <SummaryCard
+              label="Realized revenue"
+              value={money(totalRealizedRevenue)}
+              hint="Revenue already recorded"
+              icon={BadgeDollarSign}
+            />
+            <SummaryCard
+              label="Remaining projection"
+              value={money(totalProjectedRevenue)}
+              hint="Available packages at locked prices"
+              icon={DollarSign}
+            />
+          </div>
+        </SectionCard>
+      )}
 
       {activeTab === "dry" && (
         <div className="space-y-6">
           <SectionCard
             title="Ready for intake"
+            defaultOpen={true}
             subtitle="Harvested grows with dry weight and no dry-material lot yet."
           >
             {harvestedEligibleGrows.length === 0 ? (
@@ -2221,12 +5337,13 @@ export default function PostProcessManager({ grows = [] }) {
 
           <SectionCard
             title="Existing dry-material lots"
-            subtitle="Only active usable dry lots are shown here. Depleted or archived dry lots live in the Archive tab."
+            defaultOpen={false}
+            subtitle="Only active usable dry lots are shown here. Depleted or archived dry lots live in the History tab."
           >
             {activeDryLots.length === 0 ? (
               <EmptyState
                 title="No active dry lots"
-                body="Create a dry-material lot from a harvested grow first, or review depleted dry lots in the Archive tab."
+                body="Create a dry-material lot from a harvested grow first, or review depleted dry lots in the History tab."
               />
             ) : (
               <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
@@ -2237,7 +5354,9 @@ export default function PostProcessManager({ grows = [] }) {
                   >
                     <div className="flex flex-wrap items-start justify-between gap-3">
                       <div>
-                        <div className="text-lg font-semibold">{lot?.name || lot.id}</div>
+                        <DetailNameButton onClick={() => setSelectedDryLotId(lot.id)}>
+                          {lot?.name || lot.id}
+                        </DetailNameButton>
                         <div className="text-sm text-zinc-600 dark:text-zinc-400">
                           {lot?.strain || "Unknown strain"} ·{" "}
                           {lot?.growLabel || lot?.sourceGrowId || "Unknown source"}
@@ -2270,37 +5389,9 @@ export default function PostProcessManager({ grows = [] }) {
                     </div>
 
 
-                    <LotInventoryControls
-                      lot={lot}
-                      today={today}
-                      reservationForm={reservationForms[lot.id] || normalizeReservationForm(today)}
-                      onReservationChange={(nextForm) =>
-                        setReservationForms((prev) => ({ ...prev, [lot.id]: nextForm }))
-                      }
-                      onSaveReservation={() => handleSaveReservation(lot)}
-                      onRemoveReservation={(reservationId) => handleRemoveReservation(lot, reservationId)}
-                      thresholdValue={thresholdForms[lot.id]}
-                      onThresholdChange={(value) =>
-                        setThresholdForms((prev) => ({ ...prev, [lot.id]: value }))
-                      }
-                      onSaveThreshold={() => handleSaveThreshold(lot)}
-                      reservationBusyId={reservationBusyId}
-                      thresholdBusyId={thresholdBusyId}
-                    />
-
-                    <div className="mt-4">
-                      <CostRollupPanel record={lot} title="Stage cost rollup" />
+                    <div className="mt-4 text-xs text-zinc-500 dark:text-zinc-400">
+                      Click the lot name to open reservations, cost, QC, shelf-life, and lineage in a detail window.
                     </div>
-
-                    <LotQualityPanel
-                      lot={lot}
-                      form={qualityForms[lot.id] || normalizeQualityForm(lot, today)}
-                      onChange={(nextForm) =>
-                        setQualityForms((prev) => ({ ...prev, [lot.id]: nextForm }))
-                      }
-                      onSave={() => handleSaveQuality(lot)}
-                      busy={qualityBusyId === lot.id}
-                    />
                   </div>
                 ))}
               </div>
@@ -2311,10 +5402,28 @@ export default function PostProcessManager({ grows = [] }) {
 
       {activeTab === "extractions" && (
         <div className="space-y-6">
-          <SectionCard
-            title="Create extraction batch"
-            subtitle="Consume dry lots into a dry powder or liquid extraction batch. Completed batches can create an extract lot immediately."
-          >
+          <div className="flex flex-wrap justify-end gap-2">
+            <button
+              type="button"
+              onClick={() => setCreateExtractionModalOpen(true)}
+              className="btn btn-accent text-sm"
+            >
+              Create Extraction Batch
+            </button>
+          </div>
+
+          {createExtractionModalOpen ? (
+            <PostProcessDetailModal
+              title="Create extraction batch"
+              subtitle="Consume dry lots into a dry powder or liquid extraction batch."
+              onClose={() => setCreateExtractionModalOpen(false)}
+              maxWidth="max-w-7xl"
+            >
+              <SectionCard
+                title="Create extraction batch"
+                defaultOpen={true}
+                subtitle="Choose source lots, method, status, and optional output. The main tab stays clean until you open this window."
+              >
             {availableDryLots.length === 0 ? (
               <EmptyState
                 title="No dry lots available"
@@ -2343,12 +5452,17 @@ export default function PostProcessManager({ grows = [] }) {
                     <span className="text-zinc-600 dark:text-zinc-400">Extraction type</span>
                     <select
                       value={extractionForm.extractionType}
-                      onChange={(e) =>
+                      onChange={(e) => {
+                        const extractionType = e.target.value;
+                        const outputUnit = getDefaultExtractionOutputUnit(extractionType);
+                        setExtractionOutputEdited(false);
                         setExtractionForm((prev) => ({
                           ...prev,
-                          extractionType: e.target.value,
-                        }))
-                      }
+                          extractionType,
+                          outputUnit,
+                          outputAmount: outputUnit === "g" && !prev.outputAmount ? String(getExtractionInputTotalForUnit(selectedExtractionLots, "g") || "") : prev.outputAmount,
+                        }));
+                      }}
                       className="w-full rounded-xl border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-900 px-3 py-2"
                     >
                       <option value="dual">Dual extract</option>
@@ -2393,6 +5507,8 @@ export default function PostProcessManager({ grows = [] }) {
                     </select>
                   </label>
                 </div>
+
+
 
                 <div className="grid grid-cols-1 xl:grid-cols-3 gap-4">
                   <div className="xl:col-span-2 rounded-2xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 p-4 space-y-3">
@@ -2447,18 +5563,13 @@ export default function PostProcessManager({ grows = [] }) {
                                   step="0.01"
                                   max={remaining || undefined}
                                   value={value}
-                                  onChange={(e) =>
-                                    setExtractionForm((prev) => ({
-                                      ...prev,
-                                      lotQuantities: {
-                                        ...prev.lotQuantities,
-                                        [lot.id]: e.target.value,
-                                      },
-                                    }))
-                                  }
-                                  className="w-full rounded-xl border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-900 px-3 py-2"
+                                  onChange={(e) => handleExtractionLotQuantityChange(lot, e.target.value)}
+                                  className={`w-full rounded-xl border bg-white dark:bg-zinc-900 px-3 py-2 ${consumptionWarnings[`extraction:${lot.id}`] ? "border-rose-400 text-rose-900 dark:text-rose-100" : "border-zinc-300 dark:border-zinc-700"}`}
                                   placeholder={`0 to ${remaining}`}
                                 />
+                                {consumptionWarnings[`extraction:${lot.id}`] ? (
+                                  <div className="rounded-lg border border-rose-400/70 bg-rose-950/25 px-3 py-2 text-xs text-rose-200">{consumptionWarnings[`extraction:${lot.id}`]}</div>
+                                ) : null}
                               </label>
                               <div className="text-xs text-zinc-500 dark:text-zinc-400">
                                 Unit cost {money(getLotUnitCost(lot))}
@@ -2504,12 +5615,13 @@ export default function PostProcessManager({ grows = [] }) {
                           min="0"
                           step="0.01"
                           value={extractionForm.outputAmount}
-                          onChange={(e) =>
+                          onChange={(e) => {
+                            setExtractionOutputEdited(true);
                             setExtractionForm((prev) => ({
                               ...prev,
                               outputAmount: e.target.value,
-                            }))
-                          }
+                            }));
+                          }}
                           className="w-full rounded-xl border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-900 px-3 py-2"
                         />
                       </label>
@@ -2528,8 +5640,7 @@ export default function PostProcessManager({ grows = [] }) {
                         >
                           <option value="mL">mL</option>
                           <option value="g">g</option>
-                          <option value="oz">oz</option>
-                        </select>
+                                    </select>
                       </label>
                     </div>
 
@@ -2571,7 +5682,13 @@ export default function PostProcessManager({ grows = [] }) {
                     <div className="rounded-xl border border-zinc-200 dark:border-zinc-800 p-3 text-sm space-y-2">
                       <div className="font-medium">Extraction preview</div>
                       <div className="text-zinc-600 dark:text-zinc-400">
-                        Selected input: {formatTotalsByUnit(selectedExtractionLots) || "None"}
+                        Selected input: {extractionPreview.selectedInputLabel}
+                      </div>
+                      <div className="text-zinc-600 dark:text-zinc-400">
+                        Output lot: {extractionPreview.outputLabel} {extractionPreview.yieldPercent > 0 ? `· ${extractionPreview.yieldPercent}% yield against same-unit input` : ""}
+                      </div>
+                      <div className="text-zinc-500 dark:text-zinc-500 text-xs">
+                        Dry powder/resin defaults to grams. Dual, hot-water, and ethanol extracts default to mL.
                       </div>
                     </div>
 
@@ -2586,11 +5703,14 @@ export default function PostProcessManager({ grows = [] }) {
                 </div>
               </div>
             )}
-          </SectionCard>
+              </SectionCard>
+            </PostProcessDetailModal>
+          ) : null}
 
           {pendingExtractionOutputs.length > 0 ? (
             <SectionCard
               title="Pending extract outputs"
+              defaultOpen={true}
               subtitle="These extractions already consumed dry material but still need their output recorded to generate an extract lot."
             >
               <div className="space-y-4">
@@ -2606,116 +5726,30 @@ export default function PostProcessManager({ grows = [] }) {
                   return (
                     <div
                       key={batch.id}
-                      className="rounded-2xl border border-amber-200 dark:border-amber-900/60 bg-amber-50/70 dark:bg-amber-950/20 p-4"
+                      className="rounded-2xl border border-amber-300/60 dark:border-amber-900/60 bg-amber-50/70 dark:bg-amber-950/20 p-4"
                     >
                       <div className="flex flex-wrap items-start justify-between gap-3">
                         <div>
-                          <div className="text-lg font-semibold">{batch?.name || batch.id}</div>
+                          <DetailNameButton onClick={() => setSelectedExtractionBatchId(batch.id)}>
+                            {batch?.name || batch.id}
+                          </DetailNameButton>
                           <div className="text-sm text-zinc-600 dark:text-zinc-400">
-                            {batch?.date || "—"} ·{" "}
-                            {formatTotalsByUnit(batch?.inputLots || []) || "No source quantity"}
+                            {batch?.date || "—"} · {formatTotalsByUnit(batch?.inputLots || []) || "No source quantity"}
                           </div>
                         </div>
-                        <div className="text-sm font-semibold capitalize">
-                          {formatBatchStatus(getProcessBatchStatus(batch))}
+                        <div className="text-right text-sm">
+                          <div className="font-semibold capitalize">{formatBatchStatus(getProcessBatchStatus(batch))}</div>
+                          <div className="text-zinc-500 dark:text-zinc-400">Needs output</div>
                         </div>
                       </div>
-
-                      <div className="mt-4 grid grid-cols-1 md:grid-cols-2 xl:grid-cols-5 gap-3">
-                        <label className="space-y-1 text-sm block">
-                          <span className="text-zinc-600 dark:text-zinc-400">Output amount</span>
-                          <input
-                            type="number"
-                            inputMode="decimal"
-                            min="0"
-                            step="0.01"
-                            value={form.outputAmount}
-                            onChange={(e) =>
-                              setFinalizeForms((prev) => ({
-                                ...prev,
-                                [batch.id]: { ...form, outputAmount: e.target.value },
-                              }))
-                            }
-                            className="w-full rounded-xl border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-900 px-3 py-2"
-                          />
-                        </label>
-
-                        <label className="space-y-1 text-sm block">
-                          <span className="text-zinc-600 dark:text-zinc-400">Output unit</span>
-                          <select
-                            value={form.outputUnit}
-                            onChange={(e) =>
-                              setFinalizeForms((prev) => ({
-                                ...prev,
-                                [batch.id]: { ...form, outputUnit: e.target.value },
-                              }))
-                            }
-                            className="w-full rounded-xl border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-900 px-3 py-2"
-                          >
-                            <option value="mL">mL</option>
-                            <option value="g">g</option>
-                            <option value="oz">oz</option>
-                          </select>
-                        </label>
-
-                        <label className="space-y-1 text-sm block">
-                          <span className="text-zinc-600 dark:text-zinc-400">Yield percent</span>
-                          <input
-                            type="number"
-                            inputMode="decimal"
-                            min="0"
-                            step="0.01"
-                            value={form.outputYieldPercent}
-                            onChange={(e) =>
-                              setFinalizeForms((prev) => ({
-                                ...prev,
-                                [batch.id]: { ...form, outputYieldPercent: e.target.value },
-                              }))
-                            }
-                            className="w-full rounded-xl border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-900 px-3 py-2"
-                          />
-                        </label>
-
-                        <label className="space-y-1 text-sm block">
-                          <span className="text-zinc-600 dark:text-zinc-400">Date</span>
-                          <input
-                            type="date"
-                            value={form.date}
-                            onChange={(e) =>
-                              setFinalizeForms((prev) => ({
-                                ...prev,
-                                [batch.id]: { ...form, date: e.target.value },
-                              }))
-                            }
-                            className="w-full rounded-xl border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-900 px-3 py-2"
-                          />
-                        </label>
-
-                        <div className="flex items-end">
-                          <button
-                            onClick={() => handleFinalizeExtraction(batch)}
-                            disabled={finalizeBusyId === batch.id}
-                            className="w-full rounded-lg bg-amber-600 hover:bg-amber-700 disabled:opacity-60 text-white px-4 py-2 text-sm"
-                          >
-                            {finalizeBusyId === batch.id ? "Saving..." : "Create Extract Lot"}
-                          </button>
-                        </div>
+                      <div className="mt-4 grid grid-cols-1 md:grid-cols-3 gap-3 text-sm">
+                        <DetailStat label="Input" value={formatTotalsByUnit(batch?.inputLots || []) || "—"} />
+                        <DetailStat label="Date" value={batch?.date || "—"} />
+                        <DetailStat label="Output lot" value={batch?.outputLotId || "Not created"} />
                       </div>
-
-                      <label className="mt-3 space-y-1 text-sm block">
-                        <span className="text-zinc-600 dark:text-zinc-400">Notes</span>
-                        <textarea
-                          value={form.notes}
-                          onChange={(e) =>
-                            setFinalizeForms((prev) => ({
-                              ...prev,
-                              [batch.id]: { ...form, notes: e.target.value },
-                            }))
-                          }
-                          rows={3}
-                          className="w-full rounded-xl border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-900 px-3 py-2"
-                        />
-                      </label>
+                      <div className="mt-3 text-xs text-zinc-500 dark:text-zinc-400">
+                        Click the batch name to record output and view extraction detail.
+                      </div>
                     </div>
                   );
                 })}
@@ -2725,6 +5759,7 @@ export default function PostProcessManager({ grows = [] }) {
 
           <SectionCard
             title="Extract lots"
+            defaultOpen={false}
             subtitle="These lots are ready for production or downstream batching."
           >
             {activeExtractLots.length === 0 ? (
@@ -2741,7 +5776,9 @@ export default function PostProcessManager({ grows = [] }) {
                   >
                     <div className="flex flex-wrap items-start justify-between gap-3">
                       <div>
-                        <div className="text-lg font-semibold">{lot?.name || lot.id}</div>
+                        <DetailNameButton onClick={() => setSelectedExtractLotId(lot.id)}>
+                          {lot?.name || lot.id}
+                        </DetailNameButton>
                         <div className="text-sm text-zinc-600 dark:text-zinc-400">
                           {lot?.extractionType || "extract"} · {lot?.strain || "Unknown strain"}
                         </div>
@@ -2769,37 +5806,9 @@ export default function PostProcessManager({ grows = [] }) {
                       />
                     </div>
 
-                    <LotInventoryControls
-                      lot={lot}
-                      today={today}
-                      reservationForm={reservationForms[lot.id] || normalizeReservationForm(today)}
-                      onReservationChange={(nextForm) =>
-                        setReservationForms((prev) => ({ ...prev, [lot.id]: nextForm }))
-                      }
-                      onSaveReservation={() => handleSaveReservation(lot)}
-                      onRemoveReservation={(reservationId) => handleRemoveReservation(lot, reservationId)}
-                      thresholdValue={thresholdForms[lot.id]}
-                      onThresholdChange={(value) =>
-                        setThresholdForms((prev) => ({ ...prev, [lot.id]: value }))
-                      }
-                      onSaveThreshold={() => handleSaveThreshold(lot)}
-                      reservationBusyId={reservationBusyId}
-                      thresholdBusyId={thresholdBusyId}
-                    />
-
-                    <div className="mt-4">
-                      <CostRollupPanel record={lot} title="Stage cost rollup" />
+                    <div className="mt-4 text-xs text-zinc-500 dark:text-zinc-400">
+                      Click the lot name to open reservations, cost, QC, shelf-life, and lineage in a detail window.
                     </div>
-
-                    <LotQualityPanel
-                      lot={lot}
-                      form={qualityForms[lot.id] || normalizeQualityForm(lot, today)}
-                      onChange={(nextForm) =>
-                        setQualityForms((prev) => ({ ...prev, [lot.id]: nextForm }))
-                      }
-                      onSave={() => handleSaveQuality(lot)}
-                      busy={qualityBusyId === lot.id}
-                    />
                   </div>
                 ))}
               </div>
@@ -2810,18 +5819,34 @@ export default function PostProcessManager({ grows = [] }) {
 
       {activeTab === "production" && (
         <div className="space-y-6">
-          <SectionCard
-            title="Create production batch"
-            subtitle="Production consumes dry material or extract lots and creates finished inventory for capsules, gummies, tinctures, or chocolates."
-            action={
-              <Link
-                to="/?tab=labels&labelSource=finished_goods"
-                className="rounded-lg border border-zinc-300 dark:border-zinc-700 px-3 py-2 text-sm hover:bg-zinc-100 dark:hover:bg-zinc-800"
+          <div className="flex flex-wrap justify-end gap-2">
+            <Link
+              to="/?tab=labels&labelSource=finished_goods"
+              className="rounded-lg border border-zinc-300 dark:border-zinc-700 px-3 py-2 text-sm hover:bg-zinc-100 dark:hover:bg-zinc-800"
+            >
+              Labels Tab
+            </Link>
+            <button
+              type="button"
+              onClick={() => setCreateProductionModalOpen(true)}
+              className="btn btn-accent text-sm"
+            >
+              Start Production Batch
+            </button>
+          </div>
+
+          {createProductionModalOpen ? (
+            <PostProcessDetailModal
+              title="Start production batch"
+              subtitle="Build capsules, gummies, tinctures, chocolates, or other finished batches from source lots."
+              onClose={() => setCreateProductionModalOpen(false)}
+              maxWidth="max-w-7xl"
+            >
+              <SectionCard
+                title="Create production batch"
+                defaultOpen={true}
+                subtitle="Use this window for formula planning, source-lot consumption, cost previews, and finished-batch creation."
               >
-                Labels Tab
-              </Link>
-            }
-          >
             {availableProductionSourceLots.length === 0 ? (
               <EmptyState
                 title="No source lots available"
@@ -2850,12 +5875,19 @@ export default function PostProcessManager({ grows = [] }) {
                     <span className="text-zinc-600 dark:text-zinc-400">Production type</span>
                     <select
                       value={productionForm.productType}
-                      onChange={(e) =>
+                      onChange={(e) => {
+                        const nextType = e.target.value;
+                        const defaultOutput = nextType === "chocolate" ? "24" : nextType === "tincture" ? "120" : "100";
                         setProductionForm((prev) => ({
                           ...prev,
-                          productType: e.target.value,
-                        }))
-                      }
+                          productType: nextType,
+                          outputCount: defaultOutput,
+                          formulaRows: [{ id: `formula_${Date.now()}`, ingredientName: "", sourceLotId: "", amountPerUnit: "", gramsPerCapsule: "", percent: "" }],
+                          lotQuantities: {},
+                          bottleSize: "",
+                        }));
+                        setConsumptionWarnings((prev) => Object.fromEntries(Object.entries(prev).filter(([key]) => !key.startsWith("formula:") && !key.startsWith("production:"))));
+                      }}
                       className="w-full rounded-xl border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-900 px-3 py-2"
                     >
                       <option value="capsule">Capsules</option>
@@ -2899,6 +5931,147 @@ export default function PostProcessManager({ grows = [] }) {
                   </label>
                 </div>
 
+                {(() => {
+                  const formulaConfig = productionCapsulePlan.config || getProductionFormulaConfig(productionForm.productType);
+                  const isCapsuleFormula = formulaConfig.key === "capsule";
+                  const isTinctureFormula = formulaConfig.key === "tincture";
+                  return (
+                    <div className="rounded-2xl border border-purple-300/60 dark:border-purple-900/60 bg-purple-50/60 dark:bg-purple-950/10 p-4 space-y-4">
+                      <div className="flex flex-wrap items-start justify-between gap-3">
+                        <div>
+                          <div className="font-medium">{formulaConfig.title}</div>
+                          <div className="text-sm text-zinc-600 dark:text-zinc-400">
+                            Enter the amount of each source used per finished {formulaConfig.unitLabel}. The app calculates batch totals, inventory usage, and average potency/fill automatically.
+                          </div>
+                        </div>
+                        <div className="flex flex-wrap gap-2">
+                          {formulaConfig.presets.map((count) => (
+                            <button
+                              key={`formula-count-${formulaConfig.key}-${count}`}
+                              type="button"
+                              onClick={() => setProductionForm((prev) => ({ ...prev, outputCount: String(count) }))}
+                              className={`rounded-lg border px-3 py-1.5 text-xs ${Number(productionForm.outputCount) === count ? "accent-selected" : "border-zinc-300 dark:border-zinc-700 hover:bg-zinc-100 dark:hover:bg-zinc-800"}`}
+                            >
+                              {count} {formulaConfig.presetSuffix}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+
+                      <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-5 gap-3 text-sm">
+                        <label className="space-y-1 block">
+                          <span className="text-zinc-600 dark:text-zinc-400">{formulaConfig.outputLabel}</span>
+                          <input
+                            type="number"
+                            inputMode="decimal"
+                            min="0"
+                            step={isTinctureFormula ? "0.01" : "1"}
+                            value={productionForm.outputCount}
+                            onChange={(e) => setProductionForm((prev) => ({ ...prev, outputCount: e.target.value }))}
+                            className="w-full rounded-xl border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-900 px-3 py-2"
+                          />
+                        </label>
+                        <DetailStat label="Formula / output unit" value={productionCapsulePlan.perUnitSummary} />
+                        <DetailStat label="Total source needed" value={productionCapsulePlan.batchTotalSummary} />
+                        <DetailStat label={isTinctureFormula ? "Auto concentration" : "Auto mg / unit"} value={productionAutoMgPerUnit ? `${isCapsuleFormula ? "≈ " : ""}${formatMg(productionAutoMgPerUnit)}${isTinctureFormula ? " / mL" : ""}` : "Build formula"} />
+                        <DetailStat label="Label display" value={isCapsuleFormula ? `${productionCapsulePlan.displayDose.perCapsuleLabel} · ${productionCapsulePlan.displayDose.totalWeightLabel}` : "Calculated from completed batch output"} />
+                      </div>
+
+                      <div className="space-y-3">
+                        {((productionForm.formulaRows && productionForm.formulaRows.length > 0) ? productionForm.formulaRows : [{ id: "formula_1", ingredientName: "", sourceLotId: "", amountPerUnit: "", gramsPerCapsule: "", percent: "" }]).map((row, index) => {
+                          const planned = productionCapsulePlan.rows.find((entry) => entry.id === row.id) || {};
+                          const rowWarning = consumptionWarnings[`formula:${row.id || `formula_${index + 1}`}`];
+                          return (
+                            <div key={row.id || `formula-row-${index}`} className="rounded-xl border border-zinc-200 dark:border-zinc-800 bg-white/70 dark:bg-zinc-950/30 p-3 space-y-2">
+                              <div className="grid grid-cols-1 md:grid-cols-6 gap-3">
+                                <label className="space-y-1 text-sm md:col-span-2">
+                                  <span className="text-zinc-600 dark:text-zinc-400">Ingredient / species</span>
+                                  <input
+                                    type="text"
+                                    value={row.ingredientName || ""}
+                                    onChange={(e) => updateFormulaRow(index, { ingredientName: e.target.value })}
+                                    placeholder="P. cubensis, Reishi, Cordyceps..."
+                                    className="w-full rounded-xl border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-900 px-3 py-2"
+                                  />
+                                </label>
+                                <label className="space-y-1 text-sm">
+                                  <span className="text-zinc-600 dark:text-zinc-400">{formulaConfig.amountLabel}</span>
+                                  <input
+                                    type="number"
+                                    inputMode="decimal"
+                                    min="0"
+                                    step="0.0001"
+                                    value={row.amountPerUnit ?? row.gramsPerCapsule ?? ""}
+                                    onChange={(e) => updateFormulaRow(index, { amountPerUnit: e.target.value, gramsPerCapsule: e.target.value })}
+                                    placeholder={isTinctureFormula ? "0.01" : "0.30"}
+                                    className={`w-full rounded-xl border bg-white dark:bg-zinc-900 px-3 py-2 ${rowWarning ? "border-rose-400 text-rose-900 dark:text-rose-100" : "border-zinc-300 dark:border-zinc-700"}`}
+                                  />
+                                </label>
+                                <div className="rounded-xl border border-zinc-200 dark:border-zinc-800 bg-zinc-50/70 dark:bg-zinc-950/30 px-3 py-2 text-sm">
+                                  <div className="text-zinc-500 dark:text-zinc-400">Formula share</div>
+                                  <div className="font-semibold">{planned.percent ? `${planned.percent}%` : "—"}</div>
+                                </div>
+                                <label className="space-y-1 text-sm">
+                                  <span className="text-zinc-600 dark:text-zinc-400">Source lot guard</span>
+                                  <select
+                                    value={row.sourceLotId || ""}
+                                    onChange={(e) => updateFormulaRow(index, { sourceLotId: e.target.value })}
+                                    className="w-full rounded-xl border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-900 px-3 py-2"
+                                  >
+                                    <option value="">No linked lot</option>
+                                    {availableProductionSourceLots.map((lot) => {
+                                      const usedByOtherRow = ((productionForm.formulaRows && productionForm.formulaRows.length > 0) ? productionForm.formulaRows : []).some((otherRow, otherIndex) => otherIndex !== index && String(otherRow?.sourceLotId || "") === String(lot.id));
+                                      return (
+                                        <option key={`formula-source-${lot.id}`} value={lot.id} disabled={usedByOtherRow}>
+                                          {lot?.name || lot.id} · {formatQty(getLotAvailableQuantity(lot), lot?.unit || "g", getQtyDigits(lot?.unit || "g"))}{usedByOtherRow ? " · already used" : ""}
+                                        </option>
+                                      );
+                                    })}
+                                  </select>
+                                </label>
+                                <div className="flex items-end justify-between gap-2 text-sm">
+                                  <div>
+                                    <div className="font-semibold">{planned.totalRequired ? formatFormulaQuantity(planned.totalRequired, planned.sourceUnit) : "0"}</div>
+                                    <div className={planned.shortage > 0 ? "text-rose-600 dark:text-rose-300 text-xs" : "text-zinc-500 dark:text-zinc-400 text-xs"}>
+                                      {planned.shortage > 0 ? `${formatFormulaQuantity(planned.shortage, planned.sourceUnit)} short` : "needed total"}
+                                    </div>
+                                  </div>
+                                  <button type="button" onClick={() => removeFormulaRow(index)} className="rounded-lg border border-zinc-300 dark:border-zinc-700 px-2 py-1 text-xs hover:bg-zinc-100 dark:hover:bg-zinc-800">
+                                    Remove
+                                  </button>
+                                </div>
+                              </div>
+                              {rowWarning ? (
+                                <div className="rounded-lg border border-rose-400/70 bg-rose-950/25 px-3 py-2 text-xs text-rose-200">{rowWarning}</div>
+                              ) : null}
+                            </div>
+                          );
+                        })}
+                      </div>
+
+                      <div className="flex flex-wrap gap-2">
+                        <button type="button" onClick={addFormulaRow} className="rounded-lg border border-zinc-300 dark:border-zinc-700 px-3 py-2 text-sm hover:bg-zinc-100 dark:hover:bg-zinc-800">
+                          Add ingredient row
+                        </button>
+                        <button type="button" onClick={applyFormulaToSourceLots} className="btn btn-accent text-sm">
+                          Apply formula totals to source lots
+                        </button>
+                      </div>
+
+                      {productionCapsulePlan.rows.length > 0 && !productionCapsulePlan.rows.some((row) => row.amountPerUnit > 0) ? (
+                        <div className="rounded-xl border border-amber-300/70 bg-amber-50 dark:border-amber-900/70 dark:bg-amber-950/30 p-3 text-sm text-amber-900 dark:text-amber-200">
+                          Enter the amount of each source used per finished {formulaConfig.unitLabel}. The app calculates the average fill/concentration and batch source totals automatically.
+                        </div>
+                      ) : null}
+                      {productionCapsulePlan.inventoryGuards.length > 0 ? (
+                        <div className="rounded-xl border border-rose-300/70 bg-rose-50 dark:border-rose-900/70 dark:bg-rose-950/30 p-3 text-sm text-rose-800 dark:text-rose-200">
+                          Source-lot guard: {productionCapsulePlan.inventoryGuards.map((entry) => `${entry.sourceLotName || entry.sourceLotId} needs ${formatFormulaQuantity(entry.totalRequired, entry.sourceUnit)}, ${formatFormulaQuantity(entry.shortage, entry.sourceUnit)} short`).join(" · ")}
+                        </div>
+                      ) : null}
+                    </div>
+                  );
+                })()}
+
                 <div className="grid grid-cols-1 xl:grid-cols-3 gap-4">
                   <div className="xl:col-span-2 rounded-2xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 p-4 space-y-3">
                     <div>
@@ -2920,10 +6093,10 @@ export default function PostProcessManager({ grows = [] }) {
                             key={lot.id}
                             className="rounded-2xl border border-zinc-200 dark:border-zinc-800 bg-zinc-50/60 dark:bg-zinc-950/30 p-4"
                           >
-                            <div className="flex flex-wrap items-start justify-between gap-3">
-                              <div>
-                                <div className="font-semibold">{lot?.name || lot.id}</div>
-                                <div className="text-sm text-zinc-600 dark:text-zinc-400">
+                            <div className="grid grid-cols-[minmax(0,1fr)_7.5rem] gap-3 items-start">
+                              <div className="min-w-0">
+                                <div className="font-semibold leading-snug break-words">{lot?.name || lot.id}</div>
+                                <div className="text-sm text-zinc-600 dark:text-zinc-400 leading-snug break-words">
                                   {lotType === "extract" ? "Extract" : "Dry material"} ·{" "}
                                   {lot?.strain || "Unknown strain"} ·{" "}
                                   {lot?.growLabel ||
@@ -2933,14 +6106,14 @@ export default function PostProcessManager({ grows = [] }) {
                                     "Unknown source"}
                                 </div>
                               </div>
-                              <div className="text-right text-sm">
-                                <div className="font-semibold">
+                              <div className="text-right text-sm shrink-0">
+                                <div className="font-semibold tabular-nums whitespace-nowrap">
                                   {formatQty(
                                     remaining,
                                     lot?.unit || (lotType === "extract" ? "mL" : "g")
                                   )}
                                 </div>
-                                <div className="text-zinc-500 dark:text-zinc-400">remaining</div>
+                                <div className="text-zinc-500 dark:text-zinc-400 whitespace-nowrap">remaining</div>
                               </div>
                             </div>
 
@@ -2956,18 +6129,13 @@ export default function PostProcessManager({ grows = [] }) {
                                   step="0.01"
                                   max={remaining || undefined}
                                   value={value}
-                                  onChange={(e) =>
-                                    setProductionForm((prev) => ({
-                                      ...prev,
-                                      lotQuantities: {
-                                        ...prev.lotQuantities,
-                                        [lot.id]: e.target.value,
-                                      },
-                                    }))
-                                  }
-                                  className="w-full rounded-xl border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-900 px-3 py-2"
+                                  onChange={(e) => handleProductionLotQuantityChange(lot, e.target.value)}
+                                  className={`w-full rounded-xl border bg-white dark:bg-zinc-900 px-3 py-2 ${consumptionWarnings[`production:${lot.id}`] ? "border-rose-400 text-rose-900 dark:text-rose-100" : "border-zinc-300 dark:border-zinc-700"}`}
                                   placeholder={`0 to ${remaining}`}
                                 />
+                                {consumptionWarnings[`production:${lot.id}`] ? (
+                                  <div className="rounded-lg border border-rose-400/70 bg-rose-950/25 px-3 py-2 text-xs text-rose-200">{consumptionWarnings[`production:${lot.id}`]}</div>
+                                ) : null}
                               </label>
                               <div className="text-xs text-zinc-500 dark:text-zinc-400">
                                 Unit cost {money(getLotUnitCost(lot))}
@@ -2983,90 +6151,33 @@ export default function PostProcessManager({ grows = [] }) {
                     <div>
                       <div className="font-medium">Batch details</div>
                       <div className="text-sm text-zinc-600 dark:text-zinc-400">
-                        Link an optional recipe for BOM-style supply costing, then set pricing so
-                        finished inventory already has unit economics.
+                        Link an optional recipe for COG/BOM supply costing. Packaging, retail SKUs, MSRP, and final sale price happen later in Finished Inventory and Sales.
                       </div>
                     </div>
 
-                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                      <label className="space-y-1 text-sm block">
-                        <span className="text-zinc-600 dark:text-zinc-400">Output count</span>
-                        <input
-                          type="number"
-                          inputMode="numeric"
-                          min="0"
-                          step="1"
-                          value={productionForm.outputCount}
-                          onChange={(e) =>
-                            setProductionForm((prev) => ({
-                              ...prev,
-                              outputCount: e.target.value,
-                            }))
-                          }
-                          className="w-full rounded-xl border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-900 px-3 py-2"
-                        />
-                      </label>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-sm">
+                      <DetailStat
+                        label={getProductionFormulaConfig(productionForm.productType).outputLabel}
+                        value={`${Number(productionForm.outputCount) || 0} ${getProductionFormulaConfig(productionForm.productType).unitLabelPlural}`}
+                      />
+                      <DetailStat
+                        label={productionForm.productType === "tincture" ? "Auto concentration" : productionForm.productType === "capsule" ? "Approx. avg fill" : "Auto mg / unit"}
+                        value={productionAutoMgPerUnit ? `${productionForm.productType === "capsule" ? "≈ " : ""}${formatMg(productionAutoMgPerUnit)}${productionForm.productType === "tincture" ? " / mL" : ""}` : "Build formula or select source lots"}
+                      />
+                    </div>
 
-                      <label className="space-y-1 text-sm block">
-                        <span className="text-zinc-600 dark:text-zinc-400">mg per unit</span>
-                        <input
-                          type="number"
-                          inputMode="decimal"
-                          min="0"
-                          step="0.01"
-                          value={productionForm.mgPerUnit}
-                          onChange={(e) =>
-                            setProductionForm((prev) => ({
-                              ...prev,
-                              mgPerUnit: e.target.value,
-                            }))
-                          }
-                          className="w-full rounded-xl border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-900 px-3 py-2"
-                        />
-                      </label>
+                    <div className="rounded-xl border border-zinc-200 dark:border-zinc-800 bg-zinc-50/70 dark:bg-zinc-950/30 p-3 text-xs text-zinc-600 dark:text-zinc-400">
+                      Production creates the parent finished batch only. SKU/package sizes are created later from Finished Inventory so labels, FEFO, samples, and retail packages stay separate from manufacturing.
                     </div>
 
                     {productionForm.productType === "tincture" ? (
-                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                        <label className="space-y-1 text-sm block">
-                          <span className="text-zinc-600 dark:text-zinc-400">Bottle size</span>
-                          <input
-                            type="number"
-                            inputMode="decimal"
-                            min="0"
-                            step="0.01"
-                            value={productionForm.bottleSize}
-                            onChange={(e) =>
-                              setProductionForm((prev) => ({
-                                ...prev,
-                                bottleSize: e.target.value,
-                              }))
-                            }
-                            className="w-full rounded-xl border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-900 px-3 py-2"
-                          />
-                        </label>
-
-                        <label className="space-y-1 text-sm block">
-                          <span className="text-zinc-600 dark:text-zinc-400">Bottle unit</span>
-                          <select
-                            value={productionForm.bottleSizeUnit}
-                            onChange={(e) =>
-                              setProductionForm((prev) => ({
-                                ...prev,
-                                bottleSizeUnit: e.target.value,
-                              }))
-                            }
-                            className="w-full rounded-xl border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-900 px-3 py-2"
-                          >
-                            <option value="mL">mL</option>
-                            <option value="oz">oz</option>
-                          </select>
-                        </label>
+                      <div className="rounded-xl border border-zinc-200 dark:border-zinc-800 bg-zinc-50/70 dark:bg-zinc-950/30 p-3 text-xs text-zinc-600 dark:text-zinc-400">
+                        Production records bulk tincture in mL. Bottle sizes and bottle counts are created later as package/SKU runs from Finished Inventory.
                       </div>
                     ) : null}
 
                     <label className="space-y-1 text-sm block">
-                      <span className="text-zinc-600 dark:text-zinc-400">Variant / SKU note</span>
+                      <span className="text-zinc-600 dark:text-zinc-400">Batch variant / formula note</span>
                       <input
                         type="text"
                         value={productionForm.variant}
@@ -3076,7 +6187,7 @@ export default function PostProcessManager({ grows = [] }) {
                             variant: e.target.value,
                           }))
                         }
-                        placeholder="Example: 250 mg gummy or 2 oz amber bottle"
+                        placeholder="Example: LM-FB-500, focus formula, test blend, or 30 mL tincture"
                         className="w-full rounded-xl border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-900 px-3 py-2"
                       />
                     </label>
@@ -3085,12 +6196,7 @@ export default function PostProcessManager({ grows = [] }) {
                       <span className="text-zinc-600 dark:text-zinc-400">Recipe / BOM</span>
                       <select
                         value={productionForm.recipeId}
-                        onChange={(e) =>
-                          setProductionForm((prev) => ({
-                            ...prev,
-                            recipeId: e.target.value,
-                          }))
-                        }
+                        onChange={(e) => applyProductionRecipe(e.target.value)}
                         className="w-full rounded-xl border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-900 px-3 py-2"
                       >
                         <option value="">No recipe selected</option>
@@ -3109,7 +6215,7 @@ export default function PostProcessManager({ grows = [] }) {
 
                     <div className="grid grid-cols-2 gap-3">
                       <label className="space-y-1 text-sm block">
-                        <span className="text-zinc-600 dark:text-zinc-400">Packaging cost</span>
+                        <span className="text-zinc-600 dark:text-zinc-400">Production supplies / recipe extra</span>
                         <input
                           type="number"
                           inputMode="decimal"
@@ -3181,64 +6287,8 @@ export default function PostProcessManager({ grows = [] }) {
                       </label>
                     </div>
 
-                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-                      <label className="space-y-1 text-sm block">
-                        <span className="text-zinc-600 dark:text-zinc-400">Price per unit</span>
-                        <input
-                          type="number"
-                          inputMode="decimal"
-                          min="0"
-                          step="0.01"
-                          value={productionForm.pricePerUnit}
-                          onChange={(e) =>
-                            setProductionForm((prev) => ({
-                              ...prev,
-                              pricePerUnit: e.target.value,
-                            }))
-                          }
-                          className="w-full rounded-xl border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-900 px-3 py-2"
-                        />
-                      </label>
-
-                      <label className="space-y-1 text-sm block">
-                        <span className="text-zinc-600 dark:text-zinc-400">Target margin %</span>
-                        <input
-                          type="number"
-                          inputMode="decimal"
-                          min="1"
-                          max="95"
-                          step="1"
-                          value={productionForm.desiredMarginPercent}
-                          onChange={(e) =>
-                            setProductionForm((prev) => ({
-                              ...prev,
-                              desiredMarginPercent: e.target.value,
-                            }))
-                          }
-                          className="w-full rounded-xl border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-900 px-3 py-2"
-                        />
-                      </label>
-
-                      <label className="space-y-1 text-sm block">
-                        <span className="text-zinc-600 dark:text-zinc-400">MSRP per unit</span>
-                        <input
-                          type="number"
-                          inputMode="decimal"
-                          min="0"
-                          step="0.01"
-                          value={productionForm.msrpPerUnit}
-                          onChange={(e) =>
-                            setProductionForm((prev) => ({
-                              ...prev,
-                              msrpPerUnit: e.target.value,
-                            }))
-                          }
-                          placeholder={
-                            productionMsrpSuggestion ? String(productionMsrpSuggestion) : "Auto"
-                          }
-                          className="w-full rounded-xl border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-900 px-3 py-2"
-                        />
-                      </label>
+                    <div className="rounded-xl border border-zinc-200 dark:border-zinc-800 bg-zinc-50/70 dark:bg-zinc-950/30 p-3 text-xs text-zinc-600 dark:text-zinc-400">
+                      Pricing fields were intentionally removed from Production. Cost follows this batch into Finished Inventory, then package-level MSRP and actual sale price are handled in Sales for better analytics.
                     </div>
 
                     <label className="space-y-1 text-sm block">
@@ -3302,6 +6352,10 @@ export default function PostProcessManager({ grows = [] }) {
                         label="Selected input"
                         value={formatTotalsByUnit(productionInputTotals) || "None"}
                       />
+                      <DetailStat
+                        label="Auto mg / unit"
+                        value={productionAutoMgPerUnit ? formatMg(productionAutoMgPerUnit) : "Not enough gram input"}
+                      />
                     </div>
 
                     {selectedRecipe ? (
@@ -3315,6 +6369,9 @@ export default function PostProcessManager({ grows = [] }) {
                             selectedRecipeCosting.recipeYield ||
                             1}
                           .
+                        </div>
+                        <div className="rounded-lg border border-emerald-800/70 bg-emerald-950/20 px-3 py-2 text-xs text-emerald-100">
+                          Recipe/BOM costs are already included in the Recipe/BOM cost stat. Manual cost fields above are extra production costs only.
                         </div>
                         <div className="space-y-2 max-h-48 overflow-y-auto pr-1">
                           {selectedRecipeCosting.breakdown.map((item) => (
@@ -3366,32 +6423,28 @@ export default function PostProcessManager({ grows = [] }) {
                   </div>
 
                   <div className="rounded-2xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 p-4 space-y-3">
-                    <div className="font-medium">Pricing preview</div>
+                    <div className="font-medium">Create parent finished batch</div>
                     <div className="grid grid-cols-2 gap-3 text-sm">
                       <DetailStat
-                        label="Suggested MSRP"
-                        value={money(productionPricingPreview.suggestedMsrpPerUnit)}
+                        label="Output units"
+                        value={`${Number(productionForm.outputCount) || 0} ${productionForm.productType === "capsule" ? "capsules" : getProductTypeMeta(productionForm.productType).pieceLabelPlural}`}
                       />
                       <DetailStat
-                        label="Price per unit"
-                        value={money(productionPricingPreview.pricePerUnit)}
+                        label="Avg mg / unit"
+                        value={productionAutoMgPerUnit ? formatMg(productionAutoMgPerUnit) : "Not enough gram input"}
                       />
                       <DetailStat
-                        label="Margin per unit"
-                        value={money(productionPricingPreview.marginPerUnit)}
+                        label="Batch total cost"
+                        value={money(productionBatchCostPreview)}
                       />
                       <DetailStat
-                        label="Margin %"
-                        value={`${productionPricingPreview.marginPercent.toFixed(2)}%`}
+                        label="Cost / unit"
+                        value={money(productionUnitCostPreview)}
                       />
-                      <DetailStat
-                        label="Projected revenue"
-                        value={money(productionPricingPreview.projectedRevenue)}
-                      />
-                      <DetailStat
-                        label="Projected profit"
-                        value={money(productionPricingPreview.projectedProfit)}
-                      />
+                    </div>
+
+                    <div className="rounded-xl border border-zinc-200 dark:border-zinc-800 bg-zinc-50/70 dark:bg-zinc-950/30 p-3 text-xs text-zinc-600 dark:text-zinc-400">
+                      After this succeeds, the modal closes and the new parent batch appears in Finished Inventory. Create 3.5 g, 7 g, samples, promos, MSRP, and sale pricing from that finished batch.
                     </div>
 
                     <button
@@ -3399,22 +6452,25 @@ export default function PostProcessManager({ grows = [] }) {
                       disabled={productionBusy}
                       className="w-full btn btn-accent disabled:opacity-60 text-sm justify-center"
                     >
-                      {productionBusy ? "Creating..." : "Create Production Batch"}
+                      {productionBusy ? "Creating..." : "Create Parent Finished Batch"}
                     </button>
                   </div>
                 </div>
               </div>
             )}
-          </SectionCard>
+              </SectionCard>
+            </PostProcessDetailModal>
+          ) : null}
 
           <SectionCard
             title="Production batches"
+            defaultOpen={true}
             subtitle="These are your manufacturing runs. Completed runs create finished goods lots that move into Finished Inventory."
           >
             {activeProductionBatches.length === 0 ? (
               <EmptyState
                 title="No active production batches"
-                body="Completed production runs move into Finished Inventory and the Archive tab. Only active or in-progress manufacturing runs stay here."
+                body="Completed production runs move into Finished Inventory and the History tab. Only active or in-progress manufacturing runs stay here."
               />
             ) : (
               <div className="space-y-4">
@@ -3431,9 +6487,9 @@ export default function PostProcessManager({ grows = [] }) {
                     >
                       <div className="flex flex-wrap items-start justify-between gap-3">
                         <div>
-                          <div className="text-lg font-semibold">
+                          <DetailNameButton onClick={() => setSelectedProductionBatchId(batch.id)}>
                             {batch?.name || `${meta.label} Batch`}
-                          </div>
+                          </DetailNameButton>
                           <div className="text-sm text-zinc-600 dark:text-zinc-400 capitalize">
                             {meta.pluralLabel} ·{" "}
                             {String(batch?.sourceMode || "mixed").replace(/_/g, " ")} source ·{" "}
@@ -3471,68 +6527,8 @@ export default function PostProcessManager({ grows = [] }) {
                         />
                       </div>
 
-                      <div className="mt-4 grid grid-cols-1 xl:grid-cols-2 gap-4 text-sm">
-                        <div>
-                          <div className="font-medium mb-2">Consumed source lots</div>
-                          <div className="space-y-2">
-                            {(batch?.inputLots || []).map((lot) => (
-                              <div
-                                key={`${batch.id}-${lot.lotId}`}
-                                className="rounded-xl border border-zinc-200 dark:border-zinc-800 p-3"
-                              >
-                                <div className="flex items-center justify-between gap-3">
-                                  <div>
-                                    <div className="font-semibold">
-                                      {lot?.lotName || lot?.lotId}
-                                    </div>
-                                    <div className="text-zinc-500 dark:text-zinc-400">
-                                      {String(lot?.lotType || "").replace(/_/g, " ")} ·{" "}
-                                      {lot?.growLabel ||
-                                        lot?.sourceBatchId ||
-                                        lot?.sourceGrowId ||
-                                        "Unknown source"}
-                                    </div>
-                                  </div>
-                                  <div className="font-semibold">
-                                    {formatQty(lot?.quantity, lot?.unit || "g")}
-                                  </div>
-                                </div>
-                              </div>
-                            ))}
-                          </div>
-                        </div>
-
-                        <div className="space-y-3">
-                          <div>
-                            <div className="font-medium mb-2">Cost stack</div>
-                            <div className="rounded-xl border border-zinc-200 dark:border-zinc-800 p-3 grid grid-cols-2 gap-3">
-                              <DetailStat
-                                label="Source material"
-                                value={money(batch?.inputMaterialCostTotal || 0)}
-                              />
-                              <DetailStat
-                                label="Recipe / BOM"
-                                value={money(batch?.recipeBatchCostTotal || batch?.recipeCost || 0)}
-                              />
-                              <DetailStat
-                                label="Direct cost"
-                                value={money(batch?.directCostTotal || batch?.directCost || 0)}
-                              />
-                              <DetailStat
-                                label="Projected profit"
-                                value={money(batch?.pricing?.projectedProfit || 0)}
-                              />
-                            </div>
-                          </div>
-                          <CostRollupPanel record={batch} title="Stage cost rollup" />
-                          <RecipeSnapshotPanel record={batch} />
-                          <div>
-                            <div className="font-medium mb-2">Notes</div>
-                            <div className="rounded-xl border border-zinc-200 dark:border-zinc-800 p-3 text-zinc-700 dark:text-zinc-300 whitespace-pre-wrap min-h-[88px]">
-                              {batch?.notes || batch?.variant || "No notes recorded."}
-                            </div>
-                          </div>
-                        </div>
+                      <div className="mt-4 text-xs text-zinc-500 dark:text-zinc-400">
+                        Click the batch name to open full manufacturing detail, cost, recipe, lineage, and notes in a detail window.
                       </div>
                     </div>
                   );
@@ -3547,7 +6543,8 @@ export default function PostProcessManager({ grows = [] }) {
         <div className="space-y-6">
           <SectionCard
             title="Finished inventory"
-            subtitle="Completed production lots live here for pricing, labels, and outbound inventory actions."
+            defaultOpen={true}
+            subtitle="QC, potency, shelf life, and label-ready packaged stock live here before outbound movement. Pricing and selling are managed in Sales."
             action={
               <div className="flex flex-wrap gap-2">
                 <Link
@@ -3562,26 +6559,14 @@ export default function PostProcessManager({ grows = [] }) {
             <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4">
               <SummaryCard
                 label="Finished lots"
-                value={String(activeFinishedGoodsLots.length)}
-                hint="Completed sellable active lots"
+                value={String(finishedBatchCards.length)}
+                hint="Batch-first inventory sources"
                 icon={Archive}
               />
               <SummaryCard
-                label="Projected revenue"
-                value={money(totalProjectedRevenue)}
-                hint="If active priced lots all sold"
-                icon={BadgeDollarSign}
-              />
-              <SummaryCard
-                label="Realized revenue"
-                value={money(totalRealizedRevenue)}
-                hint="Sold outbound records"
-                icon={DollarSign}
-              />
-              <SummaryCard
-                label="Label-ready"
-                value={String(activeFinishedGoodsLots.length)}
-                hint="Active finished lots"
+                label="Packaged lots"
+                value={String(saleReadyFinishedGoodsLots.length)}
+                hint="Ready for Sales and labels"
                 icon={Tags}
               />
               <SummaryCard
@@ -3593,60 +6578,52 @@ export default function PostProcessManager({ grows = [] }) {
               <SummaryCard
                 label="Expiring soon"
                 value={String(activeFinishedGoodsLots.filter((lot) => isExpiringSoonLot(lot)).length)}
-                hint="Best by or expiration within 30 days"
+                hint="Best by within 30 days"
                 icon={AlertTriangle}
               />
             </div>
 
-            {activeFinishedGoodsLots.length === 0 ? (
+            {finishedBatchCards.length === 0 ? (
               <EmptyState
                 title="No active finished inventory"
-                body="Once a completed production batch is created, its output lot will appear here. Depleted lots move to the Archive tab."
+                body="Once a completed production batch is created, its output lot will appear here. Depleted lots move to the History tab."
               />
             ) : (
               <div className="space-y-4">
-                {activeFinishedGoodsLots.map((lot) => {
+                {finishedBatchCards.map((lot) => {
                   const meta = getProductTypeMeta(
                     lot?.productType || lot?.finishedGoodType || lot?.lotType
                   );
-                  const movementForm = movementForms[lot.id] || normalizeMovementForm(today);
-                  const pricingForm = pricingForms[lot.id] || {
-                    pricePerUnit: String(lot?.pricePerUnit ?? lot?.pricing?.pricePerUnit ?? ""),
-                    msrpPerUnit: String(
-                      lot?.msrpPerUnit ?? lot?.pricing?.suggestedMsrpPerUnit ?? ""
-                    ),
-                  };
-                  const livePricingPreview = buildPricingPreview({
-                    unitCost: getLotUnitCost(lot),
-                    pricePerUnit: Number(pricingForm.pricePerUnit) || 0,
-                    msrpPerUnit: Number(pricingForm.msrpPerUnit) || 0,
-                    quantity: Number(getLotAvailableQuantity(lot) || 0) || 0,
-                  });
-                  const outboundSummary = lot?.outboundSummary || {};
                   const isFocusedFinishedLot = focusFinishedLotId === lot.id;
+                  const sourceRuns = packageRunsBySourceLotId.get(lot.id) || [];
+                  const availableQuantity = Number(getLotAvailableQuantity(lot)) || 0;
+                  const shelfLife = getShelfLifeSummary(lot);
+                  const qcSummary = getLotQcSummary(lot);
 
                   return (
-                    <div
+                    <button
                       key={lot.id}
                       id={`finished-lot-${lot.id}`}
-                      className={`rounded-2xl border bg-white dark:bg-zinc-900 p-4 space-y-4 ${
+                      type="button"
+                      onClick={() => setSelectedFinishedLotId(lot.id)}
+                      className={`w-full rounded-2xl border bg-white dark:bg-zinc-900 p-4 text-left transition hover:border-purple-400 hover:bg-purple-50/40 dark:hover:border-purple-800 dark:hover:bg-purple-950/20 ${
                         isFocusedFinishedLot
                           ? "accent-selected"
                           : "border-zinc-200 dark:border-zinc-800"
                       }`}
                     >
                       <div className="flex flex-wrap items-start justify-between gap-3">
-                        <div>
-                          <div className="text-lg font-semibold">
+                        <div className="min-w-0">
+                          <div className="text-lg font-semibold text-purple-700 dark:text-purple-300 line-clamp-2">
                             {lot?.name || `${meta.label} Lot`}
                           </div>
-                          <div className="text-sm text-zinc-600 dark:text-zinc-400">
+                          <div className="mt-1 text-sm text-zinc-600 dark:text-zinc-400">
                             {meta.pluralLabel} · {lot?.variant || lot?.strain || "No variant"}
                           </div>
                         </div>
-                        <div className="text-right text-sm">
+                        <div className="text-right text-sm shrink-0">
                           <div className="font-semibold">
-                            {Number(getLotAvailableQuantity(lot)) || 0} available {meta.pieceLabelPlural}
+                            {availableQuantity} available {meta.pieceLabelPlural}
                           </div>
                           <div className="text-zinc-500 dark:text-zinc-400 capitalize">
                             {getLotStatus(lot)}
@@ -3654,420 +6631,225 @@ export default function PostProcessManager({ grows = [] }) {
                         </div>
                       </div>
 
-                      <div className="grid grid-cols-2 xl:grid-cols-6 gap-3 text-sm">
-                        <DetailStat
-                          label="Initial qty"
-                          value={`${Number(lot?.initialQuantity) || 0} ${meta.pieceLabelPlural}`}
-                        />
-                        <DetailStat label="Unit cost" value={money(getLotUnitCost(lot))} />
-                        <DetailStat
-                          label="Price / unit"
-                          value={money(lot?.pricePerUnit || lot?.pricing?.pricePerUnit || 0)}
-                        />
-                        <DetailStat
-                          label="MSRP"
-                          value={money(
-                            lot?.msrpPerUnit || lot?.pricing?.suggestedMsrpPerUnit || 0
-                          )}
-                        />
-                        <DetailStat
-                          label="Revenue logged"
-                          value={money(outboundSummary?.revenue || 0)}
-                        />
-                        <DetailStat
-                          label="Source batch"
-                          value={lot?.batchName || lot?.sourceBatchId || "—"}
-                        />
+                      <div className="mt-4 grid grid-cols-2 lg:grid-cols-5 gap-3 text-sm">
+                        <DetailStat label="Initial qty" value={`${Number(lot?.initialQuantity) || 0} ${getPackageUnitName(lot, meta)}`} />
+                        <DetailStat label="Package runs" value={`${sourceRuns.length} run${sourceRuns.length === 1 ? "" : "s"}`} />
+                        <DetailStat label="QC" value={qcSummary.status} />
+                        <DetailStat label="Best by" value={shelfLife.bestBy || "—"} />
+                        <DetailStat label="Lot code" value={lot?.lotCode || lot?.batchLot || "—"} />
                       </div>
 
-                      <div className="grid grid-cols-2 xl:grid-cols-4 gap-3 text-sm">
-                        <DetailStat label="Potency" value={getLotPotencySummary(lot)} />
-                        <DetailStat label="QC" value={getLotQcSummary(lot).status} />
-                        <DetailStat label="Best by" value={getShelfLifeSummary(lot).bestBy || "—"} />
-                        <DetailStat label="Expiration" value={getShelfLifeSummary(lot).expirationDate || "—"} />
+                      <div className="mt-3 text-xs text-zinc-500 dark:text-zinc-400">
+                        Open full detail for reservations, QC, potency, costs, lineage, package creation, and batch actions.
                       </div>
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+          </SectionCard>
 
-                      <LotInventoryControls
-                        lot={lot}
-                        today={today}
-                        reservationForm={reservationForms[lot.id] || normalizeReservationForm(today)}
-                        onReservationChange={(nextForm) =>
-                          setReservationForms((prev) => ({ ...prev, [lot.id]: nextForm }))
-                        }
-                        onSaveReservation={() => handleSaveReservation(lot)}
-                        onRemoveReservation={(reservationId) => handleRemoveReservation(lot, reservationId)}
-                        thresholdValue={thresholdForms[lot.id]}
-                        onThresholdChange={(value) =>
-                          setThresholdForms((prev) => ({ ...prev, [lot.id]: value }))
-                        }
-                        onSaveThreshold={() => handleSaveThreshold(lot)}
-                        reservationBusyId={reservationBusyId}
-                        thresholdBusyId={thresholdBusyId}
-                      />
+          {selectedFinishedLot ? (() => {
+            const lot = selectedFinishedLot;
+            const meta = getProductTypeMeta(
+              lot?.productType || lot?.finishedGoodType || lot?.lotType
+            );
 
-                      {(lot?.productType === "tincture" ||
-                        lot?.finishedGoodType === "tincture" ||
-                        lot?.lotType === "tinctures") ? (
-                        <div className="grid grid-cols-2 gap-3 text-sm">
-                          <DetailStat
-                            label="Bottle size"
-                            value={
-                              lot?.bottleSize
-                                ? `${lot.bottleSize} ${lot?.bottleSizeUnit || "mL"}`
-                                : "—"
-                            }
-                          />
-                          <DetailStat
-                            label="mg per bottle"
-                            value={Number(lot?.mgPerUnit) > 0 ? `${lot.mgPerUnit} mg` : "—"}
-                          />
-                        </div>
-                      ) : null}
-
-                      <CostRollupPanel record={lot} title="Stage cost rollup" />
-                      <RecipeSnapshotPanel record={lot} />
-                      <LotQualityPanel
-                        lot={lot}
-                        form={qualityForms[lot.id] || normalizeQualityForm(lot, today)}
-                        onChange={(nextForm) =>
-                          setQualityForms((prev) => ({ ...prev, [lot.id]: nextForm }))
-                        }
-                        onSave={() => handleSaveQuality(lot)}
-                        busy={qualityBusyId === lot.id}
-                      />
-
-                      <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
-                        <div className="rounded-2xl border border-zinc-200 dark:border-zinc-800 p-4 space-y-3">
-                          <div className="font-medium">Pricing and margin</div>
-                          <div className="grid grid-cols-2 gap-3">
-                            <label className="space-y-1 text-sm block">
-                              <span className="text-zinc-600 dark:text-zinc-400">
-                                Price per unit
-                              </span>
-                              <input
-                                type="number"
-                                inputMode="decimal"
-                                min="0"
-                                step="0.01"
-                                value={pricingForm.pricePerUnit}
-                                onChange={(e) =>
-                                  setPricingForms((prev) => ({
-                                    ...prev,
-                                    [lot.id]: {
-                                      ...pricingForm,
-                                      pricePerUnit: e.target.value,
-                                    },
-                                  }))
-                                }
-                                className="w-full rounded-xl border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-900 px-3 py-2"
-                              />
-                            </label>
-
-                            <label className="space-y-1 text-sm block">
-                              <span className="text-zinc-600 dark:text-zinc-400">
-                                MSRP per unit
-                              </span>
-                              <input
-                                type="number"
-                                inputMode="decimal"
-                                min="0"
-                                step="0.01"
-                                value={pricingForm.msrpPerUnit}
-                                onChange={(e) =>
-                                  setPricingForms((prev) => ({
-                                    ...prev,
-                                    [lot.id]: {
-                                      ...pricingForm,
-                                      msrpPerUnit: e.target.value,
-                                    },
-                                  }))
-                                }
-                                className="w-full rounded-xl border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-900 px-3 py-2"
-                              />
-                            </label>
-                          </div>
-
-                          <div className="grid grid-cols-2 gap-3 text-sm">
-                            <DetailStat
-                              label="Margin per unit"
-                              value={money(livePricingPreview.marginPerUnit)}
-                            />
-                            <DetailStat
-                              label="Margin %"
-                              value={`${livePricingPreview.marginPercent.toFixed(2)}%`}
-                            />
-                            <DetailStat
-                              label="Projected revenue"
-                              value={money(livePricingPreview.projectedRevenue)}
-                            />
-                            <DetailStat
-                              label="Projected profit"
-                              value={money(livePricingPreview.projectedProfit)}
-                            />
-                          </div>
-
-                          <button
-                            onClick={() => handleSaveLotPricing(lot)}
-                            disabled={pricingBusyId === lot.id}
-                            className="rounded-lg btn-accent disabled:opacity-60 px-4 py-2 text-sm"
-                          >
-                            {pricingBusyId === lot.id ? "Saving..." : "Save Pricing"}
-                          </button>
-                        </div>
-
-                        <div className="rounded-2xl border border-zinc-200 dark:border-zinc-800 p-4 space-y-3">
-                          <div className="font-medium">Outbound inventory actions</div>
-                          <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-3">
-                            <label className="space-y-1 text-sm block">
-                              <span className="text-zinc-600 dark:text-zinc-400">Action</span>
-                              <select
-                                value={movementForm.movementType}
-                                onChange={(e) =>
-                                  setMovementForms((prev) => ({
-                                    ...prev,
-                                    [lot.id]: {
-                                      ...movementForm,
-                                      movementType: e.target.value,
-                                      direction:
-                                        e.target.value === "adjustment"
-                                          ? movementForm.direction
-                                          : "out",
-                                    },
-                                  }))
-                                }
-                                className="w-full rounded-xl border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-900 px-3 py-2"
-                              >
-                                <option value="sell">Sell</option>
-                                <option value="donate">Donate</option>
-                                <option value="sample">Sample</option>
-                                <option value="waste">Waste</option>
-                                <option value="adjustment">Manual adjustment</option>
-                              </select>
-                            </label>
-
-                            <label className="space-y-1 text-sm block">
-                              <span className="text-zinc-600 dark:text-zinc-400">Direction</span>
-                              <select
-                                value={movementForm.direction}
-                                onChange={(e) =>
-                                  setMovementForms((prev) => ({
-                                    ...prev,
-                                    [lot.id]: {
-                                      ...movementForm,
-                                      direction: e.target.value,
-                                    },
-                                  }))
-                                }
-                                disabled={movementForm.movementType !== "adjustment"}
-                                className="w-full rounded-xl border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-900 px-3 py-2 disabled:opacity-60"
-                              >
-                                <option value="out">Out</option>
-                                <option value="in">In</option>
-                              </select>
-                            </label>
-
-                            <label className="space-y-1 text-sm block">
-                              <span className="text-zinc-600 dark:text-zinc-400">Quantity</span>
-                              <input
-                                type="number"
-                                inputMode="decimal"
-                                min="0"
-                                step="1"
-                                value={movementForm.quantity}
-                                onChange={(e) =>
-                                  setMovementForms((prev) => ({
-                                    ...prev,
-                                    [lot.id]: {
-                                      ...movementForm,
-                                      quantity: e.target.value,
-                                    },
-                                  }))
-                                }
-                                className="w-full rounded-xl border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-900 px-3 py-2"
-                              />
-                            </label>
-
-                            <label className="space-y-1 text-sm block">
-                              <span className="text-zinc-600 dark:text-zinc-400">Unit price</span>
-                              <input
-                                type="number"
-                                inputMode="decimal"
-                                min="0"
-                                step="0.01"
-                                value={movementForm.unitPrice}
-                                onChange={(e) =>
-                                  setMovementForms((prev) => ({
-                                    ...prev,
-                                    [lot.id]: {
-                                      ...movementForm,
-                                      unitPrice: e.target.value,
-                                    },
-                                  }))
-                                }
-                                disabled={movementForm.movementType !== "sell"}
-                                placeholder={String(
-                                  lot?.pricePerUnit || lot?.pricing?.pricePerUnit || ""
-                                )}
-                                className="w-full rounded-xl border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-900 px-3 py-2 disabled:opacity-60"
-                              />
-                            </label>
-
-                            <label className="space-y-1 text-sm block">
-                              <span className="text-zinc-600 dark:text-zinc-400">Date</span>
-                              <input
-                                type="date"
-                                value={movementForm.date}
-                                onChange={(e) =>
-                                  setMovementForms((prev) => ({
-                                    ...prev,
-                                    [lot.id]: {
-                                      ...movementForm,
-                                      date: e.target.value,
-                                    },
-                                  }))
-                                }
-                                className="w-full rounded-xl border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-900 px-3 py-2"
-                              />
-                            </label>
-
-                            <label className="space-y-1 text-sm block">
-                              <span className="text-zinc-600 dark:text-zinc-400">Destination type</span>
-                              <select
-                                value={movementForm.destinationType}
-                                onChange={(e) =>
-                                  setMovementForms((prev) => ({
-                                    ...prev,
-                                    [lot.id]: {
-                                      ...movementForm,
-                                      destinationType: e.target.value,
-                                    },
-                                  }))
-                                }
-                                className="w-full rounded-xl border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-900 px-3 py-2"
-                              >
-                                <option value="customer">Customer</option>
-                                <option value="donation">Donation target</option>
-                                <option value="event">Event</option>
-                                <option value="wholesale">Wholesale</option>
-                                <option value="internal">Internal use</option>
-                                <option value="other">Other</option>
-                              </select>
-                            </label>
-
-                            <label className="space-y-1 text-sm block">
-                              <span className="text-zinc-600 dark:text-zinc-400">Destination name</span>
-                              <input
-                                type="text"
-                                value={movementForm.destinationName}
-                                onChange={(e) =>
-                                  setMovementForms((prev) => ({
-                                    ...prev,
-                                    [lot.id]: {
-                                      ...movementForm,
-                                      destinationName: e.target.value,
-                                      counterparty: e.target.value,
-                                    },
-                                  }))
-                                }
-                                placeholder="Customer, store, event, donation target"
-                                className="w-full rounded-xl border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-900 px-3 py-2"
-                              />
-                            </label>
-                          </div>
-
-                          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-                            <label className="space-y-1 text-sm block">
-                              <span className="text-zinc-600 dark:text-zinc-400">Destination location</span>
-                              <input
-                                type="text"
-                                value={movementForm.destinationLocation}
-                                onChange={(e) =>
-                                  setMovementForms((prev) => ({
-                                    ...prev,
-                                    [lot.id]: {
-                                      ...movementForm,
-                                      destinationLocation: e.target.value,
-                                    },
-                                  }))
-                                }
-                                placeholder="Optional city, booth, clinic, etc."
-                                className="w-full rounded-xl border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-900 px-3 py-2"
-                              />
-                            </label>
-
-                            <label className="space-y-1 text-sm block">
-                              <span className="text-zinc-600 dark:text-zinc-400">Reason</span>
-                              <input
-                                type="text"
-                                value={movementForm.reason}
-                                onChange={(e) =>
-                                  setMovementForms((prev) => ({
-                                    ...prev,
-                                    [lot.id]: {
-                                      ...movementForm,
-                                      reason: e.target.value,
-                                    },
-                                  }))
-                                }
-                                placeholder="Optional reason"
-                                className="w-full rounded-xl border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-900 px-3 py-2"
-                              />
-                            </label>
-
-                            <label className="space-y-1 text-sm block">
-                              <span className="text-zinc-600 dark:text-zinc-400">Note</span>
-                              <input
-                                type="text"
-                                value={movementForm.note}
-                                onChange={(e) =>
-                                  setMovementForms((prev) => ({
-                                    ...prev,
-                                    [lot.id]: {
-                                      ...movementForm,
-                                      note: e.target.value,
-                                    },
-                                  }))
-                                }
-                                placeholder="Optional note"
-                                className="w-full rounded-xl border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-900 px-3 py-2"
-                              />
-                            </label>
-                          </div>
-
-                          <div className="grid grid-cols-2 xl:grid-cols-5 gap-3 text-sm">
-                            <DetailStat label="Sold" value={String(outboundSummary?.sold || 0)} />
-                            <DetailStat
-                              label="Donated"
-                              value={String(outboundSummary?.donated || 0)}
-                            />
-                            <DetailStat
-                              label="Sampled"
-                              value={String(outboundSummary?.sampled || 0)}
-                            />
-                            <DetailStat
-                              label="Wasted"
-                              value={String(outboundSummary?.wasted || 0)}
-                            />
-                            <DetailStat
-                              label="Adjusted"
-                              value={`+${Number(outboundSummary?.adjustedIn || 0)} / -${Number(
-                                outboundSummary?.adjustedOut || 0
-                              )}`}
-                            />
-                          </div>
-
-                          <button
-                            onClick={() => handleFinishedMovement(lot)}
-                            disabled={movementBusyId === lot.id}
-                            className="btn btn-accent disabled:opacity-60 text-sm"
-                          >
-                            {movementBusyId === lot.id
-                              ? "Recording..."
-                              : "Record Outbound Movement"}
-                          </button>
-                        </div>
+            return (
+              <div
+                className="fixed inset-0 z-[100] p-3 sm:p-6 overflow-y-auto backdrop-blur-sm"
+                role="presentation"
+                style={{ backgroundColor: "rgba(0, 0, 0, 0.82)" }}
+                onMouseDown={() => setSelectedFinishedLotId("")}
+              >
+                <div
+                  role="dialog"
+                  aria-modal="true"
+                  aria-labelledby="finished-inventory-detail-title"
+                  className="mx-auto max-w-6xl rounded-2xl border shadow-2xl dark"
+                  style={{
+                    borderColor: "rgba(var(--accent-rgb), 0.45)",
+                    backgroundColor: "rgba(8, 10, 18, 0.97)",
+                    color: "#f4f4f5",
+                    boxShadow: "0 24px 80px rgba(0,0,0,0.65), 0 0 0 1px rgba(var(--accent-rgb),0.18)",
+                  }}
+                  onMouseDown={(event) => event.stopPropagation()}
+                >
+                  <div
+                    className="sticky top-0 z-10 flex flex-wrap items-start justify-between gap-3 border-b backdrop-blur px-4 py-4 sm:px-5"
+                    style={{
+                      borderColor: "rgba(var(--accent-rgb), 0.35)",
+                      background: "linear-gradient(135deg, rgba(var(--accent-rgb), 0.26), rgba(8, 10, 18, 0.98))",
+                    }}
+                  >
+                    <div>
+                      <div
+                        id="finished-inventory-detail-title"
+                        className="text-xl font-semibold"
+                        style={{ color: "var(--accent-200)" }}
+                      >
+                        {lot?.name || `${meta.label} Lot`}
+                      </div>
+                      <div className="mt-1 text-sm text-zinc-600 dark:text-zinc-400">
+                        {meta.pluralLabel} · {lot?.variant || lot?.strain || "No variant"}
                       </div>
                     </div>
+                    <button
+                      type="button"
+                      onClick={() => setSelectedFinishedLotId("")}
+                      className="btn text-sm"
+                    >
+                      <X className="h-4 w-4" />
+                      Close
+                    </button>
+                  </div>
+
+                  <div className="p-4 sm:p-5 space-y-5">
+                    <div className="grid grid-cols-2 xl:grid-cols-6 gap-3 text-sm">
+                      <DetailStat
+                        label="Initial qty"
+                        value={`${Number(lot?.initialQuantity) || 0} ${getPackageUnitName(lot, meta)}`}
+                      />
+                      <DetailStat
+                        label="Available"
+                        value={`${Number(getLotAvailableQuantity(lot)) || 0} ${getPackageUnitName(lot, meta)}`}
+                      />
+                      <DetailStat label="Package size" value={getPackageSizeLabel(lot)} />
+                      <DetailStat label="Lot code" value={lot?.lotCode || lot?.batchLot || "—"} />
+                      <DetailStat label="Status" value={getLotStatus(lot)} />
+                      <DetailStat
+                        label="Source batch"
+                        value={lot?.batchName || lot?.sourceBatchId || "—"}
+                      />
+                    </div>
+
+                    <div className="grid grid-cols-2 xl:grid-cols-4 gap-3 text-sm">
+                      <DetailStat label="Potency" value={getLotPotencySummary(lot)} />
+                      <DetailStat label="QC" value={getLotQcSummary(lot).status} />
+                      <DetailStat label="Best by" value={getShelfLifeSummary(lot).bestBy || "—"} />
+                      <DetailStat label="Package date" value={lot?.package?.packagedDate || lot?.labelMetadata?.packDate || lot?.packDate || "Not packaged"} />
+                    </div>
+
+                    <LotInventoryControls
+                      lot={lot}
+                      today={today}
+                      reservationForm={reservationForms[lot.id] || normalizeReservationForm(today)}
+                      onReservationChange={(nextForm) =>
+                        setReservationForms((prev) => ({ ...prev, [lot.id]: nextForm }))
+                      }
+                      onSaveReservation={() => handleSaveReservation(lot)}
+                      onRemoveReservation={(reservationId) => handleRemoveReservation(lot, reservationId)}
+                      thresholdValue={thresholdForms[lot.id]}
+                      onThresholdChange={(value) =>
+                        setThresholdForms((prev) => ({ ...prev, [lot.id]: value }))
+                      }
+                      onSaveThreshold={() => handleSaveThreshold(lot)}
+                      reservationBusyId={reservationBusyId}
+                      thresholdBusyId={thresholdBusyId}
+                    />
+
+                    {(lot?.productType === "tincture" ||
+                      lot?.finishedGoodType === "tincture" ||
+                      lot?.lotType === "tinctures") ? (
+                      <div className="grid grid-cols-2 gap-3 text-sm">
+                        <DetailStat
+                          label="Bottle size"
+                          value={
+                            lot?.bottleSize
+                              ? `${lot.bottleSize} ${lot?.bottleSizeUnit || "mL"}`
+                              : "—"
+                          }
+                        />
+                        <DetailStat
+                          label="mg per bottle"
+                          value={Number(lot?.mgPerUnit) > 0 ? `${lot.mgPerUnit} mg` : "—"}
+                        />
+                      </div>
+                    ) : null}
+
+                    <CostRollupPanel record={lot} title="Stage cost rollup" />
+                    <RecipeSnapshotPanel record={lot} />
+                    <LotQualityPanel
+                      lot={lot}
+                      form={qualityForms[lot.id] || normalizeQualityForm(lot, today)}
+                      onChange={(nextForm) =>
+                        setQualityForms((prev) => ({ ...prev, [lot.id]: nextForm }))
+                      }
+                      onSave={() => handleSaveQuality(lot)}
+                      busy={qualityBusyId === lot.id}
+                    />
+
+                    {renderPackageRunCreator(lot, meta)}
+                  </div>
+                </div>
+              </div>
+            );
+          })() : null}
+        </div>
+      )}
+
+      {activeTab === "sales" && (
+        <div className="space-y-6">
+          <SectionCard
+            title="Sales and outbound tracking"
+            defaultOpen={true}
+            subtitle="Product-first sales view. Retail, sample, promo, and internal SKUs are grouped under the batch/product they came from so you are not sorting through one giant lot list."
+          >
+            <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
+              <SummaryCard label="Products" value={String(salesProductGroups.length)} hint="Grouped product/batch cards" icon={Archive} />
+              <SummaryCard label="Available packages" value={String(totalSaleReadyUnits)} hint="Current packaged inventory" icon={Tags} />
+              <SummaryCard label="Units sold" value={String(totalSoldUnits)} hint="Completed sale quantity" icon={DollarSign} />
+              <SummaryCard label="Units sampled" value={String(totalSampledUnits)} hint="Samples moved outbound" icon={Sparkles} />
+              <SummaryCard label="Units destroyed" value={String(totalDestroyedUnits)} hint="Destroyed package quantity" icon={AlertTriangle} />
+              <SummaryCard label="Realized revenue" value={money(totalRealizedRevenue)} hint="Revenue already recorded" icon={DollarSign} />
+              <SummaryCard label="Remaining projected revenue" value={money(totalProjectedRevenue)} hint="Available packages × locked price" icon={BadgeDollarSign} />
+            </div>
+
+            {salesProductGroups.length === 0 ? (
+              <EmptyState
+                title="No packaged SKUs available for sales"
+                body="Create package runs from Finished Inventory first. Retail and sample SKUs will appear here grouped by product and package size."
+              />
+            ) : (
+              <div className="space-y-5">
+                {salesProductGroups.map((product) => {
+                  const productAvailable = product.lots.reduce((sum, lot) => sum + getLotAvailableQuantity(lot), 0);
+                  const productSold = product.lots.reduce((sum, lot) => sum + getOutboundQuantity(lot, "sold"), 0);
+                  const productDestroyed = product.lots.reduce((sum, lot) => sum + getOutboundQuantity(lot, "destroyed"), 0);
+                  const productRevenue = product.lots.reduce((sum, lot) => sum + (Number(lot?.outboundSummary?.revenue || 0) || 0), 0);
+                  const productProjectedRevenue = product.lots.reduce((sum, lot) => sum + getRemainingProjectedRevenue(lot), 0);
+                  return (
+                    <button
+                      key={`sales-product-${product.key}`}
+                      type="button"
+                      onClick={() => setSelectedSalesProductKey(product.key)}
+                      className="w-full rounded-2xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 p-4 text-left transition hover:border-purple-400 hover:bg-purple-50/40 dark:hover:border-purple-800 dark:hover:bg-purple-950/20"
+                    >
+                      <div className="flex flex-wrap items-start justify-between gap-3">
+                        <div>
+                          <div className="text-lg font-semibold text-purple-700 dark:text-purple-300">{product.label}</div>
+                          <div className="text-sm text-zinc-600 dark:text-zinc-400">
+                            {product.variant || "No variant"} · {product.activeSkus.length} active SKU group{product.activeSkus.length === 1 ? "" : "s"}
+                          </div>
+                        </div>
+                        <div className="text-right text-sm">
+                          <div className="font-semibold">{productAvailable} packages available</div>
+                          <div className="text-zinc-500 dark:text-zinc-400">
+                            {productSold} sold · {productDestroyed} destroyed
+                          </div>
+                        </div>
+                      </div>
+                      <div className="mt-4 grid grid-cols-2 xl:grid-cols-5 gap-3 text-sm">
+                        <DetailStat label="Active SKU groups" value={String(product.activeSkus.length)} />
+                        <DetailStat label="Available packages" value={String(productAvailable)} />
+                        <DetailStat label="Sold" value={String(productSold)} />
+                        <DetailStat label="Realized revenue" value={money(productRevenue)} />
+                        <DetailStat label="Remaining projection" value={money(productProjectedRevenue)} />
+                      </div>
+                      <div className="mt-3 text-xs text-zinc-500 dark:text-zinc-400">
+                        Open full detail for SKU rows, FEFO package rotation, pricing, sales, samples, destroy, and adjustments.
+                      </div>
+                    </button>
                   );
                 })}
               </div>
@@ -4079,6 +6861,7 @@ export default function PostProcessManager({ grows = [] }) {
       {activeTab === "finished" && (
         <SectionCard
           title="Rework and repurpose"
+          defaultOpen={false}
           subtitle="Use finished lots to create rework batches for relabeling, repackaging, salvage, or reformulation."
         >
           {activeFinishedGoodsLots.length === 0 ? (
@@ -4143,7 +6926,7 @@ export default function PostProcessManager({ grows = [] }) {
                           <div className="mt-3 grid grid-cols-1 md:grid-cols-3 gap-3 items-end">
                             <label className="space-y-1 text-sm md:col-span-2">
                               <span className="text-zinc-600 dark:text-zinc-400">Units to consume</span>
-                              <input type="number" inputMode="numeric" min="0" step="1" max={available || undefined} value={value} onChange={(e) => setReworkForm((prev) => ({ ...prev, lotQuantities: { ...prev.lotQuantities, [lot.id]: e.target.value } }))} className="w-full rounded-xl border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-900 px-3 py-2" placeholder={`0 to ${available}`} />
+                              <input type="number" inputMode="numeric" min="0" step="1" max={available || undefined} value={value} onChange={(e) => handleReworkLotQuantityChange(lot, e.target.value)} className={`w-full rounded-xl border bg-white dark:bg-zinc-900 px-3 py-2 ${consumptionWarnings[`rework:${lot.id}`] ? "border-rose-400 text-rose-900 dark:text-rose-100" : "border-zinc-300 dark:border-zinc-700"}`} placeholder={`0 to ${available}`} />{consumptionWarnings[`rework:${lot.id}`] ? (<div className="rounded-lg border border-rose-400/70 bg-rose-950/25 px-3 py-2 text-xs text-rose-200">{consumptionWarnings[`rework:${lot.id}`]}</div>) : null}
                             </label>
                             <div className="text-xs text-zinc-500 dark:text-zinc-400">Unit cost {money(getLotUnitCost(lot))}</div>
                           </div>
@@ -4185,79 +6968,236 @@ export default function PostProcessManager({ grows = [] }) {
       )}
 
       {activeTab === "history" && (
-        <SectionCard
-          title="Inventory history"
-          subtitle="Every intake, consumption, output creation, and finished-goods movement lands in one auditable ledger."
-        >
-          {movements.length === 0 ? (
-            <EmptyState
-              title="No movement history yet"
-              body="As you intake dry material, run extractions, create production batches, and move finished goods outbound, the ledger will build here."
-            />
-          ) : (
-            <div className="space-y-3">
-              {movements.map((movement) => (
-                <div
-                  key={movement.id}
-                  className="rounded-2xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 p-4"
-                >
-                  <div className="flex flex-wrap items-start justify-between gap-3">
-                    <div>
-                      <div className="font-semibold capitalize">
-                        {formatMovementType(movement?.movementType || "movement")}
-                      </div>
-                      <div className="text-sm text-zinc-600 dark:text-zinc-400">
-                        {movement?.processCategory || movement?.processType || "inventory"} ·{" "}
-                        {movement?.date || "—"}
-                      </div>
-                    </div>
-                    <div className="text-right text-sm">
-                      <div className="font-semibold">
-                        {movement?.quantity != null
-                          ? `${movement.quantity} ${movement?.unit || "units"}`
-                          : "—"}
-                      </div>
-                      <div className="text-zinc-500 dark:text-zinc-400 capitalize">
-                        {movement?.direction || "—"}
-                      </div>
-                    </div>
-                  </div>
-
-                  <div className="mt-3 grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-3 text-sm">
-                    <DetailStat label="Lot ID" value={movement?.lotId || "—"} />
-                    <DetailStat label="Batch ID" value={movement?.batchId || "—"} />
-                    <DetailStat
-                      label="Source type"
-                      value={movement?.sourceType || movement?.referenceType || "—"}
-                    />
-                    <DetailStat
-                      label="Destination"
-                      value={movement?.destinationName || movement?.counterparty || "—"}
-                    />
-                    <DetailStat
-                      label="Value"
-                      value={movement?.totalValue ? money(movement.totalValue) : "—"}
-                    />
-                  </div>
-
-                  {movement?.note || movement?.reason || movement?.destinationName || movement?.counterparty || movement?.destinationLocation ? (
-                    <div className="mt-3 text-sm text-zinc-600 dark:text-zinc-400 whitespace-pre-wrap">
-                      [
-                        movement?.destinationType ? `${formatDestinationType(movement.destinationType)}: ${movement?.destinationName || movement?.counterparty || "—"}` : movement?.destinationName || movement?.counterparty,
-                        movement?.destinationLocation,
-                        movement?.reason,
-                        movement?.note,
-                      ]
-                        .filter(Boolean)
-                        .join(" · ")
-                    </div>
-                  ) : null}
+        <>
+          <SectionCard
+            title="Depleted / archived lots"
+            defaultOpen={false}
+            subtitle="Fully consumed source lots and depleted finished goods are removed from active inventory and listed here for traceability."
+          >
+            {depletedOrArchivedMaterialLots.length === 0 ? (
+              <EmptyState
+                title="No depleted lots yet"
+                body="Fully consumed dry lots, extract lots, and finished goods will appear here once their available quantity reaches zero or they are archived."
+              />
+            ) : (
+              <div className="space-y-4">
+                <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-sm">
+                  <DetailStat label="Dry lots" value={String(depletedDryLots.length)} />
+                  <DetailStat label="Extract lots" value={String(depletedExtractLots.length)} />
+                  <DetailStat label="Finished lots" value={String(depletedFinishedGoodsLots.length)} />
+                  <DetailStat label="Total history lots" value={String(depletedOrArchivedMaterialLots.length)} />
                 </div>
-              ))}
-            </div>
-          )}
-        </SectionCard>
+                <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
+                  {sortByNewest(depletedOrArchivedMaterialLots).map((lot) => (
+                    <div
+                      key={lot.id}
+                      className="rounded-2xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 p-4"
+                    >
+                      <div className="flex flex-wrap items-start justify-between gap-3">
+                        <div>
+                          <div className="font-semibold">{lot?.name || lot.id}</div>
+                          <div className="text-sm text-zinc-600 dark:text-zinc-400">
+                            {lot?.lotType || lot?.inventoryCategory || "lot"} · {lot?.strain || lot?.variant || lot?.sourceGrowId || "No source label"}
+                          </div>
+                        </div>
+                        <div className="text-right text-sm">
+                          <div className="font-semibold">
+                            {formatQty(getLotAvailableQuantity(lot), lot?.unit || "units", getQtyDigits(lot?.unit || "units"))}
+                          </div>
+                          <div className="text-zinc-500 dark:text-zinc-400 capitalize">
+                            {getLotStatus(lot)}
+                          </div>
+                        </div>
+                      </div>
+                      <div className="mt-3 grid grid-cols-2 xl:grid-cols-4 gap-3 text-sm">
+                        <DetailStat label="Initial" value={formatQty(lot?.initialQuantity, lot?.unit || "units", getQtyDigits(lot?.unit || "units"))} />
+                        <DetailStat label="Allocated" value={formatQty(lot?.allocatedQuantity, lot?.unit || "units", getQtyDigits(lot?.unit || "units"))} />
+                        <DetailStat label="Unit cost" value={money(getLotUnitCost(lot))} />
+                        <DetailStat label="Updated" value={lot?.updatedDate || lot?.createdDate || "—"} />
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </SectionCard>
+
+          <SectionCard
+            title="Inventory movement ledger"
+            defaultOpen={true}
+            subtitle="Every intake, consumption, output creation, and finished-goods movement lands in one auditable ledger."
+          >
+            {movements.length === 0 ? (
+              <EmptyState
+                title="No movement history yet"
+                body="As you intake dry material, run extractions, create production batches, and move finished goods outbound, the ledger will build here."
+              />
+            ) : (
+              <div className="space-y-3">
+                {movements.map((movement) => {
+                  const movementLot = materialLotById.get(movement?.lotId) || null;
+                  const movementLotLabel =
+                    movementLot?.lotCode ||
+                    movementLot?.batchLot ||
+                    movementLot?.name ||
+                    movement?.lotId ||
+                    "—";
+                  const movementBatchLabel =
+                    movementLot?.batchName ||
+                    movementLot?.sourceBatchId ||
+                    movement?.batchId ||
+                    "—";
+                  const movementRevenue = Number(
+                    movement?.revenue ?? movement?.totalValue ?? 0
+                  ) || 0;
+                  const movementUnitPrice = Number(movement?.pricePerUnit || 0) || 0;
+
+                  return (
+                  <div
+                    key={movement.id}
+                    className="rounded-2xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 p-4"
+                  >
+                    <div className="flex flex-wrap items-start justify-between gap-3">
+                      <div>
+                        <div className="font-semibold capitalize">
+                          {formatMovementType(movement?.movementType || "movement")}
+                        </div>
+                        <div className="text-sm text-zinc-600 dark:text-zinc-400">
+                          {movement?.processCategory || movement?.processType || "inventory"} ·{" "}
+                          {movement?.date || "—"}
+                        </div>
+                      </div>
+                      <div className="text-right text-sm">
+                        <div className="font-semibold">
+                          {movement?.quantity != null
+                            ? `${movement.quantity} ${movement?.unit || "units"}`
+                            : "—"}
+                        </div>
+                        <div className="text-zinc-500 dark:text-zinc-400 capitalize">
+                          {movement?.direction || "—"}
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="mt-3 grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-3 text-sm">
+                      <DetailStat label="Lot / package" value={movementLotLabel} />
+                      <DetailStat label="Source batch" value={movementBatchLabel} />
+                      <DetailStat
+                        label="Source type"
+                        value={movement?.sourceType || movement?.referenceType || "—"}
+                      />
+                      <DetailStat
+                        label="Destination"
+                        value={movement?.destinationName || movement?.counterparty || "—"}
+                      />
+                      <DetailStat
+                        label="Price / package"
+                        value={movementUnitPrice > 0 ? money(movementUnitPrice) : "—"}
+                      />
+                      <DetailStat
+                        label="Revenue / value"
+                        value={movementRevenue > 0 ? money(movementRevenue) : "—"}
+                      />
+                      <DetailStat
+                        label="Default price"
+                        value={Number(movement?.defaultPricePerUnit || 0) > 0 ? money(movement.defaultPricePerUnit) : "—"}
+                      />
+                      <DetailStat
+                        label="Price override memo"
+                        value={movement?.priceOverride?.reason || movement?.priceOverrideReason || "—"}
+                      />
+                      {movement?.fefoOverride?.applied || movement?.inventoryRotation?.overrideApplied ? (
+                        <>
+                          <DetailStat
+                            label="FEFO override reason"
+                            value={movement?.fefoOverride?.reason || movement?.inventoryRotation?.overrideReason || "—"}
+                          />
+                          <DetailStat
+                            label="Skipped package"
+                            value={`${movement?.fefoOverride?.skippedLotCode || movement?.inventoryRotation?.skippedLotCode || movement?.fefoOverride?.skippedLotId || movement?.inventoryRotation?.skippedLotId || "—"} · Best by ${movement?.fefoOverride?.skippedBestBy || movement?.inventoryRotation?.skippedBestBy || "—"}`}
+                          />
+                          <DetailStat
+                            label="Selected package best by"
+                            value={movement?.fefoOverride?.selectedBestBy || movement?.inventoryRotation?.selectedBestBy || "—"}
+                          />
+                        </>
+                      ) : null}
+                    </div>
+
+                    {movement?.note || movement?.reason || movement?.destinationName || movement?.counterparty || movement?.destinationLocation || movement?.fefoOverride?.reason || movement?.inventoryRotation?.overrideReason ? (
+                      <div className="mt-3 text-sm text-zinc-600 dark:text-zinc-400 whitespace-pre-wrap">
+                        {[
+                          movement?.destinationType ? `${formatDestinationType(movement.destinationType)}: ${movement?.destinationName || movement?.counterparty || "—"}` : movement?.destinationName || movement?.counterparty,
+                          movement?.destinationLocation,
+                          movement?.reason,
+                          movement?.fefoOverride?.reason || movement?.inventoryRotation?.overrideReason
+                            ? `FEFO override: ${movement?.fefoOverride?.reason || movement?.inventoryRotation?.overrideReason}`
+                            : "",
+                          movement?.note,
+                        ]
+                          .filter(Boolean)
+                          .join(" · ")}
+                      </div>
+                    ) : null}
+                  </div>
+                  );
+                })}
+              </div>
+            )}
+          </SectionCard>
+        </>
       )}
+
+      {selectedDryLot ? (
+        <PostProcessDetailModal
+          title={selectedDryLot?.name || selectedDryLot.id}
+          subtitle={`${selectedDryLot?.strain || "Unknown strain"} · ${selectedDryLot?.growLabel || selectedDryLot?.sourceGrowId || "Unknown source"}`}
+          onClose={() => setSelectedDryLotId("")}
+        >
+          {renderLotDetailPanel(selectedDryLot, { unitFallback: "g" })}
+        </PostProcessDetailModal>
+      ) : null}
+
+      {selectedExtractLot ? (
+        <PostProcessDetailModal
+          title={selectedExtractLot?.name || selectedExtractLot.id}
+          subtitle={`${selectedExtractLot?.extractionType || "extract"} · ${selectedExtractLot?.strain || "Unknown strain"}`}
+          onClose={() => setSelectedExtractLotId("")}
+        >
+          {renderLotDetailPanel(selectedExtractLot, { unitFallback: "mL" })}
+        </PostProcessDetailModal>
+      ) : null}
+
+      {selectedExtractionBatch ? (
+        <PostProcessDetailModal
+          title={selectedExtractionBatch?.name || selectedExtractionBatch.id}
+          subtitle={`Extraction batch · ${selectedExtractionBatch?.date || "No date"}`}
+          onClose={() => setSelectedExtractionBatchId("")}
+        >
+          {renderExtractionBatchDetail(selectedExtractionBatch)}
+        </PostProcessDetailModal>
+      ) : null}
+
+      {selectedProductionBatch ? (
+        <PostProcessDetailModal
+          title={selectedProductionBatch?.name || "Production batch"}
+          subtitle={`${getProductTypeMeta(selectedProductionBatch?.productType).pluralLabel} · ${selectedProductionBatch?.date || "No date"}`}
+          onClose={() => setSelectedProductionBatchId("")}
+        >
+          {renderProductionBatchDetail(selectedProductionBatch)}
+        </PostProcessDetailModal>
+      ) : null}
+
+      {selectedSalesProductGroup ? (
+        <PostProcessDetailModal
+          title={selectedSalesProductGroup.label}
+          subtitle={`${selectedSalesProductGroup.variant || "No variant"} · ${selectedSalesProductGroup.skus.length} SKU group${selectedSalesProductGroup.skus.length === 1 ? "" : "s"}`}
+          onClose={() => setSelectedSalesProductKey("")}
+        >
+          {renderSalesProductDetail(selectedSalesProductGroup)}
+        </PostProcessDetailModal>
+      ) : null}
+
     </div>
   );
 }

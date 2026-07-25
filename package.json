@@ -10,6 +10,7 @@
     "preview": "vite preview --host 127.0.0.1 --port 4173",
     "preview:ci": "npm run build && vite preview --host 127.0.0.1 --port 5173 --strictPort",
     "preflight": "npm run check && npm run test:e2e:list",
+    "release:check": "npm run build && npm run test:e2e:list && npm run test:subscription",
     "tauri": "tauri",
     "tauri:dev": "tauri dev",
     "tauri:build": "tauri build",

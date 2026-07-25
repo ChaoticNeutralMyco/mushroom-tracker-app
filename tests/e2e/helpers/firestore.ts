@@ -204,25 +204,58 @@ export async function setFirestoreDocument(
 }
 
 export const E2E_USER_COLLECTIONS = [
+  // core app collections
   "grows",
   "tasks",
   "supplies",
   "recipes",
+  "labels",
   "strains",
   "library",
   "settings",
+  "preferences",
+  "prefs",
   "notes",
+  "timeline",
+  "analytics",
+  "events",
+  "audit",
+  "logs",
+
+  // post-processing current collections
   "materialLots",
+  "processBatches",
+  "inventoryMovements",
+  "supply_audits",
+  "storageLocations",
+  "storage_locations",
+
+  // legacy/experimental post-processing and sales aliases
   "extractionBatches",
   "extractLots",
   "productionBatches",
+  "productBatches",
+  "finishedInventory",
   "finishedProducts",
+  "packageRuns",
+  "packagedLots",
+  "products",
+  "sales",
+  "salesOrders",
+  "salesRecords",
   "outboundLogs",
+  "outboundMovements",
+  "ledger",
+  "inventoryLedger",
   "activityLog",
+
+  // media/cache collections
   "calendarEvents",
   "environmentLogs",
   "photos",
+  "images",
   "trash",
+  "clean_queue",
 ];
 
 export async function deleteFirestoreDocument(
@@ -258,12 +291,21 @@ async function deleteKnownCollection(session: NodeAuthSession, collectionPath: s
   for (const doc of docs) {
     await deleteFirestoreDocument(session, `${collectionPath}/${doc.id}`);
   }
+
+  return docs.length;
 }
 
 export async function deleteE2eUserData(session: NodeAuthSession) {
+  const deletedByCollection: Record<string, number> = {};
+  let deleted = 0;
+
   for (const collectionId of E2E_USER_COLLECTIONS) {
-    await deleteKnownCollection(session, `users/${session.userId}/${collectionId}`);
+    const count = await deleteKnownCollection(session, `users/${session.userId}/${collectionId}`);
+    deletedByCollection[collectionId] = count;
+    deleted += count;
   }
 
   await deleteFirestoreDocument(session, `users/${session.userId}`);
+
+  return { deleted, deletedByCollection };
 }
