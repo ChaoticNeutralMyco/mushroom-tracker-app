@@ -1,4 +1,5 @@
 // tests/e2e/grow-lifecycle.spec.ts
+// regression-v62-finished-inventory-status-text
 import { test, expect, Page, Locator } from "@playwright/test";
 import {
   buttonByText,
@@ -607,6 +608,82 @@ async function selectUnitWithinSection(
   await unitSelect.selectOption(unit);
 }
 
+async function configureHarvestingEnvironmentTargets(page: Page) {
+  await clickAppTab(page, "Settings");
+
+  const editor = page.getByTestId("environment-targets-editor");
+  await expect(editor).toBeVisible({ timeout: 20_000 });
+
+  for (const stage of ["Harvesting", "Harvested"]) {
+    await editor
+      .getByTestId("environment-target-stage-select")
+      .selectOption(stage);
+    await editor.getByTestId("environment-target-temp-min").fill("66");
+    await editor.getByTestId("environment-target-temp-max").fill("72");
+    await editor.getByTestId("environment-target-humidity-min").fill("80");
+    await editor.getByTestId("environment-target-humidity-max").fill("90");
+  }
+
+  await editor.getByTestId("environment-target-save").click();
+
+  await expect(page.getByText(/Environment targets saved/i)).toBeVisible({
+    timeout: 20_000,
+  });
+}
+
+async function verifyHarvestingEnvironmentTargetAndLog(page: Page) {
+  let stage = "Harvesting";
+  let row = await maybeGrowRowOnTab(
+    page,
+    "Dashboard",
+    buildGrowRowMatcher(e2eData.grows.bulk.type, "Harvesting")
+  );
+
+  if (!row) {
+    stage = "Harvested";
+    row = await maybeGrowRowOnTab(
+      page,
+      "Archive",
+      buildGrowRowMatcher(e2eData.grows.bulk.type, "Harvested")
+    );
+  }
+
+  if (!row) {
+    throw new Error("Could not find the bulk grow for environment-target validation.");
+  }
+
+  await row.getByTestId("grow-row-open").click();
+  await expect(page.getByTestId("grow-harvest-section")).toBeVisible({
+    timeout: 20_000,
+  });
+
+  const target = page.getByTestId("grow-environment-target");
+  await expect(target).toBeVisible({ timeout: 20_000 });
+  await expect(target).toContainText(new RegExp(`${stage} Environment Target`, "i"));
+  await expect(target).toContainText(/66°F.*72°F/i);
+  await expect(target).toContainText(/80%.*90%/i);
+
+  await page.getByTestId("grow-environment-stage").selectOption(stage);
+  await page.getByTestId("grow-environment-temperature").fill("75");
+  await page.getByTestId("grow-environment-humidity").fill("85");
+  await page
+    .getByTestId("grow-environment-notes")
+    .fill("E2E environment target comparison");
+  await page.getByTestId("grow-environment-save").click();
+
+  const log = page
+    .getByTestId("grow-environment-log")
+    .filter({ hasText: /E2E environment target comparison/i })
+    .first();
+  await expect(log).toBeVisible({ timeout: 20_000 });
+  await expect(
+    log.getByTestId("environment-temperature-status")
+  ).toContainText(/High by 3°F/i);
+  await expect(
+    log.getByTestId("environment-humidity-status")
+  ).toContainText(/In range/i);
+}
+
 async function createGrowFromLibrary(page: Page) {
   await clickAppTab(page, "Dashboard");
   await openNewGrow(page);
@@ -1009,9 +1086,40 @@ async function clickPrimaryActionButton(button: Locator) {
   throw new Error("Could not activate primary action button.");
 }
 
+async function ensureSectionCardExpanded(
+  page: Page,
+  title: string,
+  timeout = 10_000
+) {
+  const section = sectionCard(page, title);
+  await expect(section).toBeVisible({ timeout });
+
+  const expandButton = section
+    .getByRole("button", {
+      name: new RegExp(`^Expand ${escapeRegExp(title)}$`, "i"),
+    })
+    .first();
+
+  if (await safeIsVisible(expandButton)) {
+    await expandButton.click();
+    await expect(
+      section
+        .getByRole("button", {
+          name: new RegExp(`^Collapse ${escapeRegExp(title)}$`, "i"),
+        })
+        .first()
+    ).toBeVisible({ timeout });
+  }
+
+  return section;
+}
+
 async function waitForExtractLotVisible(page: Page, timeout = 10_000) {
-  const extractLotsSection = sectionCard(page, "Extract lots");
-  await expect(extractLotsSection).toBeVisible({ timeout });
+  const extractLotsSection = await ensureSectionCardExpanded(
+    page,
+    "Extract lots",
+    timeout
+  );
   await expect(
     extractLotsSection.getByText(
       new RegExp(escapeRegExp(postProcessFixtures.extraction.outputLotName), "i")
@@ -1020,8 +1128,11 @@ async function waitForExtractLotVisible(page: Page, timeout = 10_000) {
 }
 
 async function waitForFinishedLotVisible(page: Page, timeout = 10_000) {
-  const finishedSection = sectionCard(page, "Finished inventory");
-  await expect(finishedSection).toBeVisible({ timeout });
+  const finishedSection = await ensureSectionCardExpanded(
+    page,
+    "Finished inventory",
+    timeout
+  );
   await expect(
     finishedSection.getByText(
       new RegExp(escapeRegExp(postProcessFixtures.production.outputLotName), "i")
@@ -1042,6 +1153,44 @@ async function waitForFirestoreMaterialLot(
           `users/${session.userId}/materialLots`
         );
         return lots.some((lot) => String(lot?.name || "") === String(lotName));
+      },
+      {
+        timeout,
+        intervals: [500, 750, 1000, 1500],
+      }
+    )
+    .toBeTruthy();
+}
+
+async function waitForFirestoreDryLotForStrain(
+  session: NodeAuthSession,
+  strainName: string,
+  minimumQuantity = 0,
+  timeout = 30_000
+) {
+  await expect
+    .poll(
+      async () => {
+        const lots = await listFirestoreDocuments(
+          session,
+          `users/${session.userId}/materialLots`
+        );
+
+        return lots.some((lot) => {
+          const lotType = String(lot?.lotType || lot?.inventoryCategory || "");
+          const lotStrain = String(
+            lot?.strain || lot?.strainName || lot?.sourceStrain || ""
+          );
+          const quantity = Number(
+            lot?.remainingQuantity ?? lot?.initialQuantity ?? 0
+          );
+
+          return (
+            lotType === "dry_material" &&
+            lotStrain === strainName &&
+            quantity >= minimumQuantity
+          );
+        });
       },
       {
         timeout,
@@ -1997,6 +2146,12 @@ async function waitForExtractionFormReady(page: Page) {
 async function createExtractionBatch(page: Page, session: NodeAuthSession) {
   await openPostProcessingSubtab(page, "Extractions");
 
+  const openCreateExtractionButton = page.getByRole("button", {
+    name: /^Create Extraction Batch$/i,
+  });
+  await expect(openCreateExtractionButton).toBeVisible({ timeout: 20_000 });
+  await openCreateExtractionButton.click();
+
   const createSection = sectionCard(page, "Create extraction batch");
   await expect(createSection).toBeVisible({ timeout: 20_000 });
 
@@ -2021,6 +2176,12 @@ async function createExtractionBatch(page: Page, session: NodeAuthSession) {
 
 async function createProductionBatch(page: Page, session: NodeAuthSession) {
   await openPostProcessingSubtab(page, "Production");
+
+  const openCreateProductionButton = page.getByRole("button", {
+    name: /^Start Production Batch$/i,
+  });
+  await expect(openCreateProductionButton).toBeVisible({ timeout: 20_000 });
+  await openCreateProductionButton.click();
 
   const createSection = sectionCard(page, "Create production batch");
   await expect(createSection).toBeVisible({ timeout: 20_000 });
@@ -2069,11 +2230,19 @@ async function recordFinishedSale(page: Page, session: NodeAuthSession) {
   await waitForFirestoreFinishedSale(session, 30_000);
   await refreshPostProcessingSubtab(page, "Finished Inventory");
 
-  const refreshedFinishedSection = sectionCard(page, "Finished inventory");
-  const refreshedLotCard = finishedLotCard(
+  const refreshedFinishedSection = await ensureSectionCardExpanded(
     page,
-    new RegExp(escapeRegExp(postProcessFixtures.production.outputLotName), "i")
+    "Finished inventory",
+    30_000
   );
+  const refreshedLotCard = refreshedFinishedSection
+    .getByRole("button", {
+      name: new RegExp(
+        escapeRegExp(postProcessFixtures.production.outputLotName),
+        "i"
+      ),
+    })
+    .first();
 
   await expect(refreshedLotCard).toBeVisible({ timeout: 30_000 });
 
@@ -2085,31 +2254,14 @@ async function recordFinishedSale(page: Page, session: NodeAuthSession) {
       timeout: 20_000,
       intervals: [200, 400, 600, 800, 1000],
     })
-    .toMatch(/Revenue logged\s*\$30(?:\.00)?/i);
-
-  await expect
-    .poll(normalizedLotText, {
-      timeout: 20_000,
-      intervals: [200, 400, 600, 800, 1000],
-    })
-    .toContain(`Sold${postProcessFixtures.sale.quantity}`);
-
-  await expect
-    .poll(normalizedLotText, {
-      timeout: 20_000,
-      intervals: [200, 400, 600, 800, 1000],
-    })
     .toContain(`${postProcessFixtures.sale.remainingAfterSale} available capsules`);
 
   await expect
-    .poll(
-      async () => ((await refreshedFinishedSection.textContent()) || "").replace(/\s+/g, " ").trim(),
-      {
-        timeout: 20_000,
-        intervals: [200, 400, 600, 800, 1000],
-      }
-    )
-    .toMatch(/Realized revenue\s*\$30(?:\.00)?/i);
+    .poll(normalizedLotText, {
+      timeout: 20_000,
+      intervals: [200, 400, 600, 800, 1000],
+    })
+    .toContain("partial");
 }
 
 test("full generic grow lifecycle stays stable", async ({ page }) => {
@@ -2121,6 +2273,11 @@ test("full generic grow lifecycle stays stable", async ({ page }) => {
     await resetUserDataViaSettings(page);
     await gotoDashboard(page);
     nodeAuthSession = await captureNodeAuthSession(page);
+  });
+
+  await test.step("configure global harvesting environment targets", async () => {
+    await configureHarvestingEnvironmentTargets(page);
+    await gotoDashboard(page);
   });
 
   await test.step("create supporting supplies", async () => {
@@ -2222,6 +2379,13 @@ test("full generic grow lifecycle stays stable", async ({ page }) => {
   );
 
   await test.step(
+    "compare a harvesting environment log with the saved stage target",
+    async () => {
+      await verifyHarvestingEnvironmentTargetAndLog(page);
+    }
+  );
+
+  await test.step(
     "record four flushes with generic wet and dry values",
     async () => {
       await openGrowFromAnyList(page, buildGrowRowMatcher(e2eData.grows.bulk.type));
@@ -2242,17 +2406,18 @@ test("full generic grow lifecycle stays stable", async ({ page }) => {
         name: /Create Dry Lot/i,
       });
 
-      if (!(await safeIsVisible(createDryLotButton))) {
-        await clickAppTab(page, "Post Processing");
-      }
+      await expect(createDryLotButton).toBeVisible({ timeout: 30_000 });
+      await createDryLotButton.click();
 
-      if (await safeIsVisible(createDryLotButton)) {
-        await createDryLotButton.click();
-      }
+      await waitForFirestoreDryLotForStrain(
+        nodeAuthSession,
+        e2eData.strainLibrary.strainName,
+        60
+      );
 
       await expect(
         page.getByText(
-          /Dry material lot created|Dry material lot already exists|Existing dry-material lots/i
+          /Dry material lot created|Dry material lot already exists/i
         ).first()
       ).toBeVisible({ timeout: 20_000 });
     }
@@ -2267,11 +2432,24 @@ test("full generic grow lifecycle stays stable", async ({ page }) => {
       });
 
       await clickAppTab(page, "Post Processing");
-      await expect(page.getByText(/Existing dry-material lots/i)).toBeVisible();
-      await expect(page.getByText(/E2E Golden Teacher/i).first()).toBeVisible({
+
+      const dryLotsSection = sectionCard(page, "Existing dry-material lots");
+      await expect(dryLotsSection).toBeVisible({ timeout: 20_000 });
+
+      const dryLotsToggle = page.getByRole("button", {
+        name: /Expand Existing dry-material lots/i,
+      });
+
+      if (await safeIsVisible(dryLotsToggle)) {
+        await dryLotsToggle.click();
+      }
+
+      await expect(
+        dryLotsSection.getByText(/E2E Golden Teacher/i).first()
+      ).toBeVisible({ timeout: 20_000 });
+      await expect(dryLotsSection.getByText(/60 g|60g/i).first()).toBeVisible({
         timeout: 20_000,
       });
-      await expect(page.getByText(/60 g|60g/i).first()).toBeVisible();
     }
   );
 

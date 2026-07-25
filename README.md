@@ -1,11 +1,11 @@
-﻿<!-- README.md -->
+<!-- README.md -->
 
 # Chaotic Neutral Myco Tracker
 
 **Current version:** v1.1.4  
 **Latest feature milestone:** v1.1.0 SOP Workflow Operations  
-**Latest release maintenance:** v1.1.3 release automation refresh  
-**Status:** Web build, desktop build configuration, Android build configuration, and manual Playwright regression coverage are active.
+**Latest release maintenance:** v1.1.4 Android release workflow hardening<br />
+**Status:** Web, desktop, and Android build configurations are active. Local build, Playwright discovery, and subscription-unit validation are passing.
 
 Chaotic Neutral Myco Tracker is a full-stack cultivation notebook for mushroom growers. It combines **grow tracking, SOP/workflow tools, inventory/COG, strain profiles, tasks, analytics, photos, contamination logging, printable SOPs, and backups** into one app built with React, Firebase, Capacitor Android tooling, and a Tauri Windows client.
 
@@ -19,9 +19,19 @@ This repo powers:
 
 ---
 
+## Current pre-release hardening
+
+The current working tree includes an unreleased hardening pass that reconnects SOP operations, normalizes legacy recipe tags, persists stage environment targets, removes diagnostic-only camera/public routes, strengthens Git/Vercel exclusions, and fixes the Strain Library species-field blur handler. See the **Unreleased** section in `CHANGELOG.md`.
+
 ## What changed in v1.1.x
 
 The v1.1.x line completed the SOP/workflow operations milestone and cleaned up public project metadata and release automation.
+
+### v1.1.4
+
+- Fixed Android release automation so unsigned debug builds still complete when signing secrets are unavailable.
+- Kept signed APK/AAB generation conditional on configured keystore secrets.
+- Preserved the Node 24 and Java 21 workflow baseline.
 
 ### v1.1.3
 
@@ -68,11 +78,11 @@ The v1.1.x line completed the SOP/workflow operations milestone and cleaned up p
 ### Grow Management
 
 - Multi-stage grow tracking:
-  - Agar / LC / Grain: `Inoculated â†’ Colonizing â†’ Colonized`
-  - Bulk: `Inoculated â†’ Colonizing â†’ Colonized â†’ Fruiting â†’ Harvesting â†’ Harvested`
+  - Agar / LC / Grain: `Inoculated → Colonizing → Colonized`
+  - Bulk: `Inoculated → Colonizing → Colonized → Fruiting → Harvesting → Harvested`
 - Per-grow timeline with stage dates and history.
 - Wet and dry yield tracking per flush.
-- Lineage system for agar â†’ LC â†’ grain â†’ bulk workflows.
+- Lineage system for agar → LC → grain → bulk workflows.
 - Parent cost roll-up for true cost from source material to harvest.
 - Per-grow notes, structured lab notes, and exportable logbook context.
 - Photo uploads and grow photo timeline.
@@ -239,15 +249,22 @@ npm run android:sync
 
 ## Current Regression Coverage
 
-The current regression suite includes:
+The current Playwright configuration discovers six tests across setup, smoke, lifecycle, reset, and SOP suites. The main regression suites are:
 
 - `tests/e2e/grow-lifecycle.spec.ts`
 - `tests/e2e/sop-workflow.spec.ts`
 
-The v1.1.x baseline has been verified locally with:
+The subscription feature also has 34 passing unit tests across five files.
+
+The current local release check is:
 
 ```bash
-npm run build
+npm run release:check
+```
+
+The full lifecycle/SOP regression remains:
+
+```bash
 npm run test:e2e:regression
 ```
 

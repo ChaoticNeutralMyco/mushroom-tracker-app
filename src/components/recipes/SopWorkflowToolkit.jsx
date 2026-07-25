@@ -1,4 +1,5 @@
 // src/components/recipes/SopWorkflowToolkit.jsx
+// sop-v52-reconnect-workflow-toolkit
 import React, { useMemo, useState } from "react";
 import {
   Calculator,
@@ -216,7 +217,11 @@ function SopPrintDocument({ template, checklists, calculatorMeta, calculatorRows
   if (!template) return null;
 
   return (
-    <section className="sop-print-document" aria-hidden="true">
+    <section
+      className="sop-print-document"
+      aria-hidden="true"
+      style={{ position: "fixed", left: "-10000px", top: 0, width: "8.5in", pointerEvents: "none" }}
+    >
       <div className="sop-print-header">
         <div className="sop-print-kicker">Chaotic Neutral Mycology SOP Packet</div>
         <h1>{template.title}</h1>
@@ -587,10 +592,13 @@ export default function SopWorkflowToolkit({ onUseTemplate, onStartGrowFromTempl
               {selectedWorkflowTemplate ? (
                 <div className="space-y-3">
                   <div>
-                    <div className="text-lg font-semibold">
+                    <div data-testid="sop-template-title" className="text-lg font-semibold">
                       {selectedWorkflowTemplate.title}
                     </div>
-                    <p className="text-sm text-zinc-600 dark:text-zinc-400 mt-1">
+                    <p
+                      data-testid="sop-template-summary"
+                      className="text-sm text-zinc-600 dark:text-zinc-400 mt-1"
+                    >
                       {selectedWorkflowTemplate.subtitle}
                     </p>
                   </div>

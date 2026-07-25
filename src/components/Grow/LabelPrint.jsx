@@ -7,7 +7,6 @@ import { onAuthStateChanged } from "firebase/auth";
 import { QRCodeSVG } from "qrcode.react";
 import { Printer } from "lucide-react";
 import { isActiveGrow } from "../../lib/growFilters";
-import { useConfirm } from "../ui/ConfirmDialog";
 import {
   buildLotCode,
   getLabelMetadataSnapshot,
@@ -418,7 +417,6 @@ function normalizeLabelSource(value) {
 
 /** ---------- component ---------- */
 function LabelPrint(props) {
-  const confirm = useConfirm();
   const hasGrowsProp = Object.prototype.hasOwnProperty.call(props || {}, "grows");
   const propGrows = hasGrowsProp ? props.grows || [] : undefined;
 
@@ -1019,11 +1017,7 @@ function LabelPrint(props) {
 
   const printNow = async () => {
     if (!selectedIds.size) {
-      await confirm.alert({
-        title: "Nothing selected",
-        message: "Select at least one label to print.",
-        confirmLabel: "OK",
-      });
+      alert("Select at least one label to print.");
       return;
     }
 
@@ -1031,11 +1025,7 @@ function LabelPrint(props) {
 
     const sheetsEl = printSheetsRef.current;
     if (!sheetsEl) {
-      await confirm.alert({
-        title: "Print preview missing",
-        message: "Print sheets not found.",
-        confirmLabel: "OK",
-      });
+      alert("Print sheets not found.");
       return;
     }
 
@@ -1060,11 +1050,7 @@ function LabelPrint(props) {
 
     const doc = iframe.contentDocument || iframe.contentWindow?.document;
     if (!doc) {
-      await confirm.alert({
-        title: "Print frame unavailable",
-        message: "Unable to open print frame.",
-        confirmLabel: "OK",
-      });
+      alert("Unable to open print frame.");
       return;
     }
 
@@ -1104,11 +1090,7 @@ function LabelPrint(props) {
       setTimeout(cleanup, 2000);
     } catch {
       cleanup();
-      await confirm.alert({
-        title: "Print failed",
-        message: "Print failed to open.",
-        confirmLabel: "OK",
-      });
+      alert("Print failed to open.");
     }
   };
 

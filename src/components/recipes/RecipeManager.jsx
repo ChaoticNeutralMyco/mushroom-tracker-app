@@ -1,9 +1,8 @@
 // src/components/recipes/RecipeManager.jsx
+// sop-v52-reconnect-workflow-toolkit
 import React, { useEffect, useMemo, useState } from "react";
 import {
   Copy,
-  Download,
-  Printer,
   Trash2,
   Edit,
   PlusCircle,
@@ -38,7 +37,6 @@ import {
 } from "../../lib/units";
 import { useConfirm } from "../ui/ConfirmDialog";
 import SopWorkflowToolkit from "./SopWorkflowToolkit";
-import { printElementBySelector } from "../../lib/sopPrint";
 
 const byName = (a, b) =>
   String(a?.name || "").localeCompare(String(b?.name || ""), undefined, {
@@ -46,6 +44,23 @@ const byName = (a, b) =>
   });
 
 const ALL_UNITS = [...new Set([...MASS_UNITS, ...VOLUME_UNITS, ...COUNT_UNITS])];
+
+function normalizeRecipeTags(value) {
+  const source = Array.isArray(value)
+    ? value
+    : typeof value === "string"
+      ? value.split(/[,\n]/)
+      : [];
+
+  return Array.from(
+    new Set(
+      source
+        .flatMap((item) => String(item ?? "").split(/[,\n]/))
+        .map((item) => item.trim())
+        .filter(Boolean)
+    )
+  );
+}
 
 function money(value) {
   const n = Number(value) || 0;
@@ -77,178 +92,7 @@ function RecipeSummaryCard({ icon: Icon, label, value, hint }) {
   );
 }
 
-
-function todayStamp() {
-  return new Date().toISOString().slice(0, 10);
-}
-
-function cleanFileName(value = "recipe-sop") {
-  return String(value || "recipe-sop")
-    .trim()
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/gi, "-")
-    .replace(/^-+|-+$/g, "")
-    .slice(0, 80) || "recipe-sop";
-}
-
-function downloadTextFile(filename, content) {
-  if (typeof document === "undefined") return;
-
-  const blob = new Blob([content], { type: "text/plain;charset=utf-8" });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-
-  a.href = url;
-  a.download = filename;
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
-
-  window.setTimeout(() => URL.revokeObjectURL(url), 250);
-}
-
-const RECIPE_RUN_LOG_ROWS = [
-  "Batch / session ID",
-  "Operator",
-  "Date / start time",
-  "Target output",
-  "Actual output",
-  "Material substitutions",
-  "Observed issues",
-  "QC / cleanup notes",
-];
-
-function RecipePrintDocument({ recipe, suppliesById, costForItems, costPerServing, isReusable }) {
-  if (!recipe) return null;
-
-  const baseYield = Number(recipe.yield) > 0 ? Number(recipe.yield) : 1;
-  const servingLabel = (recipe.servingLabel || "").trim() || (baseYield === 1 ? "unit" : "units");
-  const totalCost = costForItems(recipe.items || []);
-  const unitCost = costPerServing(recipe);
-
-  return (
-    <section className="recipe-print-document" aria-hidden="true">
-      <div className="sop-print-header">
-        <div className="sop-print-kicker">Chaotic Neutral Mycology Recipe SOP</div>
-        <h1>{recipe.name || "Recipe SOP"}</h1>
-        <p>
-          Printable run sheet for recipe execution, cost review, supply checkoff, and session notes.
-        </p>
-
-        <div className="sop-print-meta-grid">
-          <div>
-            <strong>Base yield</strong>
-            <span>
-              {formatAmount(baseYield)} {servingLabel}
-            </span>
-          </div>
-          <div>
-            <strong>Batch cost</strong>
-            <span>{money(totalCost)}</span>
-          </div>
-          <div>
-            <strong>Unit cost</strong>
-            <span>{money(unitCost)}</span>
-          </div>
-          <div>
-            <strong>Generated</strong>
-            <span>{todayStamp()}</span>
-          </div>
-        </div>
-
-        {(recipe.tags || []).length ? (
-          <div className="sop-print-badge-row">
-            {(recipe.tags || []).map((tag) => (
-              <span key={tag}>{tag}</span>
-            ))}
-          </div>
-        ) : null}
-      </div>
-
-      <section className="sop-print-section sop-print-page-break-avoid">
-        <h2>Ingredients / Supplies</h2>
-        <table className="sop-print-table">
-          <thead>
-            <tr>
-              <th>Check</th>
-              <th>Item</th>
-              <th>Amount</th>
-              <th>Stock unit</th>
-              <th>Unit cost</th>
-              <th>Line cost</th>
-              <th>Reusable</th>
-            </tr>
-          </thead>
-          <tbody>
-            {(recipe.items || []).map((item, index) => {
-              const supply = suppliesById.get(item.supplyId);
-              const reusable = isReusable(supply);
-              const normalized = Number(item.amount || 0);
-              const lineCost = supply ? Number(supply.cost || 0) * normalized : 0;
-              return (
-                <tr key={`${item.supplyId || "unknown"}-${index}`}>
-                  <td>☐</td>
-                  <td>{supply?.name || "Unknown supply"}</td>
-                  <td>
-                    {formatAmount(item.amountDisplay ?? normalized)} {item.unit || supply?.unit || ""}
-                  </td>
-                  <td>{supply?.unit || ""}</td>
-                  <td>{supply ? money(supply.cost || 0) : "—"}</td>
-                  <td>{reusable ? "Reusable" : money(lineCost)}</td>
-                  <td>{reusable ? "Yes" : "No"}</td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
-      </section>
-
-      <section className="sop-print-section">
-        <h2>Procedure</h2>
-        <pre>{recipe.instructions || "No procedure steps saved yet."}</pre>
-      </section>
-
-      <section className="sop-print-section sop-print-page-break-avoid">
-        <h2>Run Log</h2>
-        <table className="sop-print-table">
-          <tbody>
-            {RECIPE_RUN_LOG_ROWS.map((row) => (
-              <tr key={row}>
-                <th>{row}</th>
-                <td className="sop-print-lines" />
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </section>
-
-      <section className="sop-print-section sop-print-page-break-avoid">
-        <h2>QC / Signoff</h2>
-        <div className="sop-print-signoff">
-          <div>
-            <strong>Prepared by</strong>
-            <span />
-          </div>
-          <div>
-            <strong>Reviewed by</strong>
-            <span />
-          </div>
-          <div>
-            <strong>Date</strong>
-            <span />
-          </div>
-        </div>
-      </section>
-
-      <p className="sop-print-disclaimer">
-        Recipe SOP generated from saved app data. Verify supplies, weights, sanitation steps,
-        and applicable compliance needs before using this sheet.
-      </p>
-    </section>
-  );
-}
-
-export default function RecipeManager({ onStartGrowFromTemplate } = {}) {
+export default function RecipeManager({ onStartGrowFromTemplate }) {
   const [supplies, setSupplies] = useState([]);
   const [recipes, setRecipes] = useState([]);
   const [selected, setSelected] = useState([]);
@@ -266,6 +110,7 @@ export default function RecipeManager({ onStartGrowFromTemplate } = {}) {
   const [selectedSupplyId, setSelectedSupplyId] = useState("");
   const [selectedAmount, setSelectedAmount] = useState("");
   const [selectedUnit, setSelectedUnit] = useState("");
+  const [newRecipeTemplateMeta, setNewRecipeTemplateMeta] = useState(null);
 
   const [editingId, setEditingId] = useState(null);
   const [editData, setEditData] = useState({
@@ -287,8 +132,6 @@ export default function RecipeManager({ onStartGrowFromTemplate } = {}) {
     recipe: null,
     targetServings: 1,
   });
-
-  const [printingRecipe, setPrintingRecipe] = useState(null);
 
   const confirm = useConfirm();
 
@@ -332,11 +175,6 @@ export default function RecipeManager({ onStartGrowFromTemplate } = {}) {
   }, []);
 
   const supplyById = (id) => supplies.find((s) => s.id === id) || null;
-
-  const suppliesById = useMemo(
-    () => new Map(supplies.map((supply) => [supply.id, supply])),
-    [supplies]
-  );
 
   const isReusable = (s) =>
     s &&
@@ -430,28 +268,33 @@ export default function RecipeManager({ onStartGrowFromTemplate } = {}) {
     setSelectedSupplyId("");
     setSelectedAmount("");
     setSelectedUnit("");
+    setNewRecipeTemplateMeta(null);
   };
 
-  const applyWorkflowTemplateToCreate = (template) => {
+  const useWorkflowTemplateInNewRecipe = (template) => {
     if (!template) return;
 
-    resetCreateForm();
+    const nextYield = Number(template.yield) > 0 ? Number(template.yield) : 1;
+
     setNewRecipeName(template.recipeName || template.title || "");
-    setNewRecipeTags((template.tags || []).join(", "));
+    setNewRecipeTags(normalizeRecipeTags(template.tags).join(", "));
     setNewRecipeItems([]);
     setNewRecipeInstructions(template.instructions || "");
-    setNewRecipeYield(Number(template.yield) > 0 ? Number(template.yield) : 1);
-    setNewRecipeYieldDraft(String(Number(template.yield) > 0 ? Number(template.yield) : 1));
+    setNewRecipeYield(nextYield);
+    setNewRecipeYieldDraft(String(nextYield));
     setNewRecipeYieldFocused(false);
     setNewRecipeServingLabel(template.servingLabel || "");
     setSelectedSupplyId("");
     setSelectedAmount("");
     setSelectedUnit("");
+    setNewRecipeTemplateMeta({
+      id: template.id || "",
+      title: template.title || template.recipeName || "Workflow SOP",
+      category: template.category || "",
+      recipeScope: template.recipeScope || "production",
+    });
     setShowCreate(true);
   };
-
-  const canSaveCreateRecipe =
-    !!newRecipeName.trim() && Array.isArray(newRecipeItems) && newRecipeItems.length > 0;
 
   const addItemToRecipe = () => {
     const amountEntered = parseFloat(selectedAmount);
@@ -497,6 +340,15 @@ export default function RecipeManager({ onStartGrowFromTemplate } = {}) {
       yield: Number(newRecipeYield) > 0 ? Number(newRecipeYield) : 1,
       servingLabel: (newRecipeServingLabel || "").trim(),
       createdAt: new Date().toISOString(),
+      ...(newRecipeTemplateMeta?.id
+        ? {
+            source: "sop-template",
+            workflowTemplateId: newRecipeTemplateMeta.id,
+            workflowTemplateTitle: newRecipeTemplateMeta.title,
+            category: newRecipeTemplateMeta.category,
+            recipeScope: newRecipeTemplateMeta.recipeScope,
+          }
+        : {}),
     });
 
     resetCreateForm();
@@ -533,7 +385,7 @@ export default function RecipeManager({ onStartGrowFromTemplate } = {}) {
     setEditingId(recipe.id);
     setEditData({
       name: recipe.name,
-      tags: (recipe.tags || []).join(", "),
+      tags: normalizeRecipeTags(recipe.tags).join(", "),
       items: [...(recipe.items || [])],
       instructions: recipe.instructions || "",
       yield: recipe.yield || 1,
@@ -620,7 +472,7 @@ export default function RecipeManager({ onStartGrowFromTemplate } = {}) {
           ? `${recipe.name}${batchEdit.appendName}`
           : recipe.name;
 
-        const updatedTags = Array.from(new Set([...(recipe.tags || []), ...tagList]));
+        const updatedTags = Array.from(new Set([...normalizeRecipeTags(recipe.tags), ...tagList]));
 
         await updateDoc(doc(db, "users", user.uid, "recipes", id), {
           name: updatedName,
@@ -631,83 +483,6 @@ export default function RecipeManager({ onStartGrowFromTemplate } = {}) {
 
     setBatchEdit({ appendName: "", addTags: "" });
     setSelected([]);
-  };
-
-  const buildRecipeSopText = (recipe) => {
-    if (!recipe) return "";
-
-    const baseYield = Number(recipe.yield) > 0 ? Number(recipe.yield) : 1;
-    const servingLabel = (recipe.servingLabel || "").trim() || (baseYield === 1 ? "unit" : "units");
-    const itemRows = (recipe.items || []).map((item, index) => {
-      const supply = supplyById(item.supplyId);
-      const reusable = isReusable(supply);
-      const normalized = Number(item.amount || 0);
-      const lineCost = supply ? Number(supply.cost || 0) * normalized : 0;
-      const displayAmount = formatAmount(item.amountDisplay ?? normalized);
-      const displayUnit = item.unit || supply?.unit || "";
-      return [
-        `${index + 1}. ${supply?.name || "Unknown supply"}`,
-        `   Amount: ${displayAmount} ${displayUnit}`,
-        `   Stock unit: ${supply?.unit || "not linked"}`,
-        `   Unit cost: ${supply ? money(supply.cost || 0) : "n/a"}`,
-        `   Line cost: ${reusable ? "Reusable" : money(lineCost)}`,
-      ].join("\n");
-    });
-
-    return [
-      "CHAOTIC NEUTRAL MYCOLOGY RECIPE SOP",
-      `Generated: ${todayStamp()}`,
-      "",
-      `Recipe: ${recipe.name || "Untitled Recipe"}`,
-      `Base yield: ${formatAmount(baseYield)} ${servingLabel}`,
-      `Batch cost: ${money(costForItems(recipe.items || []))}`,
-      `Unit cost: ${money(costPerServing(recipe))}`,
-      `Tags: ${(recipe.tags || []).join(", ") || "none"}`,
-      "",
-      "INGREDIENTS / SUPPLIES",
-      itemRows.length ? itemRows.join("\n\n") : "No supplies saved.",
-      "",
-      "PROCEDURE",
-      recipe.instructions || "No procedure steps saved yet.",
-      "",
-      "RUN LOG",
-      ...RECIPE_RUN_LOG_ROWS.map((row) => `${row}: ________________________________________________`),
-      "",
-      "QC / SIGNOFF",
-      "Prepared by: ____________________________",
-      "Reviewed by: ____________________________",
-      "Date: ____________________________",
-      "",
-    ].join("\n");
-  };
-
-  const exportRecipeSop = (recipe) => {
-    if (!recipe) return;
-
-    downloadTextFile(
-      `${cleanFileName(recipe.name || "recipe-sop")}-${todayStamp()}.txt`,
-      buildRecipeSopText(recipe)
-    );
-  };
-
-  const printRecipeSop = (recipe) => {
-    if (!recipe) return;
-
-    setPrintingRecipe(recipe);
-    const printAfterRender = () => {
-      printElementBySelector(
-        ".recipe-print-document",
-        `${recipe.name || "Recipe"} - SOP Packet`,
-        () => setPrintingRecipe(null)
-      );
-    };
-
-    if (typeof window !== "undefined" && typeof window.requestAnimationFrame === "function") {
-      window.requestAnimationFrame(() => window.requestAnimationFrame(printAfterRender));
-      return;
-    }
-
-    window.setTimeout(printAfterRender, 120);
   };
 
   const renderScaledTable = (recipe) => {
@@ -854,7 +629,7 @@ export default function RecipeManager({ onStartGrowFromTemplate } = {}) {
       </div>
 
       <SopWorkflowToolkit
-        onUseTemplate={applyWorkflowTemplateToCreate}
+        onUseTemplate={useWorkflowTemplateInNewRecipe}
         onStartGrowFromTemplate={onStartGrowFromTemplate}
       />
 
@@ -913,6 +688,7 @@ export default function RecipeManager({ onStartGrowFromTemplate } = {}) {
 
       <div className="space-y-3">
         {recipes.map((recipe) => {
+          const recipeTags = normalizeRecipeTags(recipe.tags);
           const isSelected = selected.includes(recipe.id);
           const isEditing = editingId === recipe.id;
           const total = costForItems(recipe.items || []);
@@ -972,10 +748,10 @@ export default function RecipeManager({ onStartGrowFromTemplate } = {}) {
                       ) : null}
                     </button>
 
-                    {!isEditing && !!(recipe.tags || []).length && (
+                    {!isEditing && recipeTags.length > 0 && (
                       <div className="flex flex-wrap items-center gap-2 mt-1">
                         <Tag size={14} className="opacity-70" />
-                        {(recipe.tags || []).map((t) => (
+                        {recipeTags.map((t) => (
                           <span
                             key={t}
                             className="text-xs px-2 py-0.5 rounded bg-zinc-200 dark:bg-zinc-700"
@@ -1063,24 +839,6 @@ export default function RecipeManager({ onStartGrowFromTemplate } = {}) {
                             }
                           >
                             Start Grow
-                          </button>
-
-                          <button
-                            className="chip !px-3 !py-1 text-sm"
-                            title="Print a clean recipe SOP packet"
-                            onClick={() => printRecipeSop(recipe)}
-                          >
-                            <Printer size={15} />
-                            Print SOP
-                          </button>
-
-                          <button
-                            className="chip !px-3 !py-1 text-sm"
-                            title="Export this recipe SOP as plain text"
-                            onClick={() => exportRecipeSop(recipe)}
-                          >
-                            <Download size={15} />
-                            Export SOP
                           </button>
                         </div>
 
@@ -1310,7 +1068,7 @@ export default function RecipeManager({ onStartGrowFromTemplate } = {}) {
             className="absolute inset-0 bg-black/40"
             onClick={() => setShowCreate(false)}
           />
-          <div className="relative bg-white dark:bg-zinc-900 rounded-2xl border border-zinc-200 dark:border-zinc-800 shadow-xl w-full max-w-5xl max-h-[90vh] overflow-y-auto p-4 md:p-6">
+          <div className="relative bg-white dark:bg-zinc-900 rounded-2xl border border-zinc-200 dark:border-zinc-800 shadow-xl w-full max-w-5xl p-4 md:p-6">
             <div className="flex items-center justify-between mb-3">
               <h3 className="text-lg font-semibold">New Recipe</h3>
               <button
@@ -1321,6 +1079,13 @@ export default function RecipeManager({ onStartGrowFromTemplate } = {}) {
                 <X size={18} />
               </button>
             </div>
+
+            {newRecipeTemplateMeta?.id ? (
+              <div className="mb-3 rounded-xl border border-violet-200 dark:border-violet-900/60 bg-violet-50 dark:bg-violet-950/20 p-3 text-sm">
+                Starting from <strong>{newRecipeTemplateMeta.title}</strong>. Add the real supplies
+                used by this recipe before saving.
+              </div>
+            ) : null}
 
             <div className="grid grid-cols-1 md:grid-cols-4 gap-3 mb-3">
               <input
@@ -1487,13 +1252,7 @@ export default function RecipeManager({ onStartGrowFromTemplate } = {}) {
               </button>
               <button
                 onClick={createRecipe}
-                disabled={!canSaveCreateRecipe}
-                className={`btn btn-accent ${!canSaveCreateRecipe ? "opacity-50 cursor-not-allowed" : ""}`}
-                title={
-                  canSaveCreateRecipe
-                    ? "Save recipe"
-                    : "Add a recipe name and at least one supply item before saving"
-                }
+                className="btn btn-accent"
               >
                 Save Recipe
               </button>
@@ -1583,14 +1342,6 @@ export default function RecipeManager({ onStartGrowFromTemplate } = {}) {
           </div>
         </div>
       )}
-
-      <RecipePrintDocument
-        recipe={printingRecipe}
-        suppliesById={suppliesById}
-        costForItems={costForItems}
-        costPerServing={costPerServing}
-        isReusable={isReusable}
-      />
     </div>
   );
 }

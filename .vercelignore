@@ -1,7 +1,46 @@
-# Keep Vercel uploads lean
-src-tauri/
+# Repository and local tooling
+.git/
 .github/
-scripts/
-tests/
+.vscode/
+.idea/
+.vs/
+
+# Dependencies and generated output
+node_modules/
+dist/
+.vite/
 coverage/
+playwright-report/
+playwright-report-ci/
+test-results/
+
+# Tests, scripts, native clients, and release artifacts
+tests/
+scripts/
+src-tauri/
+android/
+release/
+deploy/
+
+# Local-only snapshots, backups, patches, and quarantine
+_backup/
+_backups/
+_unused/
+quarantine/
+_cnm_*/
+src*.zip
+audit-inbound.csv
+CHECKSUMS.txt
+FILE_SIZES.txt
+MANIFEST.txt
+
+# Secrets and machine-specific configuration
+.env
+.env.*
+keystore.properties
+*.jks
+*.keystore
+tests/e2e/.auth/
+
+# Documentation is not needed by the production build
 *.md

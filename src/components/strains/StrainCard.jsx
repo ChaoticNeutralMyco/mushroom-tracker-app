@@ -1,4 +1,5 @@
 // src/components/strains/StrainCard.jsx
+// assets-v49-default-dark-remove-broken-reishi
 import React, { useId, useMemo, useState } from "react";
 import "./strain-card.css";
 import { Pencil, Trash2, ExternalLink } from "lucide-react";
@@ -140,7 +141,7 @@ export default function StrainCard({
               name={title}
               className="w-full h-full object-cover"
               alt={title}
-              onResolvedSrc={(src) => setIsDefaultFront(String(src).includes("/default-front.png"))}
+              onResolvedSrc={(src) => setIsDefaultFront(String(src).includes("/builder-base-dark.png"))}
             />
           )}
 

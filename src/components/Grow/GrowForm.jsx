@@ -1,4 +1,5 @@
 // src/components/Grow/GrowForm.jsx
+// sop-v52-reconnect-workflow-toolkit
 /* Storage & Parent Source upgrade (pure form)
    - Parent Source options trimmed to: Active Grow / Storage Item (no "None")
    - Default selection: Active Grow
@@ -58,6 +59,39 @@ const PARENT_SOURCES = [
   { key: "grow", label: "Active Grow" },
   { key: "library", label: "Storage Item" },
 ];
+
+function normalizeSopChecklistItems(template = {}) {
+  return (Array.isArray(template?.checklistItems) ? template.checklistItems : []).map(
+    (item, index) => ({
+      id: item?.id || `sop-check-${index + 1}`,
+      label: String(item?.label || `Checklist item ${index + 1}`),
+      stage: String(item?.stage || "General"),
+      category: String(item?.category || "Workflow"),
+      detail: String(item?.detail || ""),
+      completed: false,
+      completedAt: null,
+    })
+  );
+}
+
+function normalizeSopTaskTemplates(template = {}) {
+  return (Array.isArray(template?.taskTemplates) ? template.taskTemplates : []).map(
+    (item, index) => ({
+      id: item?.id || `sop-task-${index + 1}`,
+      title: String(item?.title || `SOP task ${index + 1}`),
+      stage: String(item?.stage || "General"),
+      dueOffsetDays: Math.max(0, Number(item?.dueOffsetDays) || 0),
+      notes: String(item?.notes || ""),
+    })
+  );
+}
+
+function addDaysIso(baseDate, offsetDays = 0) {
+  const d = baseDate instanceof Date ? new Date(baseDate.getTime()) : new Date(baseDate || Date.now());
+  d.setDate(d.getDate() + Math.max(0, Number(offsetDays) || 0));
+  d.setHours(9, 0, 0, 0);
+  return d.toISOString();
+}
 
 /* ---------- Small utils ---------- */
 function pad2(n) {
@@ -219,39 +253,6 @@ function getRecipeYield(recipe = {}) {
   return { qty, unit };
 }
 
-
-function normalizeRecipeScope(value = "") {
-  const raw = String(value || "").trim().toLowerCase();
-  if (
-    [
-      "post-production",
-      "post production",
-      "postproduction",
-      "post-process",
-      "post process",
-      "postprocessing",
-      "post processing",
-      "post-processing",
-    ].includes(raw)
-  ) {
-    return "post-production";
-  }
-  return "production";
-}
-
-function recipeUsableInGrowForm(recipe = {}) {
-  return (
-    normalizeRecipeScope(
-      recipe?.recipeScope ||
-        recipe?.scope ||
-        recipe?.recipeKind ||
-        recipe?.recipeType ||
-        recipe?.usage ||
-        ""
-    ) !== "post-production"
-  );
-}
-
 /* ---------- Stage timestamps ---------- */
 const stageTimestampField = {
   Inoculated: "inoculatedAt",
@@ -331,304 +332,6 @@ function storageAvailabilityOf(docData = {}) {
   };
 }
 
-
-function normalizeSupplyType(value = "") {
-  const raw = String(value || "").trim().toLowerCase();
-  if (!raw) return "";
-
-  const compact = raw.replace(/[\s_-]+/g, "");
-
-  if (
-    new Set([
-      "labconsumable",
-      "labconsumables",
-      "consumable",
-      "consumables",
-      "prepconsumable",
-      "prepconsumables",
-    ]).has(compact)
-  ) {
-    return "lab-consumable";
-  }
-
-  if (
-    new Set([
-      "growcontainer",
-      "growcontainers",
-      "spawnbag",
-      "spawnbags",
-    ]).has(compact)
-  ) {
-    return "grow-container";
-  }
-
-  if (
-    new Set([
-      "sanitation",
-      "sanitize",
-      "sanitizer",
-      "sanitizers",
-      "cleaning",
-      "cleaner",
-      "cleaners",
-      "disinfectant",
-      "disinfectants",
-    ]).has(compact)
-  ) {
-    return "sanitation";
-  }
-
-  if (new Set(["container", "containers"]).has(compact)) return "container";
-  if (new Set(["tool", "tools"]).has(compact)) return "tool";
-  if (new Set(["labor", "labour"]).has(compact)) return "labor";
-  if (new Set(["packaging", "package", "packages"]).has(compact)) return "packaging";
-  if (new Set(["ingredient", "ingredients"]).has(compact)) return "ingredient";
-  if (new Set(["substrate", "substrates"]).has(compact)) return "substrate";
-  if (new Set(["supplement", "supplements"]).has(compact)) return "supplement";
-  if (new Set(["carrier", "carriers"]).has(compact)) return "carrier";
-
-  return raw.replace(/[\s_]+/g, "-");
-}
-
-function isCountLikeSupplyUnit(unit = "") {
-  const raw = String(unit || "").trim().toLowerCase();
-  if (!raw) return true;
-
-  return new Set([
-    "count",
-    "counts",
-    "piece",
-    "pieces",
-    "pc",
-    "pcs",
-    "item",
-    "items",
-    "unit",
-    "units",
-    "bag",
-    "bags",
-    "jar",
-    "jars",
-    "plate",
-    "plates",
-    "dish",
-    "dishes",
-    "tub",
-    "tubs",
-    "tray",
-    "trays",
-    "bottle",
-    "bottles",
-    "syringe",
-    "syringes",
-    "needle",
-    "needles",
-    "swab",
-    "swabs",
-    "pad",
-    "pads",
-    "wipe",
-    "wipes",
-    "filter",
-    "filters",
-    "patch",
-    "patches",
-    "pair",
-    "pairs",
-    "glove",
-    "gloves",
-    "cap",
-    "caps",
-    "lid",
-    "lids",
-  ]).has(raw);
-}
-
-function roundedSupplyAmount(value, unit = "") {
-  const parsed = Number(value);
-  if (!Number.isFinite(parsed) || parsed <= 0) return 0;
-  if (isCountLikeSupplyUnit(unit)) return Math.ceil(parsed);
-  return Math.max(0, Number(parsed.toFixed(4)));
-}
-
-async function consumeTrackedSupply(uid, supplyId, amount, note = "") {
-  if (!uid || !supplyId) return;
-
-  const supplyRef = doc(db, "users", uid, "supplies", supplyId);
-  const snap = await getDoc(supplyRef);
-  if (!snap.exists()) {
-    throw new Error("Tracked lab consumable no longer exists.");
-  }
-
-  const supply = snap.data() || {};
-  const unit = supply.unit || "count";
-  const safeAmount = roundedSupplyAmount(amount, unit);
-  if (safeAmount <= 0) return;
-
-  const before = Number(supply.quantity || 0);
-  if (safeAmount > before + 1e-9) {
-    const name = supply.name || "Supply";
-    throw new Error(
-      `${name} exceeds stock on hand. Need ${safeAmount} ${unit}, but only ${before} ${unit} remain.`
-    );
-  }
-
-  const after = Math.max(0, Number((before - safeAmount).toFixed(4)));
-  const unitCostApplied = Number(supply.cost || 0);
-  const totalCostApplied = Number((safeAmount * unitCostApplied).toFixed(2));
-
-  await updateDoc(supplyRef, {
-    quantity: after,
-    lastUpdatedAt: serverTimestamp(),
-  });
-
-  await addDoc(collection(db, "users", uid, "supply_audits"), {
-    supplyId,
-    action: "consume",
-    amount: safeAmount,
-    note: note || "",
-    unit,
-    unitCostApplied: Number.isFinite(unitCostApplied) ? unitCostApplied : null,
-    totalCostApplied: Number.isFinite(totalCostApplied) ? totalCostApplied : null,
-    timestamp: new Date().toISOString(),
-  });
-}
-
-
-function normalizeSavedConsumables(source = []) {
-  if (!Array.isArray(source)) return [];
-  return source
-    .map((row) => {
-      if (!row?.supplyId) return null;
-      const amountRaw =
-        row?.amountPerGrow ?? row?.amount ?? row?.deductedAmount ?? row?.qty ?? 0;
-      const totalRaw =
-        row?.totalCostPerGrow ?? row?.totalCost ?? row?.costTotal ?? row?.cost ?? null;
-      const unitCostRaw = row?.unitCost ?? row?.unitPrice ?? row?.costPerUnit ?? null;
-      const amount = Number(amountRaw);
-      const totalCost = Number(totalRaw);
-      const unitCost = Number(unitCostRaw);
-      return {
-        supplyId: row.supplyId,
-        name: row.name || row.supplyName || "Unnamed Supply",
-        type: row.type || row.supplyType || "",
-        unit: row.unit || row.supplyUnit || "count",
-        amount: Number.isFinite(amount) ? amount : 0,
-        totalCost: Number.isFinite(totalCost) ? totalCost : null,
-        unitCost: Number.isFinite(unitCost) ? unitCost : null,
-        batchAmount: Number.isFinite(Number(row?.batchAmount))
-          ? Number(row.batchAmount)
-          : null,
-        batchTotalCost: Number.isFinite(Number(row?.batchTotalCost))
-          ? Number(row.batchTotalCost)
-          : null,
-        allocationCount: Number.isFinite(Number(row?.allocationCount))
-          ? Number(row.allocationCount)
-          : null,
-      };
-    })
-    .filter(Boolean);
-}
-
-function fallbackLegacyConsumables(grow = {}, suppliesMap = new Map()) {
-  const out = [];
-  const legacyAmount = Number(grow?.syringesUsedTotal || 0);
-  if (grow?.syringeSupplyId && Number.isFinite(legacyAmount) && legacyAmount > 0) {
-    const supply = suppliesMap.get(grow.syringeSupplyId);
-    out.push({
-      supplyId: grow.syringeSupplyId,
-      name: supply?.name || "Syringe",
-      type: supply?.type || "lab-consumable",
-      unit: supply?.unit || "syringe",
-      amount: legacyAmount,
-      totalCost: Number.isFinite(Number(grow?.labConsumablesCost))
-        ? Number(grow.labConsumablesCost)
-        : null,
-      unitCost: Number.isFinite(Number(supply?.cost)) ? Number(supply.cost) : null,
-      batchAmount: null,
-      batchTotalCost: null,
-      allocationCount: null,
-    });
-  }
-  return out;
-}
-
-function getSavedConsumablesForGrow(grow = {}, suppliesMap = new Map()) {
-  const saved = normalizeSavedConsumables(grow?.labConsumablesUsed);
-  if (saved.length) return saved;
-  return fallbackLegacyConsumables(grow, suppliesMap);
-}
-
-function sumConsumablesCost(rows = [], suppliesMap = new Map()) {
-  return Number(
-    rows
-      .reduce((sum, row) => {
-        const amount = Number(row?.amount || 0);
-        const directTotal = Number(row?.totalCost);
-        if (Number.isFinite(directTotal)) return sum + directTotal;
-        const directUnitCost = Number(row?.unitCost);
-        if (Number.isFinite(directUnitCost)) return sum + directUnitCost * amount;
-        const liveUnitCost = Number(
-          row?.supplyId && suppliesMap.has(row.supplyId)
-            ? suppliesMap.get(row.supplyId)?.cost
-            : 0
-        );
-        return sum + (Number.isFinite(liveUnitCost) ? liveUnitCost : 0) * amount;
-      }, 0)
-      .toFixed(2)
-  );
-}
-
-function buildInitialConsumableSelections(grow = {}, suppliesMap = new Map()) {
-  const selections = {};
-  const rows = getSavedConsumablesForGrow(grow, suppliesMap);
-  rows.forEach((row) => {
-    if (!row?.supplyId) return;
-    const amount = Number.isFinite(Number(row?.batchAmount))
-      ? Number(row.batchAmount)
-      : Number(row?.amount || 0);
-    selections[row.supplyId] = {
-      enabled: true,
-      amount: Number.isFinite(amount) && amount > 0 ? String(amount) : "",
-    };
-  });
-  return selections;
-}
-
-function normalizeSopChecklistItems(items = [], templateMeta = {}) {
-  const now = new Date().toISOString();
-  return (Array.isArray(items) ? items : [])
-    .filter((item) => item && String(item.label || item.title || "").trim())
-    .map((item, index) => ({
-      id: String(item.id || `sop-check-${index + 1}`),
-      label: String(item.label || item.title || `SOP checkpoint ${index + 1}`).trim(),
-      detail: String(item.detail || item.description || item.notes || "").trim(),
-      category: String(item.category || "Workflow").trim(),
-      stage: String(item.stage || templateMeta.workflowStep || "General").trim(),
-      source: "sop-template",
-      workflowTemplateId: templateMeta.workflowTemplateId || "",
-      workflowTemplateTitle: templateMeta.workflowTemplateTitle || "Workflow SOP",
-      status: "pending",
-      completed: false,
-      skipped: false,
-      createdAt: now,
-      updatedAt: now,
-    }));
-}
-
-function cloneWorkflowTaskTemplates(items = []) {
-  return (Array.isArray(items) ? items : [])
-    .filter((item) => item && String(item.title || "").trim())
-    .map((item, index) => ({
-      id: String(item.id || `sop-task-${index + 1}`),
-      title: String(item.title || `SOP task ${index + 1}`).trim(),
-      stage: String(item.stage || "General").trim(),
-      dueOffsetDays: Number.isFinite(Number(item.dueOffsetDays)) ? Number(item.dueOffsetDays) : index + 1,
-      notes: String(item.notes || item.description || "").trim(),
-      workflowStep: String(item.workflowStep || "").trim(),
-    }));
-}
-
 /* ==================== COMPONENT ==================== */
 export default function GrowForm(props) {
   const {
@@ -641,7 +344,6 @@ export default function GrowForm(props) {
     supplies,
     onCreateGrow,
     onUpdateGrow,
-    onCreateTasksForGrow,
   } = props;
 
   const confirm = useConfirm();
@@ -660,103 +362,34 @@ export default function GrowForm(props) {
   }, []);
 
   const mode = editingGrow && editingGrow.id ? "edit" : "create";
-
-  const workflowMeta = useMemo(() => {
-    const id = String(editingGrow?.workflowTemplateId || editingGrow?.sopTemplateId || "").trim();
-    const title = String(
-      editingGrow?.workflowTemplateTitle ||
-        editingGrow?.sopTemplateTitle ||
-        editingGrow?.workflowTitle ||
-        ""
-    ).trim();
-    const category = String(
-      editingGrow?.workflowTemplateCategory || editingGrow?.sopTemplateCategory || ""
-    ).trim();
-    const step = String(editingGrow?.workflowStep || category || "").trim();
-    const summary = String(editingGrow?.workflowTemplateSummary || "").trim();
-
-    return {
-      hasWorkflow: !!(id || title),
-      workflowSource: String(editingGrow?.workflowSource || "sop-template").trim(),
-      workflowTemplateId: id,
-      workflowTemplateTitle: title,
-      workflowTemplateCategory: category,
-      workflowStep: step,
-      workflowTemplateSummary: summary,
-      checklistItems: Array.isArray(editingGrow?.workflowChecklistTemplate)
-        ? editingGrow.workflowChecklistTemplate
-        : Array.isArray(editingGrow?.checklistItems)
-          ? editingGrow.checklistItems
-          : [],
-      taskTemplates: Array.isArray(editingGrow?.workflowTaskTemplates)
-        ? editingGrow.workflowTaskTemplates
-        : Array.isArray(editingGrow?.taskTemplates)
-          ? editingGrow.taskTemplates
-          : [],
-    };
-  }, [editingGrow]);
-
-  const workflowPayloadFields = useMemo(() => {
-    if (!workflowMeta.hasWorkflow) return {};
-    const fields = {
-      workflowSource: workflowMeta.workflowSource || "sop-template",
-      workflowTemplateId: workflowMeta.workflowTemplateId,
-      sopTemplateId: workflowMeta.workflowTemplateId,
-      workflowTemplateTitle: workflowMeta.workflowTemplateTitle,
-      sopTemplateTitle: workflowMeta.workflowTemplateTitle,
-      workflowTemplateCategory: workflowMeta.workflowTemplateCategory,
-      workflowStep: workflowMeta.workflowStep,
-      workflowTemplateSummary: workflowMeta.workflowTemplateSummary,
-    };
-
-    return Object.fromEntries(
-      Object.entries(fields).filter(([, value]) => value !== undefined && value !== null && value !== "")
-    );
-  }, [workflowMeta]);
-
-  const normalizedSopChecklist = useMemo(
-    () => normalizeSopChecklistItems(workflowMeta.checklistItems, workflowMeta),
-    [workflowMeta]
-  );
-  const normalizedSopTaskTemplates = useMemo(
-    () => cloneWorkflowTaskTemplates(workflowMeta.taskTemplates),
-    [workflowMeta]
-  );
-
-  const [attachSopChecklist, setAttachSopChecklist] = useState(() =>
-    workflowMeta.hasWorkflow && normalizeSopChecklistItems(workflowMeta.checklistItems, workflowMeta).length > 0
-  );
-  const [generateSopTasks, setGenerateSopTasks] = useState(false);
-
-  useEffect(() => {
-    if (!workflowMeta.hasWorkflow) return;
-    setAttachSopChecklist(normalizedSopChecklist.length > 0);
-    setGenerateSopTasks(false);
-  }, [workflowMeta.workflowTemplateId, workflowMeta.workflowTemplateTitle, normalizedSopChecklist.length]);
+  const sopTemplate =
+    editingGrow?.sopTemplate ||
+    editingGrow?.workflowTemplate ||
+    null;
+  const sopDefaults =
+    sopTemplate && typeof sopTemplate.growDefaults === "object"
+      ? sopTemplate.growDefaults
+      : {};
+  const isSopStart = mode === "create" && Boolean(sopTemplate?.id);
 
   /* ---- Parent Source ---- */
   const cameFromLibrary =
     editingGrow?.parentSource === "Library" && editingGrow?.parentId;
-  const initialParentSource = (() => {
-    const raw = String(editingGrow?.parentSource || "").trim().toLowerCase();
-    if (workflowMeta.hasWorkflow && ["direct", "none", "sop", "workflow"].includes(raw)) {
-      return "direct";
-    }
-    if (raw === "library" || cameFromLibrary) return "library";
-    return "grow";
-  })();
-  const [parentSource, setParentSource] = useState(initialParentSource);
+  const [parentSource, setParentSource] = useState(
+    isSopStart ? "direct" : cameFromLibrary ? "library" : "grow"
+  );
   const isSubmittingRef = useRef(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [formNotice, setFormNotice] = useState(null);
   const effectiveParentSource = parentSource;
-  const availableParentSources = workflowMeta.hasWorkflow
-    ? [{ key: "direct", label: "Direct / SOP Start" }, ...PARENT_SOURCES]
-    : PARENT_SOURCES;
 
   /* ---- Basics ---- */
   const [growType, setGrowType] = useState(
-    editingGrow?.type || editingGrow?.growType || "Agar"
+    editingGrow?.type ||
+      editingGrow?.growType ||
+      sopDefaults?.type ||
+      sopTemplate?.category ||
+      "Agar"
   );
   const [strainId, setStrainId] = useState(editingGrow?.strainId || "");
   const [strain, setStrain] = useState(
@@ -772,8 +405,13 @@ export default function GrowForm(props) {
   }, [strains]);
 
   const [batchCount, setBatchCount] = useState(1);
-  const [stage, setStage] = useState(editingGrow?.stage || DEFAULT_STAGE);
-  const [status, setStatus] = useState(editingGrow?.status || DEFAULT_STATUS);
+  const [stage, setStage] = useState(
+    editingGrow?.stage || sopDefaults?.stage || DEFAULT_STAGE
+  );
+  const [status, setStatus] = useState(
+    editingGrow?.status || sopDefaults?.status || DEFAULT_STATUS
+  );
+  const [generateSopTasks, setGenerateSopTasks] = useState(isSopStart);
 
   const [created, setCreated] = useState(() => {
     const d = toDateAny(editingGrow?.createdAt) || new Date();
@@ -850,28 +488,15 @@ export default function GrowForm(props) {
     editingGrow?.recipe || editingGrow?.recipeName || ""
   );
   const [cost, setCost] = useState(
-    Number.isFinite(Number(editingGrow?.recipeCost))
-      ? Number(editingGrow.recipeCost)
-      : Number.isFinite(Number(editingGrow?.cost))
-      ? Number(editingGrow.cost)
-      : 0
+    Number.isFinite(Number(editingGrow?.cost)) ? Number(editingGrow.cost) : 0
   );
-  const [consumableSelections, setConsumableSelections] = useState({});
-
-  useEffect(() => {
-    if (mode === "edit") {
-      setConsumableSelections(
-        buildInitialConsumableSelections(editingGrow, suppliesMap)
-      );
-      return;
-    }
-    setConsumableSelections({});
-  }, [mode, editingGrow?.id]);
-
 
   /* ---- Volumes ---- */
   const [ivalue, setIValue] = useState(
-    editingGrow?.amountTotal ?? editingGrow?.initialVolume ?? ""
+    editingGrow?.amountTotal ??
+      editingGrow?.initialVolume ??
+      sopDefaults?.amountTotal ??
+      ""
   );
   const [ivUnit, setIvUnit] = useState(
     editingGrow?.amountUnit ||
@@ -882,16 +507,16 @@ export default function GrowForm(props) {
     editingGrow?.amountAvailable ?? ""
   );
   const [bulkGrainParts, setBulkGrainParts] = useState(
-    editingGrow?.bulkGrainParts ?? 1
+    editingGrow?.bulkGrainParts ?? sopDefaults?.bulkGrainParts ?? 1
   );
   const [bulkSubstrateParts, setBulkSubstrateParts] = useState(
-    editingGrow?.bulkSubstrateParts ?? 5
+    editingGrow?.bulkSubstrateParts ?? sopDefaults?.bulkSubstrateParts ?? 5
   );
   const [bulkVolume, setBulkVolume] = useState(
-    editingGrow?.bulkVolume ?? ""
+    editingGrow?.bulkVolume ?? sopDefaults?.bulkVolume ?? ""
   );
   const [bulkUnit, setBulkUnit] = useState(
-    editingGrow?.bulkVolumeUnit || "g"
+    editingGrow?.bulkVolumeUnit || sopDefaults?.bulkVolumeUnit || "g"
   );
 
   /* ---- Parent grow (Active Grow) ---- */
@@ -942,26 +567,7 @@ export default function GrowForm(props) {
   useEffect(() => {
     if (mode !== "create") return;
 
-    if (effectiveParentSource === "direct") {
-      setParentGrowId("");
-      setConsumeFromParent("");
-      setConsumeWarn("");
-      setExtraParents([]);
-      setExtraParentErrors([]);
-      setParentRemaining(0);
-      setParentTotal(null);
-      setLibId("");
-      setStorageDoc(null);
-      setStorageMode({
-        ok: false,
-        mode: "unknown",
-        available: 0,
-        unit: "",
-        typeLabel: "",
-        fieldPref: [],
-      });
-      setUseFromStorageAmount("");
-    } else if (effectiveParentSource === "grow") {
+    if (effectiveParentSource === "grow") {
       setLibId("");
       setStorageDoc(null);
       setStorageMode({
@@ -981,6 +587,25 @@ export default function GrowForm(props) {
       setExtraParentErrors([]);
       setParentRemaining(0);
       setParentTotal(null);
+    } else if (effectiveParentSource === "direct") {
+      setParentGrowId("");
+      setConsumeFromParent("");
+      setConsumeWarn("");
+      setExtraParents([]);
+      setExtraParentErrors([]);
+      setParentRemaining(0);
+      setParentTotal(null);
+      setLibId("");
+      setStorageDoc(null);
+      setStorageMode({
+        ok: false,
+        mode: "unknown",
+        available: 0,
+        unit: "",
+        typeLabel: "",
+        fieldPref: [],
+      });
+      setUseFromStorageAmount("");
     }
   }, [mode, effectiveParentSource]);
 
@@ -1090,11 +715,6 @@ export default function GrowForm(props) {
     return src;
   }, [localRecipes, growType]);
 
-  const growUsableRecipes = useMemo(
-    () => recipesRanked.filter((recipe) => recipeUsableInGrowForm(recipe)),
-    [recipesRanked]
-  );
-
   const selectedRecipe = useMemo(
     () => (recipeId ? recipesRanked.find((r) => r.id === recipeId) : null),
     [recipesRanked, recipeId]
@@ -1103,125 +723,6 @@ export default function GrowForm(props) {
     () => (selectedRecipe ? recipeMatchScore(selectedRecipe, growType) : 0),
     [selectedRecipe, growType]
   );
-  const selectedRecipeScope = useMemo(
-    () =>
-      normalizeRecipeScope(
-        selectedRecipe?.recipeScope ||
-          selectedRecipe?.scope ||
-          selectedRecipe?.recipeKind ||
-          selectedRecipe?.recipeType ||
-          selectedRecipe?.usage ||
-          ""
-      ),
-    [selectedRecipe]
-  );
-
-  const trackedConsumableOptions = useMemo(() => {
-    return [...(Array.isArray(localSupplies) ? localSupplies : [])]
-      .filter((supply) => normalizeSupplyType(supply?.type) === "lab-consumable")
-      .sort((a, b) =>
-        String(a?.name || "").localeCompare(String(b?.name || ""), undefined, {
-          sensitivity: "base",
-        })
-      );
-  }, [localSupplies]);
-
-  const enabledConsumableRows = useMemo(() => {
-    return trackedConsumableOptions
-      .filter((supply) => consumableSelections?.[supply.id]?.enabled)
-      .map((supply) => {
-        const rawAmount = consumableSelections?.[supply.id]?.amount;
-        const enteredAmount = Number(rawAmount);
-        const deductAmount = roundedSupplyAmount(
-          enteredAmount,
-          supply.unit || "count"
-        );
-        const unitCost = Number(supply?.cost || 0);
-        const totalCost = Number((deductAmount * unitCost).toFixed(2));
-        const available = Number(supply?.quantity || 0);
-        return {
-          supplyId: supply.id,
-          name: supply.name || "Unnamed Supply",
-          type: supply.type || "",
-          unit: supply.unit || "count",
-          enteredAmount,
-          deductAmount,
-          unitCost,
-          totalCost,
-          available,
-        };
-      });
-  }, [trackedConsumableOptions, consumableSelections]);
-
-  const invalidConsumableRows = useMemo(
-    () =>
-      enabledConsumableRows.filter(
-        (row) => !Number.isFinite(row.enteredAmount) || row.deductAmount <= 0
-      ),
-    [enabledConsumableRows]
-  );
-
-  const overConsumableRows = useMemo(
-    () =>
-      enabledConsumableRows.filter(
-        (row) => row.deductAmount > row.available + 1e-9
-      ),
-    [enabledConsumableRows]
-  );
-
-  const batchConsumablesCost = useMemo(
-    () =>
-      Number(
-        enabledConsumableRows
-          .reduce((sum, row) => sum + row.totalCost, 0)
-          .toFixed(2)
-      ),
-    [enabledConsumableRows]
-  );
-
-  const savedConsumableRows = useMemo(
-    () => getSavedConsumablesForGrow(editingGrow, suppliesMap),
-    [editingGrow, suppliesMap]
-  );
-
-  const savedConsumablesCost = useMemo(() => {
-    const inline = Number(editingGrow?.labConsumablesCost);
-    if (Number.isFinite(inline)) return inline;
-    return sumConsumablesCost(savedConsumableRows, suppliesMap);
-  }, [editingGrow, savedConsumableRows, suppliesMap]);
-
-  const labConsumablesCost = useMemo(() => {
-    if (mode === "create") {
-      const count = Math.max(1, Number(batchCount || 1));
-      return Number((batchConsumablesCost / count).toFixed(2));
-    }
-    return Number(savedConsumablesCost.toFixed(2));
-  }, [mode, batchCount, batchConsumablesCost, savedConsumablesCost]);
-
-  const totalCost = useMemo(
-    () =>
-      Number(
-        (Number(cost || 0) + Number(labConsumablesCost || 0)).toFixed(2)
-      ),
-    [cost, labConsumablesCost]
-  );
-
-  const perGrowAllocatedConsumables = useMemo(() => {
-    const count = Math.max(1, Number(batchCount || 1));
-    return enabledConsumableRows.map((row) => ({
-      supplyId: row.supplyId,
-      name: row.name,
-      type: row.type,
-      unit: row.unit,
-      amount: Number((row.deductAmount / count).toFixed(4)),
-      totalCost: Number((row.totalCost / count).toFixed(2)),
-      unitCost: Number(row.unitCost || 0),
-      batchAmount: row.deductAmount,
-      batchTotalCost: row.totalCost,
-      allocationCount: count,
-    }));
-  }, [enabledConsumableRows, batchCount]);
-
 
   useEffect(() => {
     if (!selectedRecipe) {
@@ -1322,25 +823,12 @@ export default function GrowForm(props) {
       if (!strain) throw new Error("Please choose a strain.");
       if (!stage) throw new Error("Please choose a stage.");
 
-      if (recipeId && selectedRecipeScope === "post-production") {
-        throw new Error(
-          "The selected recipe is marked Post Production and cannot be used in GrowForm."
-        );
-      }
-
       if (!recipeId || selectedRecipeScore === 0) {
         const t = normalizeType(growType);
         const msg = !recipeId
           ? `No recipe is selected for ${t}. Continue anyway?`
           : `The selected recipe doesn’t look like a ${t} recipe. Continue anyway?`;
-        if (
-          !(await confirm({
-            message: msg,
-            confirmLabel: "Continue",
-            cancelLabel: "Go back",
-          }))
-        )
-          return;
+        if (!(await confirm({ message: msg, confirmLabel: "Continue", cancelLabel: "Go back" }))) return;
       }
 
       let storageUsageTotal = 0;
@@ -1495,30 +983,8 @@ export default function GrowForm(props) {
         }
       }
 
-      if (mode === "create") {
-        if (invalidConsumableRows.length > 0) {
-          const names = invalidConsumableRows.map((row) => row.name).join(", ");
-          throw new Error(
-            `Enter a quantity greater than 0 for each checked lab consumable: ${names}.`
-          );
-        }
-        if (overConsumableRows.length > 0) {
-          const first = overConsumableRows[0];
-          throw new Error(
-            `${first.name} exceeds stock on hand. Need ${first.deductAmount} ${first.unit}, but only ${first.available} ${first.unit} remain.`
-          );
-        }
-      }
-
       const createdAt = created ? dateFromDateInput(created) : new Date();
-      const recipeCostNum = Number.isFinite(Number(cost)) ? Number(cost) : 0;
-      const labConsumablesCostNum =
-        mode === "create"
-          ? Number(labConsumablesCost || 0)
-          : Number(savedConsumablesCost || 0);
-      const totalCostNum = Number(
-        (recipeCostNum + labConsumablesCostNum).toFixed(2)
-      );
+      const costNum = Number.isFinite(Number(cost)) ? Number(cost) : 0;
       const isBulkNow = normalizeType(growType) === "Bulk";
 
       let parentContributions = [];
@@ -1571,6 +1037,13 @@ export default function GrowForm(props) {
           }
         }
 
+        const sopChecklist = isSopStart
+          ? normalizeSopChecklistItems(sopTemplate)
+          : [];
+        const sopTaskTemplates = isSopStart
+          ? normalizeSopTaskTemplates(sopTemplate)
+          : [];
+
         const baseCommon = {
           type: growType,
           strain,
@@ -1579,43 +1052,40 @@ export default function GrowForm(props) {
           status,
           recipe: recipeName || "",
           recipeId: recipeId || "",
-          recipeCost: recipeCostNum,
-          labConsumablesCost: labConsumablesCostNum,
-          cost: totalCostNum,
+          cost: costNum,
           createdAt,
           parentSource:
             effectiveParentSource === "library"
               ? "Library"
               : effectiveParentSource === "direct"
-              ? "Direct"
-              : "Grow",
+                ? "SOP"
+                : "Grow",
           parentId:
             effectiveParentSource === "library"
               ? libId
-              : effectiveParentSource === "direct"
-              ? null
-              : parentGrowId || null,
+              : effectiveParentSource === "grow"
+                ? parentGrowId || null
+                : null,
           parentType:
             effectiveParentSource === "library"
               ? storageDoc?.type || null
               : null,
-          ...workflowPayloadFields,
-          ...(attachSopChecklist && normalizedSopChecklist.length
-            ? {
-                sopChecklist: normalizedSopChecklist,
-                sopChecklistCreatedAt: new Date().toISOString(),
-                sopChecklistStatus: "active",
-              }
-            : {}),
-          ...(generateSopTasks && normalizedSopTaskTemplates.length
-            ? {
-                sopTaskTemplatesGenerated: false,
-                sopTaskTemplateCount: normalizedSopTaskTemplates.length,
-              }
-            : {}),
           ...(parentContributions.length ? { parentContributions } : {}),
-          ...(perGrowAllocatedConsumables.length
-            ? { labConsumablesUsed: perGrowAllocatedConsumables }
+          ...(isSopStart
+            ? {
+                source: "sop-template",
+                workflowSource: "sop-template",
+                workflowTemplateId: sopTemplate.id,
+                workflowTemplateTitle: sopTemplate.title || "Workflow SOP",
+                workflowTemplateCategory:
+                  sopTemplate.category || growType || "Workflow",
+                sopTemplateId: sopTemplate.id,
+                sopTemplateTitle: sopTemplate.title || "Workflow SOP",
+                sopTemplateSubtitle: sopTemplate.subtitle || "",
+                sopStartedAt: createdAt,
+                sopChecklist,
+                sopTaskTemplates,
+              }
             : {}),
         };
 
@@ -1655,37 +1125,38 @@ export default function GrowForm(props) {
               : `${prefix}-${existingMax + i + 1}`;
           createPayloads.push(payload);
         }
-        const createdGrowIds = await Promise.all(createPayloads.map((p) => createGrow(p)));
+        const createdGrowIds = await Promise.all(
+          createPayloads.map((payload) => createGrow(payload))
+        );
 
-        if (
-          generateSopTasks &&
-          normalizedSopTaskTemplates.length > 0 &&
-          typeof onCreateTasksForGrow === "function"
-        ) {
-          for (let i = 0; i < createPayloads.length; i++) {
-            const growIdCreated = createdGrowIds[i];
-            if (!growIdCreated) continue;
-            const growPayload = { ...createPayloads[i], id: growIdCreated };
-            try {
-              const taskIds = await onCreateTasksForGrow({
-                growId: growIdCreated,
-                grow: growPayload,
-                taskTemplates: normalizedSopTaskTemplates,
+        if (isSopStart && generateSopTasks && sopTaskTemplates.length > 0) {
+          const user = auth.currentUser;
+          if (user) {
+            const taskWrites = [];
+            createdGrowIds.filter(Boolean).forEach((createdGrowId) => {
+              sopTaskTemplates.forEach((taskTemplate) => {
+                taskWrites.push(
+                  addDoc(collection(db, "users", user.uid, "tasks"), {
+                    title: taskTemplate.title,
+                    dueAt: addDaysIso(createdAt, taskTemplate.dueOffsetDays),
+                    growId: createdGrowId,
+                    stage: taskTemplate.stage,
+                    priority: "normal",
+                    tags: ["sop", "workflow", String(sopTemplate.category || growType).toLowerCase()],
+                    notes: taskTemplate.notes || null,
+                    source: "sop-template",
+                    taskSource: "sop-template",
+                    workflowTemplateId: sopTemplate.id,
+                    workflowTemplateTitle: sopTemplate.title || "Workflow SOP",
+                    sopTemplateId: sopTemplate.id,
+                    sopTemplateTitle: sopTemplate.title || "Workflow SOP",
+                    completedAt: null,
+                    createdAt: new Date().toISOString(),
+                  })
+                );
               });
-              if (Array.isArray(taskIds) && taskIds.length) {
-                await patchGrow(growIdCreated, {
-                  sopTaskTemplatesGenerated: true,
-                  sopTaskIds: taskIds,
-                  sopTaskGeneratedAt: new Date().toISOString(),
-                });
-              }
-            } catch (taskErr) {
-              console.error("SOP task creation failed:", taskErr);
-              setFormNotice({
-                tone: "warning",
-                message: "Grow was created, but SOP task generation needs review.",
-              });
-            }
+            });
+            await Promise.all(taskWrites);
           }
         }
 
@@ -1759,34 +1230,6 @@ export default function GrowForm(props) {
           }
         } catch (e2) {
           console.error("Recipe consumption (non-fatal):", e2);
-        }
-
-        if (enabledConsumableRows.length > 0) {
-          try {
-            const user = auth.currentUser;
-            if (user) {
-              for (const row of enabledConsumableRows) {
-                await consumeTrackedSupply(
-                  user.uid,
-                  row.supplyId,
-                  row.deductAmount,
-                  `Grow-form lab consumable usage for ${count > 1 ? `${prefix} × ${count}` : prefix}`
-                );
-              }
-            }
-          } catch (supplyErr) {
-            console.error("Lab consumable deduction (non-fatal):", supplyErr);
-            await confirm.alert({
-              title: "Consumable deduction needs review",
-              message:
-                `Grows were created, but one or more lab consumables were not deducted.
-
-${
-                  supplyErr?.message || "Please adjust the COG inventory manually."
-                }`,
-              confirmLabel: "OK",
-            });
-          }
         }
 
         if (effectiveParentSource === "library" && libId && storageMode?.ok) {
@@ -1890,14 +1333,9 @@ ${
         status,
         recipe: recipeName || "",
         recipeId: nextRecipeId || "",
-        recipeCost: Number.isFinite(recipeCostNum) ? recipeCostNum : 0,
-        labConsumablesCost: Number.isFinite(labConsumablesCostNum)
-          ? labConsumablesCostNum
-          : 0,
-        cost: Number.isFinite(totalCostNum) ? totalCostNum : 0,
+        cost: Number.isFinite(costNum) ? costNum : 0,
         createdAt,
         updatedAt: serverTimestamp(),
-        ...workflowPayloadFields,
       };
 
       if (normalizeType(growType) !== "Bulk") {
@@ -2182,6 +1620,40 @@ ${
       `}</style>
 
       <form className="grow-form" onSubmit={handleSubmit}>
+        {isSopStart ? (
+          <section
+            data-testid="grow-form-sop-banner"
+            className="mb-4 rounded-2xl border border-violet-300/60 dark:border-violet-800 bg-violet-50 dark:bg-violet-950/30 p-4"
+          >
+            <div className="text-xs uppercase tracking-wide text-violet-700 dark:text-violet-300">
+              Direct / SOP Start
+            </div>
+            <div className="mt-1 text-lg font-semibold">
+              {sopTemplate.title || "Workflow SOP"}
+            </div>
+            {sopTemplate.subtitle ? (
+              <div className="mt-1 text-sm text-zinc-600 dark:text-zinc-300">
+                {sopTemplate.subtitle}
+              </div>
+            ) : null}
+            <label className="mt-3 flex items-start gap-2 text-sm">
+              <input
+                type="checkbox"
+                data-testid="grow-form-generate-sop-tasks"
+                checked={generateSopTasks}
+                onChange={(event) => setGenerateSopTasks(event.target.checked)}
+                className="mt-0.5"
+              />
+              <span>
+                <span className="font-medium">Create suggested SOP tasks</span>
+                <span className="block text-xs text-zinc-500 dark:text-zinc-400">
+                  Adds the template inspection and quality-gate tasks to this grow.
+                </span>
+              </span>
+            </label>
+          </section>
+        ) : null}
+
         {formNotice ? (
           <div
             className={`mb-3 rounded-xl px-4 py-3 text-sm ${formNotice.tone === "error" ? "border border-rose-200 dark:border-rose-900/60 bg-rose-50 dark:bg-rose-950/30 text-rose-800 dark:text-rose-200" : formNotice.tone === "warning" ? "border border-amber-200 dark:border-amber-900/60 bg-amber-50 dark:bg-amber-950/30 text-amber-800 dark:text-amber-200" : "border border-[rgba(var(--_accent-rgb),0.35)] bg-[rgba(var(--_accent-rgb),0.10)]"}` }
@@ -2189,87 +1661,31 @@ ${
             {formNotice.message}
           </div>
         ) : null}
-
-        {workflowMeta.hasWorkflow ? (
-          <section data-testid="grow-form-sop-banner" className="mb-3 rounded-2xl border border-[rgba(var(--_accent-rgb),0.35)] bg-[rgba(var(--_accent-rgb),0.10)] p-3 text-sm">
-            <div className="text-xs uppercase tracking-wide opacity-70">Started from SOP template</div>
-            <div className="mt-1 font-semibold">
-              {workflowMeta.workflowTemplateTitle || "Workflow SOP"}
-            </div>
-            <div className="mt-1 text-xs opacity-80">
-              {workflowMeta.workflowTemplateCategory || "Workflow"}
-              {workflowMeta.workflowStep ? ` · ${workflowMeta.workflowStep}` : ""}
-            </div>
-            {workflowMeta.workflowTemplateSummary ? (
-              <div className="mt-2 text-xs opacity-80">{workflowMeta.workflowTemplateSummary}</div>
-            ) : null}
-
-            {mode === "create" ? (
-              <div className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-2">
-                {normalizedSopChecklist.length > 0 ? (
-                  <label className="flex items-start gap-2 rounded-xl border border-emerald-200 bg-white/70 p-3 text-xs text-emerald-950 dark:border-emerald-900/60 dark:bg-emerald-950/20 dark:text-emerald-100">
-                    <input
-                      type="checkbox"
-                      data-testid="grow-form-attach-sop-checklist"
-                      checked={attachSopChecklist}
-                      onChange={(e) => setAttachSopChecklist(e.target.checked)}
-                      className="mt-1"
-                    />
-                    <span>
-                      <span className="font-semibold">Attach SOP run checklist</span>
-                      <span className="mt-1 block opacity-75">
-                        Adds {normalizedSopChecklist.length} workflow checkpoints to this grow detail page.
-                      </span>
-                    </span>
-                  </label>
-                ) : null}
-
-                {normalizedSopTaskTemplates.length > 0 ? (
-                  <label className="flex items-start gap-2 rounded-xl border border-blue-200 bg-white/70 p-3 text-xs text-blue-950 dark:border-blue-900/60 dark:bg-blue-950/20 dark:text-blue-100">
-                    <input
-                      type="checkbox"
-                      data-testid="grow-form-generate-sop-tasks"
-                      checked={generateSopTasks}
-                      onChange={(e) => setGenerateSopTasks(e.target.checked)}
-                      className="mt-1"
-                    />
-                    <span>
-                      <span className="font-semibold">Create suggested SOP tasks</span>
-                      <span className="mt-1 block opacity-75">
-                        Creates {normalizedSopTaskTemplates.length} optional task reminders after the grow is saved.
-                      </span>
-                    </span>
-                  </label>
-                ) : null}
-              </div>
-            ) : null}
-          </section>
-        ) : null}
-
         {mode === "create" && (
           <section className="mb-2">
             <label className="label mb-1 block">Parent Source</label>
-            <div className="chipset">
-              {availableParentSources.map((opt) => (
-                <button
-                  type="button"
-                  key={opt.key}
-                  className={
-                    effectiveParentSource === opt.key ? "active" : ""
-                  }
-                  onClick={() => setParentSource(opt.key)}
-                >
-                  {opt.label}
-                </button>
-              ))}
-            </div>
-          </section>
-        )}
-
-        {mode === "create" && effectiveParentSource === "direct" && (
-          <section className="mb-3 rounded-xl border border-blue-200 dark:border-blue-900/60 bg-blue-50 dark:bg-blue-950/30 p-3 text-sm text-blue-900 dark:text-blue-100">
-            This grow will start directly from the selected SOP template without consuming a parent grow or storage item.
-            Use this for first-run agar plates, test batches, or entries where the source material is tracked outside the app.
+            {isSopStart ? (
+              <div className="chipset">
+                <span className="active px-3 py-1.5 rounded-full text-sm">
+                  Direct / SOP Start
+                </span>
+              </div>
+            ) : (
+              <div className="chipset">
+                {PARENT_SOURCES.map((opt) => (
+                  <button
+                    type="button"
+                    key={opt.key}
+                    className={
+                      effectiveParentSource === opt.key ? "active" : ""
+                    }
+                    onClick={() => setParentSource(opt.key)}
+                  >
+                    {opt.label}
+                  </button>
+                ))}
+              </div>
+            )}
           </section>
         )}
 
@@ -2565,176 +1981,6 @@ ${
               </>
             )}
           </section>
-
-        )}
-
-        {mode === "create" && (
-          <section className="grid sm:grid-cols-4 gap-2 mt-3">
-            <div className="sm:col-span-4 text-xs opacity-70">
-              Check any grow-form lab consumables used for this save. Quantities
-              entered below are total for the whole save
-              {Math.max(1, Number(batchCount || 1)) > 1
-                ? ` and the cost will be split across ${Math.max(
-                    1,
-                    Number(batchCount || 1)
-                  )} created grows.`
-                : "."}
-            </div>
-
-            {trackedConsumableOptions.length === 0 ? (
-              <div className="sm:col-span-4 text-xs text-amber-300">
-                No <code>lab-consumable</code> items were found in COG yet. Add
-                things like syringes, needles, prep pads, or gloves there first.
-              </div>
-            ) : (
-              trackedConsumableOptions.map((supply) => {
-                const selection = consumableSelections?.[supply.id] || {
-                  enabled: false,
-                  amount: "",
-                };
-                const enabled = !!selection.enabled;
-                const enteredAmount = Number(selection.amount || 0);
-                const deductAmount = enabled
-                  ? roundedSupplyAmount(enteredAmount, supply.unit || "count")
-                  : 0;
-                const available = Number(supply.quantity || 0);
-                const over = enabled && deductAmount > available + 1e-9;
-                const invalid =
-                  enabled &&
-                  (!Number.isFinite(enteredAmount) || deductAmount <= 0);
-
-                return (
-                  <div
-                    key={supply.id}
-                    className={`rounded-xl border p-3 ${
-                      enabled
-                        ? "border-[rgba(var(--_accent-rgb),0.45)] bg-[rgba(var(--_accent-rgb),0.08)]"
-                        : "border-slate-700/70 bg-slate-900/30"
-                    }`}
-                  >
-                    <label className="flex items-start gap-3">
-                      <input
-                        type="checkbox"
-                        checked={enabled}
-                        onChange={(e) =>
-                          setConsumableSelections((prev) => ({
-                            ...prev,
-                            [supply.id]: {
-                              enabled: e.target.checked,
-                              amount: e.target.checked
-                                ? prev?.[supply.id]?.amount || "1"
-                                : "",
-                            },
-                          }))
-                        }
-                      />
-                      <div className="min-w-0 flex-1">
-                        <div className="font-medium text-sm">
-                          {supply.name || "Unnamed Supply"}
-                        </div>
-                        <div className="text-xs opacity-70 mt-1">
-                          {supply.type || "supply"} ·{" "}
-                          {Number(supply.quantity || 0)} {supply.unit || "count"} on hand · $
-                          {Number(supply.cost || 0).toFixed(2)} /{" "}
-                          {supply.unit || "count"}
-                        </div>
-                      </div>
-                    </label>
-
-                    <div className="mt-3">
-                      <label className="label text-xs">Used for this save</label>
-                      <input
-                        type="number"
-                        min="0"
-                        step={
-                          isCountLikeSupplyUnit(supply.unit || "") ? "1" : "0.1"
-                        }
-                        className="input"
-                        value={selection.amount || ""}
-                        onChange={(e) =>
-                          setConsumableSelections((prev) => ({
-                            ...prev,
-                            [supply.id]: {
-                              enabled: true,
-                              amount: e.target.value,
-                            },
-                          }))
-                        }
-                        placeholder="0"
-                        disabled={!enabled}
-                      />
-                    </div>
-
-                    {enabled && (
-                      <div className="mt-2 text-xs opacity-80">
-                        Deducting{" "}
-                        <span className="font-semibold">{deductAmount}</span>{" "}
-                        {supply.unit || "count"} · Cost added{" "}
-                        <span className="font-semibold">
-                          ${Number(deductAmount * Number(supply.cost || 0)).toFixed(2)}
-                        </span>
-                      </div>
-                    )}
-
-                    {invalid && (
-                      <div className="mt-2 text-xs" style={{ color: "#f87171" }}>
-                        Enter a quantity greater than 0.
-                      </div>
-                    )}
-
-                    {over && (
-                      <div className="mt-2 text-xs" style={{ color: "#f87171" }}>
-                        That exceeds the current stock on hand.
-                      </div>
-                    )}
-                  </div>
-                );
-              })
-            )}
-
-            {enabledConsumableRows.length > 0 && (
-              <div className="sm:col-span-4 text-xs opacity-80">
-                Grow-form lab consumables:{" "}
-                <span className="font-semibold">
-                  ${batchConsumablesCost.toFixed(2)}
-                </span>{" "}
-                total for this save ·{" "}
-                <span className="font-semibold">
-                  ${labConsumablesCost.toFixed(2)}
-                </span>{" "}
-                per grow
-              </div>
-            )}
-          </section>
-        )}
-
-        {mode === "edit" && savedConsumableRows.length > 0 && (
-          <section className="grid sm:grid-cols-3 gap-2 mt-3">
-            <div className="sm:col-span-3 rounded-xl border border-slate-700/70 bg-slate-900/30 p-3">
-              <div className="text-sm font-medium mb-2">Saved Lab Consumables</div>
-              <div className="space-y-1 text-xs opacity-80">
-                {savedConsumableRows.map((row) => (
-                  <div key={`${row.supplyId}-${row.name}`}>
-                    {row.name} ·{" "}
-                    {Number(row.amount || 0).toFixed(
-                      isCountLikeSupplyUnit(row.unit || "") ? 0 : 2
-                    )}{" "}
-                    {row.unit || "count"} · $
-                    {Number(
-                      (Number.isFinite(Number(row.totalCost))
-                        ? Number(row.totalCost)
-                        : Number(
-                            (
-                              Number(row.unitCost || 0) *
-                              Number(row.amount || 0)
-                            ).toFixed(2)
-                          )) || 0
-                    ).toFixed(2)}
-                  </div>
-                ))}
-              </div>
-            </div>
-          </section>
         )}
 
         <section className="grid sm:grid-cols-3 gap-2 mt-3">
@@ -2945,7 +2191,7 @@ ${
               onChange={(e) => setRecipeId(e.target.value)}
             >
               <option value="">Optional</option>
-              {growUsableRecipes.map((r) => (
+              {recipesRanked.map((r) => (
                 <option key={r.id} value={r.id}>
                   {r.name || "Untitled Recipe"}
                 </option>
@@ -2953,11 +2199,7 @@ ${
             </select>
 
             {recipeId ? (
-              selectedRecipeScope === "post-production" ? (
-                <div className="text-xs mt-1 text-amber-300">
-                  ⚠ This recipe is marked Post Production and cannot be used in GrowForm.
-                </div>
-              ) : selectedRecipeScore >= 2 ? (
+              selectedRecipeScore >= 2 ? (
                 <div className="text-xs mt-1 accent-text">
                   ✓ Likely match for {normalizeType(growType)}
                 </div>
@@ -2999,15 +2241,10 @@ ${
               min="0"
               step="0.01"
               className="input"
-              value={Number(totalCost).toFixed(2)}
+              value={Number(cost).toFixed(2)}
               readOnly
               disabled
             />
-            <div className="text-xs mt-1 opacity-70">
-              Recipe ${Number(cost || 0).toFixed(2)} + lab consumables $
-              {Number(labConsumablesCost || 0).toFixed(2)} = total $
-              {Number(totalCost || 0).toFixed(2)}
-            </div>
           </div>
         </section>
 

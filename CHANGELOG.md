@@ -1,6 +1,38 @@
-﻿# Changelog
+<!-- CHANGELOG.md -->
+# Changelog
 
 All notable public-facing changes for Chaotic Neutral Myco Tracker are tracked here.
+
+## Unreleased
+
+### Added
+
+- SOP-started grow creation now carries workflow metadata, optional generated tasks, and a per-grow SOP checklist.
+- Added SOP workflow analytics and current lifecycle regression coverage.
+- Added editable global environment targets by cultivation stage with Fahrenheit/Celsius display conversion.
+- Added target comparison badges for environment logs.
+
+### Changed
+
+- Reconnected the SOP / Workflow Toolkit to Recipes and Grow creation.
+- Normalized legacy recipe tag values so older string-based records no longer crash the Recipes screen.
+- Corrected the Strain Library species field so normalization and menu closing share one blur handler.
+- Hardened `.gitignore` and `.vercelignore` for local auth state, backups, patch folders, native artifacts, and generated output.
+- Aligned `.env.example` with the Firebase emulator variable names used by the app.
+- Updated PWA metadata for root deployment on Vercel.
+- Added `npm run release:check` for the current build/test preflight.
+
+### Removed
+
+- Removed the diagnostic-only `/camera-probe` route and `src/CameraProbe.tsx`.
+- Removed obsolete public diagnostic pages and local generated/backup artifacts during the cleanup audit.
+
+### Testing
+
+- `npm run build`
+- `npm run test:e2e:list`
+- `npm run test:subscription`
+- Local verification currently discovers 6 Playwright tests and passes 34 subscription unit tests.
 
 ## v1.1.4 - 2026-05-23
 

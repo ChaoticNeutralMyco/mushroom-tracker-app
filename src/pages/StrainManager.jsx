@@ -85,39 +85,6 @@ const fmtDate = (v) => {
   const d = asDate(v);
   return d ? d.toLocaleDateString() : "—";
 };
-
-function growRemainingAmount(g = {}) {
-  const total = Number(g?.amountTotal);
-  const used = Number(g?.amountUsed);
-  if (Number.isFinite(total) && total > 0) {
-    return Math.max(0, total - (Number.isFinite(used) ? used : 0));
-  }
-  const legacy = Number(g?.amountAvailable);
-  return Number.isFinite(legacy) ? Math.max(0, legacy) : 0;
-}
-
-function formatLibraryQty(item = {}) {
-  const qty = Number(item?.qty || 0);
-  const unit = item?.unit || "count";
-  const type = String(item?.type || "");
-  const syringeCount = Number(item?.syringeCount || 0);
-  const mlPerSyringe = Number(item?.mlPerSyringe || 0);
-
-  if (type === "LC Syringe" && syringeCount > 0) {
-    const countLabel = `${syringeCount} syringe${syringeCount === 1 ? "" : "s"}`;
-    if (unit === "ml" && qty > 0) {
-      const mlLabel =
-        mlPerSyringe > 0
-          ? `${qty} ml total · ${mlPerSyringe} ml each`
-          : `${qty} ml total`;
-      return `${countLabel} · ${mlLabel}`;
-    }
-    return countLabel;
-  }
-
-  return `${qty} ${unit}`;
-}
-
 const getYields = (g) => {
   const list = Array.isArray(g?.flushes)
     ? g.flushes
@@ -300,11 +267,10 @@ const ORIGINS = [
 
 function inferOriginFromLibrary(kind = "") {
   const s = String(kind).toLowerCase();
-  if (s.includes("lc syringe") || (s.includes("syringe") && s.includes("lc"))) return "LC Syringe";
   if (s.includes("syringe")) return "MSS (Spore Syringe)";
   if (s.includes("swab")) return "Spore Swab";
   if (s.includes("print")) return "Spore Print";
-  if (s === "lc" || s.includes("liquid")) return "LC Syringe";
+  if (s === "LC" || s.includes("liquid")) return "LC Syringe";
   return null;
 }
 
@@ -408,138 +374,6 @@ const EMPTY_CARD_BUILDER = {
   artMode: "preset",
   frontArtUrl: "",
 };
-
-const WORKFLOW_OPTIONS = [
-  "Agar → LC → Grain → Bulk",
-  "Agar → Grain → Bulk",
-  "LC → Grain → Bulk",
-  "Spore → Agar cleanup → LC → Grain → Bulk",
-  "Library culture → Grain → Bulk",
-  "Gourmet block workflow",
-  "Custom",
-];
-
-const GRAIN_OPTIONS = [
-  "Popcorn",
-  "Milo",
-  "Rye berries",
-  "Oats",
-  "Wheat berries",
-  "Wild bird seed",
-  "Brown rice",
-  "Mixed grain",
-  "Custom",
-];
-
-const GRAIN_PREP_OPTIONS = [
-  "Pressure-cook hydration",
-  "Soak / simmer / dry",
-  "No-soak / no-simmer",
-  "Purchased sterile grain",
-  "Custom",
-];
-
-const SUBSTRATE_OPTIONS = [
-  "CVG",
-  "CV",
-  "Coir only",
-  "Manure blend",
-  "Straw",
-  "Hardwood fuel pellets",
-  "Master's Mix",
-  "Custom",
-];
-
-const CLEAN_WORK_OPTIONS = [
-  "Bella Bora SAB",
-  "Still air box",
-  "FFU",
-  "Flow hood",
-  "Glove box",
-  "Custom",
-];
-
-const CONTAMINATION_RISK_OPTIONS = ["Unknown", "Low", "Moderate", "High"];
-
-const EMPTY_CULTIVATION_PROFILE = {
-  preferredWorkflow: "Agar → LC → Grain → Bulk",
-  preferredGrain: "Popcorn",
-  grainPrepMethod: "Pressure-cook hydration",
-  preferredSubstrate: "CVG",
-  cleanWorkspace: "Bella Bora SAB",
-  contaminationRisk: "Unknown",
-  colonizationTempMinF: "",
-  colonizationTempMaxF: "",
-  fruitingTempMinF: "",
-  fruitingTempMaxF: "",
-  fruitingHumidityMin: "",
-  fruitingHumidityMax: "",
-  expectedColonizationDays: "",
-  expectedFruitingDays: "",
-  agarNotes: "",
-  lcNotes: "",
-  grainNotes: "",
-  bulkNotes: "",
-  cleanWorkNotes: "",
-  contaminationNotes: "",
-};
-
-function buildCultivationProfileSeed(seed = {}) {
-  const source = seed?.cultivationProfile || seed?.profile || {};
-  return {
-    ...EMPTY_CULTIVATION_PROFILE,
-    ...source,
-    preferredWorkflow: source?.preferredWorkflow || EMPTY_CULTIVATION_PROFILE.preferredWorkflow,
-    preferredGrain: source?.preferredGrain || EMPTY_CULTIVATION_PROFILE.preferredGrain,
-    grainPrepMethod: source?.grainPrepMethod || EMPTY_CULTIVATION_PROFILE.grainPrepMethod,
-    preferredSubstrate: source?.preferredSubstrate || EMPTY_CULTIVATION_PROFILE.preferredSubstrate,
-    cleanWorkspace: source?.cleanWorkspace || EMPTY_CULTIVATION_PROFILE.cleanWorkspace,
-    contaminationRisk: source?.contaminationRisk || EMPTY_CULTIVATION_PROFILE.contaminationRisk,
-  };
-}
-
-function hasUsefulCultivationProfile(profile = {}) {
-  const seeded = buildCultivationProfileSeed({ cultivationProfile: profile });
-  return Object.entries(seeded).some(([key, value]) => {
-    if (value == null) return false;
-    const clean = String(value).trim();
-    if (!clean) return false;
-    return clean !== String(EMPTY_CULTIVATION_PROFILE[key] || "").trim();
-  });
-}
-
-function formatProfileRange(min, max, unit = "") {
-  const left = String(min ?? "").trim();
-  const right = String(max ?? "").trim();
-  if (left && right) return `${left}–${right}${unit}`;
-  if (left) return `${left}${unit}`;
-  if (right) return `${right}${unit}`;
-  return "—";
-}
-
-function joinProfileNotes(...values) {
-  return values
-    .map((value) => String(value || "").trim())
-    .filter(Boolean)
-    .join("\n\n");
-}
-
-function buildTradeSyringeDraft(location = DEFAULT_STORAGE_LOCATIONS[0]) {
-  return {
-    sourceGrowId: "",
-    syringeCount: 1,
-    mlPerSyringe: 10,
-    location: location || DEFAULT_STORAGE_LOCATIONS[0],
-    acquired: new Date().toISOString().slice(0, 10),
-    notes: "",
-    syringeSupplyId: "",
-  };
-}
-
-function getLibraryItemAvailableMl(item = {}) {
-  const qty = Number(item?.qty || 0);
-  return Number.isFinite(qty) ? Math.max(0, qty) : 0;
-}
 
 function buildCardBuilderSeed(seed = {}) {
   const normalized = buildDefaultStrainCardDesign(seed);
@@ -728,16 +562,9 @@ export default function StrainManager(props) {
   );
   const [libraryItems, setLibraryItems] = useState([]);
   const [savedSpecies, setSavedSpecies] = useState([]);
-  const [supplies, setSupplies] = useState([]);
 
   const [storageLocations, setStorageLocations] = useState([]);
   const [manageLocOpen, setManageLocOpen] = useState(false);
-  const [tradeSyringeOpen, setTradeSyringeOpen] = useState(false);
-  const [tradeSyringe, setTradeSyringe] = useState(() =>
-    buildTradeSyringeDraft(DEFAULT_STORAGE_LOCATIONS[0])
-  );
-  const [tradeSaving, setTradeSaving] = useState(false);
-  const [tradeError, setTradeError] = useState("");
 
   const [cachedStrainNames, setCachedStrainNames] = useState([]);
 
@@ -748,7 +575,6 @@ export default function StrainManager(props) {
     genetics: "",
     notes: "",
     photoURL: "",
-    cultivationProfile: buildCultivationProfileSeed({}),
     cardBuilder: buildCardBuilderSeed({}),
   });
   const [imageFile, setImageFile] = useState(null);
@@ -895,13 +721,6 @@ export default function StrainManager(props) {
       }
     );
 
-    const unsubSupplies = onSnapshot(
-      collection(db, "users", uid, "supplies"),
-      (snap) => {
-        setSupplies(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
-      }
-    );
-
     (async () => {
       try {
         if (!hasStrainsProp) {
@@ -924,7 +743,6 @@ export default function StrainManager(props) {
       cancelled = true;
       unsubLib();
       unsubSpecies();
-      unsubSupplies();
     };
   }, [uid, hasStrainsProp, hasGrowsProp]);
 
@@ -933,14 +751,12 @@ export default function StrainManager(props) {
     "Spore Swab": "count",
     "Spore Print": "count",
     "Spore Syringe": "ml",
-    "LC Syringe": "ml",
     LC: "ml",
     "Agar Plate": "ml",
     "Agar Slant": "ml",
   };
   const LIBRARY_TYPES = [
     "Spore Syringe",
-    "LC Syringe",
     "Spore Swab",
     "Spore Print",
     "LC",
@@ -963,9 +779,6 @@ export default function StrainManager(props) {
       ? storageLocations[0].name
       : DEFAULT_STORAGE_LOCATIONS[0];
     setNewItem((prev) => ({ ...prev, location: prev.location || first }));
-    setTradeSyringe((prev) =>
-      prev.location ? prev : { ...prev, location: first }
-    );
   }, [storageLocations]);
 
   /* ---------------- Species suggestions ---------------- */
@@ -1020,15 +833,6 @@ export default function StrainManager(props) {
       cardBuilder: { ...(f.cardBuilder || EMPTY_CARD_BUILDER), [key]: value },
     }));
 
-  const updateCultivationProfile = (key, value) =>
-    setForm((f) => ({
-      ...f,
-      cultivationProfile: {
-        ...buildCultivationProfileSeed(f),
-        [key]: value,
-      },
-    }));
-
   const loadBuilderForStrain = useCallback(
     (strainDoc = {}) => {
       setForm({
@@ -1038,7 +842,6 @@ export default function StrainManager(props) {
         genetics: strainDoc.genetics || "",
         notes: strainDoc.notes || "",
         photoURL: strainDoc.photoURL || "",
-        cultivationProfile: buildCultivationProfileSeed(strainDoc),
         cardBuilder: buildCardBuilderSeed(strainDoc),
       });
       setImageFile(null);
@@ -1059,7 +862,6 @@ export default function StrainManager(props) {
       genetics: "",
       notes: "",
       photoURL: "",
-      cultivationProfile: buildCultivationProfileSeed({}),
       cardBuilder: buildCardBuilderSeed({}),
     });
     setImageFile(null);
@@ -1104,7 +906,6 @@ export default function StrainManager(props) {
       genetics: "",
       notes: "",
       photoURL: "",
-      cultivationProfile: buildCultivationProfileSeed({}),
       cardBuilder: buildCardBuilderSeed({}),
     });
     setImageFile(null);
@@ -1172,7 +973,6 @@ export default function StrainManager(props) {
         genetics: form.genetics || "",
         notes: form.notes || "",
         photoURL,
-        cultivationProfile: buildCultivationProfileSeed(form),
         cardBuilder,
       };
       if (!data.name) throw new Error("Strain name is required.");
@@ -1306,7 +1106,6 @@ export default function StrainManager(props) {
       createdAt,
       updatedAt: createdAt,
       source: "library",
-      cultivationProfile: buildCultivationProfileSeed({}),
       cardBuilder: buildCardBuilderSeed({
         name: clean,
         scientificName: String(scientificName || "").trim(),
@@ -1379,7 +1178,7 @@ export default function StrainManager(props) {
     const strain = it?.strainName || "";
 
     let nextType = "Agar";
-    if (kind === "LC" || kind === "LC Syringe") nextType = "Grain Jar";
+    if (kind === "LC") nextType = "Grain Jar";
     else if (kind.includes("Agar")) nextType = "LC";
 
     const prefill = {
@@ -1405,184 +1204,6 @@ export default function StrainManager(props) {
     } catch {}
   };
 
-  const openTradeSyringeModal = () => {
-    const firstLocation = storageLocations.length
-      ? storageLocations[0].name
-      : DEFAULT_STORAGE_LOCATIONS[0];
-    setTradeError("");
-    setTradeSyringe(buildTradeSyringeDraft(firstLocation));
-    setTradeSyringeOpen(true);
-  };
-
-  const createTradeLcSyringe = async (e) => {
-    e?.preventDefault?.();
-    const user = auth.currentUser;
-    if (!user) return;
-
-    const syringeCount = Math.max(
-      0,
-      Math.floor(Number(tradeSyringe.syringeCount || 0))
-    );
-    const mlPerSyringe = Number(tradeSyringe.mlPerSyringe || 0);
-    const totalMl = Number((syringeCount * mlPerSyringe).toFixed(2));
-    const parent = selectedTradeSource || null;
-
-    if (!parent) {
-      setTradeError("Select an LC source from Library or active grows.");
-      return;
-    }
-
-    const isGrowSource = parent.sourceKind === "grow";
-    const isLibrarySource = parent.sourceKind === "library";
-
-    if (!isGrowSource && !isLibrarySource) {
-      setTradeError("Select an LC source from Library or active grows.");
-      return;
-    }
-
-    const availableMl = Number(parent.availableMl || 0);
-
-    if (syringeCount <= 0) {
-      setTradeError("Enter how many trade syringes to make.");
-      return;
-    }
-    if (!Number.isFinite(mlPerSyringe) || mlPerSyringe <= 0) {
-      setTradeError("Enter the volume for each syringe.");
-      return;
-    }
-    if (totalMl <= 0) {
-      setTradeError("Total LC to pull must be greater than zero.");
-      return;
-    }
-    if (totalMl > availableMl + 1e-9) {
-      setTradeError(
-        `You only have ${availableMl.toFixed(2)} ml available in that LC source.`
-      );
-      return;
-    }
-
-    const selectedSupply =
-      syringeSupplyOptions.find((s) => s.id === tradeSyringe.syringeSupplyId) || null;
-    if (selectedSupply) {
-      const availableSyringes = Number(selectedSupply.quantity || 0);
-      if (availableSyringes < syringeCount) {
-        setTradeError(
-          `Selected syringe supply only has ${availableSyringes} available.`
-        );
-        return;
-      }
-    }
-
-    try {
-      setTradeSaving(true);
-      setTradeError("");
-
-      const parentName = String(parent?.strainName || parent?.strain || "").trim();
-      const scientificName = String(
-        selectedTradeStrain?.scientificName || parent?.scientificName || ""
-      ).trim();
-
-      await ensureStrainExists(parentName, scientificName);
-      await ensureSpeciesSaved(scientificName);
-      addNameToCache(parentName);
-
-      const payload = {
-        type: "LC Syringe",
-        strainName: parentName,
-        scientificName,
-        qty: totalMl,
-        unit: "ml",
-        volumeMl: totalMl,
-        syringeCount,
-        mlPerSyringe,
-        location:
-          tradeSyringe.location ||
-          (storageLocations.length
-            ? storageLocations[0].name
-            : DEFAULT_STORAGE_LOCATIONS[0]),
-        acquired: tradeSyringe.acquired || new Date().toISOString().slice(0, 10),
-        notes: tradeSyringe.notes || "",
-        sourceGrowId: isGrowSource ? parent.sourceId : null,
-        sourceLibraryId: isLibrarySource ? parent.sourceId : null,
-        sourceGrowAbbr: parent.abbreviation || parent.abbr || "",
-        sourceType: "LC",
-        sourceKind: parent.sourceKind,
-        status: "Active",
-        archived: false,
-        createdAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString(),
-      };
-
-      const createdRef = await addDoc(collection(db, "users", user.uid, "library"), payload);
-
-      if (isGrowSource) {
-        const parentRef = doc(db, "users", user.uid, "grows", parent.sourceId);
-        const parentSnap = await getDoc(parentRef);
-        if (parentSnap.exists()) {
-          const data = parentSnap.data() || {};
-          const total = Number(data.amountTotal);
-          const used = Number(data.amountUsed);
-          if (Number.isFinite(total) && total > 0) {
-            await updateDoc(parentRef, {
-              amountUsed: Math.min(total, (Number.isFinite(used) ? used : 0) + totalMl),
-              updatedAt: serverTimestamp(),
-            });
-          } else {
-            const legacy = Number(data.amountAvailable);
-            await updateDoc(parentRef, {
-              amountAvailable: Math.max(
-                0,
-                (Number.isFinite(legacy) ? legacy : availableMl) - totalMl
-              ),
-              updatedAt: serverTimestamp(),
-            });
-          }
-        }
-      } else if (isLibrarySource) {
-        await updateDoc(doc(db, "users", user.uid, "library", parent.sourceId), {
-          qty: Math.max(0, availableMl - totalMl),
-          updatedAt: serverTimestamp(),
-        });
-      }
-
-      if (selectedSupply) {
-        const nextSupplyQty = Math.max(
-          0,
-          Number(selectedSupply.quantity || 0) - syringeCount
-        );
-        await updateDoc(doc(db, "users", user.uid, "supplies", selectedSupply.id), {
-          quantity: nextSupplyQty,
-          lastUpdatedAt: serverTimestamp(),
-        });
-
-        await addDoc(collection(db, "users", user.uid, "supply_audits"), {
-          supplyId: selectedSupply.id,
-          action: "consume",
-          amount: syringeCount,
-          note: `Trade LC syringes from ${parentName || "LC"} (${syringeCount} × ${mlPerSyringe} ml)`,
-          unitCostApplied: Number(selectedSupply.cost || 0) || 0,
-          totalCostApplied:
-            (Number(selectedSupply.cost || 0) || 0) * syringeCount,
-          unit: selectedSupply.unit || "syringe",
-          timestamp: new Date().toISOString(),
-        });
-      }
-
-      setTradeSyringeOpen(false);
-      setTradeSyringe(
-        buildTradeSyringeDraft(
-          storageLocations.length ? storageLocations[0].name : DEFAULT_STORAGE_LOCATIONS[0]
-        )
-      );
-      setScanLibraryId(createdRef.id);
-    } catch (err) {
-      console.error(err);
-      setTradeError(err?.message || "Failed to create trade LC syringe.");
-    } finally {
-      setTradeSaving(false);
-    }
-  };
-
   useEffect(() => {
     if (!openLibraryItemId) return;
     setScanLibraryId(openLibraryItemId);
@@ -1603,89 +1224,6 @@ export default function StrainManager(props) {
       ? grows
       : []
     : localGrows;
-
-  const lcTradeSourceOptions = useMemo(() => {
-    const growOptions = (Array.isArray(growsSource) ? growsSource : [])
-      .filter((grow) => {
-        if (!grow || isArchivedish(grow)) return false;
-        if (normalizeType(grow?.type || grow?.growType || "") !== "LC") return false;
-        return growRemainingAmount(grow) > 0;
-      })
-      .map((grow) => ({
-        id: `grow:${grow.id}`,
-        sourceId: grow.id,
-        sourceKind: "grow",
-        abbreviation: grow.abbreviation || grow.abbr || "",
-        strain: grow.strain || "",
-        strainName: grow.strain || "",
-        scientificName: grow.scientificName || "",
-        availableMl: growRemainingAmount(grow),
-        raw: grow,
-      }));
-
-    const libraryOptions = (Array.isArray(activeLibraryItems) ? activeLibraryItems : [])
-      .filter((item) => {
-        if (!item) return false;
-        if (String(item?.type || "").trim() !== "LC") return false;
-        return getLibraryItemAvailableMl(item) > 0;
-      })
-      .map((item) => ({
-        id: `library:${item.id}`,
-        sourceId: item.id,
-        sourceKind: "library",
-        abbreviation: item.abbreviation || item.abbr || "",
-        strain: item.strainName || "",
-        strainName: item.strainName || "",
-        scientificName: item.scientificName || "",
-        availableMl: getLibraryItemAvailableMl(item),
-        raw: item,
-      }));
-
-    return [...growOptions, ...libraryOptions].sort((a, b) => {
-      const left = `${a.strainName || a.strain || ""} ${a.abbreviation || ""} ${a.sourceKind}`.trim();
-      const right = `${b.strainName || b.strain || ""} ${b.abbreviation || ""} ${b.sourceKind}`.trim();
-      return left.localeCompare(right, undefined, { sensitivity: "base" });
-    });
-  }, [activeLibraryItems, growsSource]);
-
-  const selectedTradeSource = useMemo(
-    () =>
-      lcTradeSourceOptions.find((source) => source.id === tradeSyringe.sourceGrowId) || null,
-    [lcTradeSourceOptions, tradeSyringe.sourceGrowId]
-  );
-
-  const selectedTradeStrain = useMemo(() => {
-    const parentName = String(
-      selectedTradeSource?.strainName || selectedTradeSource?.strain || ""
-    ).trim();
-    if (!parentName) return null;
-    return (
-      strainsToShow.find((row) => norm(row?.name) === norm(parentName)) ||
-      findMatchingStrainCard(parentName) ||
-      null
-    );
-  }, [findMatchingStrainCard, selectedTradeSource, strainsToShow]);
-
-  const tradeSyringeTotalMl = useMemo(() => {
-    const count = Math.max(0, Math.floor(Number(tradeSyringe.syringeCount || 0)));
-    const per = Number(tradeSyringe.mlPerSyringe || 0);
-    if (!Number.isFinite(per) || per <= 0) return 0;
-    return Number((count * per).toFixed(2));
-  }, [tradeSyringe.mlPerSyringe, tradeSyringe.syringeCount]);
-
-  const syringeSupplyOptions = useMemo(() => {
-    return (Array.isArray(supplies) ? supplies : [])
-      .filter((supply) => {
-        const unit = String(supply?.unit || "").toLowerCase();
-        const type = String(supply?.type || "").toLowerCase();
-        return unit === "syringe" || type === "lab-consumable";
-      })
-      .sort((a, b) =>
-        String(a?.name || "").localeCompare(String(b?.name || ""), undefined, {
-          sensitivity: "base",
-        })
-      );
-  }, [supplies]);
 
   const strainsSorted = useMemo(
     () => sortAlpha(strainsToShow, (s) => s?.name || ""),
@@ -1716,34 +1254,13 @@ export default function StrainManager(props) {
     return () => window.clearTimeout(t);
   }, [scanLibraryId, libraryItems.length]);
 
-  const selectedStrainRecord = useMemo(() => {
-    if (!viewStrain) return null;
-    const rows = Array.isArray(strainsToShow) ? strainsToShow : [];
-    if (viewStrain?.id) {
-      const byId = rows.find((row) => row?.id === viewStrain.id);
-      if (byId) return byId;
-    }
-    const target = norm(viewStrain?.name || viewStrain);
-    return rows.find((row) => norm(row?.name) === target) || viewStrain;
-  }, [strainsToShow, viewStrain]);
-
-  const selectedCultivationProfile = useMemo(
-    () => buildCultivationProfileSeed(selectedStrainRecord || {}),
-    [selectedStrainRecord]
-  );
-
-  const selectedProfileHasDetails = useMemo(
-    () => hasUsefulCultivationProfile(selectedCultivationProfile),
-    [selectedCultivationProfile]
-  );
-
   const growsForSelected = useMemo(() => {
-    if (!selectedStrainRecord) return [];
-    const target = norm(selectedStrainRecord.name || selectedStrainRecord);
+    if (!viewStrain) return [];
+    const target = norm(viewStrain.name || viewStrain);
     return (Array.isArray(growsSource) ? growsSource : []).filter(
       (g) => norm(g.strain) === target
     );
-  }, [selectedStrainRecord, growsSource]);
+  }, [viewStrain, growsSource]);
 
   const statsForSelected = useMemo(
     () => calcStatsFromGrows(growsForSelected),
@@ -2633,20 +2150,9 @@ export default function StrainManager(props) {
       </datalist>
 
       <div className="bg-white dark:bg-zinc-900 p-4 rounded-2xl shadow space-y-4">
-        <div className="flex flex-wrap items-center justify-between gap-3 mb-1">
-          <div className="flex items-center gap-2">
-            <ScrollText className="h-5 w-5 opacity-80" />
-            <h2 className="text-xl font-bold">Strain Library / Storage</h2>
-          </div>
-          <button
-            type="button"
-            onClick={openTradeSyringeModal}
-            className="inline-flex items-center gap-2 px-4 py-2 rounded-full bg-zinc-100 text-zinc-900 border border-zinc-300 hover:bg-zinc-200 dark:bg-zinc-800 dark:text-zinc-100 dark:border-zinc-700 dark:hover:bg-zinc-700"
-            title="Create trade LC syringes from an active LC source"
-          >
-            <Syringe className="h-4 w-4" />
-            <span className="whitespace-nowrap">Make LC Syringe</span>
-          </button>
+        <div className="flex items-center gap-2 mb-1">
+          <ScrollText className="h-5 w-5 opacity-80" />
+          <h2 className="text-xl font-bold">Strain Library / Storage</h2>
         </div>
 
         <form
@@ -2707,6 +2213,15 @@ export default function StrainManager(props) {
                   scientificName: e.target.value,
                 }))
               }
+              onBlur={() => {
+                setNewItem((p) => ({
+                  ...p,
+                  scientificName: fuzzyPickSpecies(p.scientificName),
+                }));
+                window.setTimeout(() => {
+                  setSpeciesOpenState(false);
+                }, 0);
+              }}
               onKeyDown={(e) => {
                 if (e.key === "Enter") {
                   e.preventDefault();
@@ -2726,15 +2241,6 @@ export default function StrainManager(props) {
               aria-label="Species"
               title={newItem.scientificName || "Scientific name"}
               onFocus={() => setSpeciesOpenState(true)}
-              onBlur={() => {
-                setNewItem((p) => ({
-                  ...p,
-                  scientificName: fuzzyPickSpecies(p.scientificName),
-                }));
-                window.setTimeout(() => {
-                  setSpeciesOpenState(false);
-                }, 0);
-              }}
             />
             <button
               type="button"
@@ -2925,7 +2431,7 @@ export default function StrainManager(props) {
               {libraryItemsSorted.map((it) => {
                 const kind = it.type || "";
                 let KindIcon = Boxes;
-                if (kind === "Spore Syringe" || kind === "LC Syringe") KindIcon = Syringe;
+                if (kind === "Spore Syringe") KindIcon = Syringe;
                 else if (kind === "Spore Swab") KindIcon = Wand2;
                 else if (kind === "Spore Print") KindIcon = ScrollText;
                 else if (kind.includes("Agar")) KindIcon = Boxes;
@@ -2962,7 +2468,7 @@ export default function StrainManager(props) {
                           {it.scientificName
                             ? `${it.scientificName} · `
                             : ""}
-                          Qty: {formatLibraryQty(it)} ·{" "}
+                          Qty: {it.qty ?? 0} {it.unit || "count"} ·{" "}
                           {it.location || "Unknown"} · Acquired:{" "}
                           {it.acquired || "—"}
                         </div>
@@ -3023,7 +2529,7 @@ export default function StrainManager(props) {
 
                 <div className="text-xs opacity-80 mt-2 space-y-1">
                   <div>
-                    <strong>Qty:</strong> {formatLibraryQty(scanLibraryItem)}
+                    <strong>Qty:</strong> {scanLibraryItem.qty ?? 0} {scanLibraryItem.unit || ""}
                   </div>
                   <div>
                     <strong>Location:</strong> {scanLibraryItem.location || "—"}
@@ -3145,7 +2651,10 @@ export default function StrainManager(props) {
               checked={isChecked}
               onToggleSelect={() => toggleStrain(s.id)}
               onOpen={() => {
-                setViewStrain(s);
+                setViewStrain({
+                  name: s.name,
+                  scientificName: s.scientificName,
+                });
                 setViewTab("grows");
                 setLineageView("tree");
               }}
@@ -3285,243 +2794,6 @@ export default function StrainManager(props) {
                 aria-label="Notes"
                 rows={3}
               />
-
-              <div className="md:col-span-2 rounded-2xl border border-emerald-200 dark:border-emerald-900/70 bg-emerald-50/60 dark:bg-emerald-950/20 p-4 space-y-4">
-                <div className="flex flex-wrap items-start justify-between gap-3">
-                  <div>
-                    <h3 className="text-lg font-semibold">Cultivation Profile</h3>
-                    <p className="text-xs text-zinc-600 dark:text-zinc-400">
-                      Strain-specific defaults for workflow, grain prep, environment targets, and contamination watchouts. These save on the strain card and can guide future grows without changing existing lifecycle behavior.
-                    </p>
-                  </div>
-                  <span className="rounded-full border border-emerald-300 bg-white/70 px-3 py-1 text-xs font-medium text-emerald-800 dark:border-emerald-800 dark:bg-zinc-950/50 dark:text-emerald-200">
-                    SOP profile
-                  </span>
-                </div>
-
-                <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
-                  <label className="space-y-1 text-sm">
-                    <span className="font-medium">Preferred workflow</span>
-                    <select
-                      className="p-2 rounded border dark:bg-zinc-800 dark:border-zinc-700 w-full"
-                      value={form?.cultivationProfile?.preferredWorkflow || EMPTY_CULTIVATION_PROFILE.preferredWorkflow}
-                      onChange={(e) => updateCultivationProfile("preferredWorkflow", e.target.value)}
-                    >
-                      {WORKFLOW_OPTIONS.map((option) => (
-                        <option key={option} value={option}>{option}</option>
-                      ))}
-                    </select>
-                  </label>
-
-                  <label className="space-y-1 text-sm">
-                    <span className="font-medium">Preferred grain</span>
-                    <select
-                      className="p-2 rounded border dark:bg-zinc-800 dark:border-zinc-700 w-full"
-                      value={form?.cultivationProfile?.preferredGrain || EMPTY_CULTIVATION_PROFILE.preferredGrain}
-                      onChange={(e) => updateCultivationProfile("preferredGrain", e.target.value)}
-                    >
-                      {GRAIN_OPTIONS.map((option) => (
-                        <option key={option} value={option}>{option}</option>
-                      ))}
-                    </select>
-                  </label>
-
-                  <label className="space-y-1 text-sm">
-                    <span className="font-medium">Grain prep method</span>
-                    <select
-                      className="p-2 rounded border dark:bg-zinc-800 dark:border-zinc-700 w-full"
-                      value={form?.cultivationProfile?.grainPrepMethod || EMPTY_CULTIVATION_PROFILE.grainPrepMethod}
-                      onChange={(e) => updateCultivationProfile("grainPrepMethod", e.target.value)}
-                    >
-                      {GRAIN_PREP_OPTIONS.map((option) => (
-                        <option key={option} value={option}>{option}</option>
-                      ))}
-                    </select>
-                  </label>
-
-                  <label className="space-y-1 text-sm">
-                    <span className="font-medium">Preferred substrate</span>
-                    <select
-                      className="p-2 rounded border dark:bg-zinc-800 dark:border-zinc-700 w-full"
-                      value={form?.cultivationProfile?.preferredSubstrate || EMPTY_CULTIVATION_PROFILE.preferredSubstrate}
-                      onChange={(e) => updateCultivationProfile("preferredSubstrate", e.target.value)}
-                    >
-                      {SUBSTRATE_OPTIONS.map((option) => (
-                        <option key={option} value={option}>{option}</option>
-                      ))}
-                    </select>
-                  </label>
-
-                  <label className="space-y-1 text-sm">
-                    <span className="font-medium">Clean-work setup</span>
-                    <select
-                      className="p-2 rounded border dark:bg-zinc-800 dark:border-zinc-700 w-full"
-                      value={form?.cultivationProfile?.cleanWorkspace || EMPTY_CULTIVATION_PROFILE.cleanWorkspace}
-                      onChange={(e) => updateCultivationProfile("cleanWorkspace", e.target.value)}
-                    >
-                      {CLEAN_WORK_OPTIONS.map((option) => (
-                        <option key={option} value={option}>{option}</option>
-                      ))}
-                    </select>
-                  </label>
-
-                  <label className="space-y-1 text-sm">
-                    <span className="font-medium">Contamination risk</span>
-                    <select
-                      className="p-2 rounded border dark:bg-zinc-800 dark:border-zinc-700 w-full"
-                      value={form?.cultivationProfile?.contaminationRisk || EMPTY_CULTIVATION_PROFILE.contaminationRisk}
-                      onChange={(e) => updateCultivationProfile("contaminationRisk", e.target.value)}
-                    >
-                      {CONTAMINATION_RISK_OPTIONS.map((option) => (
-                        <option key={option} value={option}>{option}</option>
-                      ))}
-                    </select>
-                  </label>
-                </div>
-
-                <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-                  <label className="space-y-1 text-sm">
-                    <span className="font-medium">Colonize min °F</span>
-                    <input
-                      type="number"
-                      inputMode="decimal"
-                      className="p-2 rounded border dark:bg-zinc-800 dark:border-zinc-700 w-full"
-                      value={form?.cultivationProfile?.colonizationTempMinF || ""}
-                      onChange={(e) => updateCultivationProfile("colonizationTempMinF", e.target.value)}
-                    />
-                  </label>
-                  <label className="space-y-1 text-sm">
-                    <span className="font-medium">Colonize max °F</span>
-                    <input
-                      type="number"
-                      inputMode="decimal"
-                      className="p-2 rounded border dark:bg-zinc-800 dark:border-zinc-700 w-full"
-                      value={form?.cultivationProfile?.colonizationTempMaxF || ""}
-                      onChange={(e) => updateCultivationProfile("colonizationTempMaxF", e.target.value)}
-                    />
-                  </label>
-                  <label className="space-y-1 text-sm">
-                    <span className="font-medium">Fruit min °F</span>
-                    <input
-                      type="number"
-                      inputMode="decimal"
-                      className="p-2 rounded border dark:bg-zinc-800 dark:border-zinc-700 w-full"
-                      value={form?.cultivationProfile?.fruitingTempMinF || ""}
-                      onChange={(e) => updateCultivationProfile("fruitingTempMinF", e.target.value)}
-                    />
-                  </label>
-                  <label className="space-y-1 text-sm">
-                    <span className="font-medium">Fruit max °F</span>
-                    <input
-                      type="number"
-                      inputMode="decimal"
-                      className="p-2 rounded border dark:bg-zinc-800 dark:border-zinc-700 w-full"
-                      value={form?.cultivationProfile?.fruitingTempMaxF || ""}
-                      onChange={(e) => updateCultivationProfile("fruitingTempMaxF", e.target.value)}
-                    />
-                  </label>
-                  <label className="space-y-1 text-sm">
-                    <span className="font-medium">Humidity min %</span>
-                    <input
-                      type="number"
-                      inputMode="decimal"
-                      min="0"
-                      max="100"
-                      className="p-2 rounded border dark:bg-zinc-800 dark:border-zinc-700 w-full"
-                      value={form?.cultivationProfile?.fruitingHumidityMin || ""}
-                      onChange={(e) => updateCultivationProfile("fruitingHumidityMin", e.target.value)}
-                    />
-                  </label>
-                  <label className="space-y-1 text-sm">
-                    <span className="font-medium">Humidity max %</span>
-                    <input
-                      type="number"
-                      inputMode="decimal"
-                      min="0"
-                      max="100"
-                      className="p-2 rounded border dark:bg-zinc-800 dark:border-zinc-700 w-full"
-                      value={form?.cultivationProfile?.fruitingHumidityMax || ""}
-                      onChange={(e) => updateCultivationProfile("fruitingHumidityMax", e.target.value)}
-                    />
-                  </label>
-                  <label className="space-y-1 text-sm">
-                    <span className="font-medium">Colonize days</span>
-                    <input
-                      type="number"
-                      inputMode="numeric"
-                      min="0"
-                      className="p-2 rounded border dark:bg-zinc-800 dark:border-zinc-700 w-full"
-                      value={form?.cultivationProfile?.expectedColonizationDays || ""}
-                      onChange={(e) => updateCultivationProfile("expectedColonizationDays", e.target.value)}
-                    />
-                  </label>
-                  <label className="space-y-1 text-sm">
-                    <span className="font-medium">Fruit days</span>
-                    <input
-                      type="number"
-                      inputMode="numeric"
-                      min="0"
-                      className="p-2 rounded border dark:bg-zinc-800 dark:border-zinc-700 w-full"
-                      value={form?.cultivationProfile?.expectedFruitingDays || ""}
-                      onChange={(e) => updateCultivationProfile("expectedFruitingDays", e.target.value)}
-                    />
-                  </label>
-                </div>
-
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                  <label className="space-y-1 text-sm">
-                    <span className="font-medium">Agar / LC notes</span>
-                    <textarea
-                      rows={3}
-                      className="p-2 rounded border dark:bg-zinc-800 dark:border-zinc-700 w-full"
-                      value={form?.cultivationProfile?.agarNotes || ""}
-                      onChange={(e) => updateCultivationProfile("agarNotes", e.target.value)}
-                      placeholder="Clean-up behavior, transfer timing, LC vigor, cloudiness notes..."
-                    />
-                  </label>
-                  <label className="space-y-1 text-sm">
-                    <span className="font-medium">Grain / bulk notes</span>
-                    <textarea
-                      rows={3}
-                      className="p-2 rounded border dark:bg-zinc-800 dark:border-zinc-700 w-full"
-                      value={form?.cultivationProfile?.grainNotes || ""}
-                      onChange={(e) => updateCultivationProfile("grainNotes", e.target.value)}
-                      placeholder="Popcorn/milo behavior, shake timing, spawn ratio, CVG quirks..."
-                    />
-                  </label>
-                  <label className="space-y-1 text-sm">
-                    <span className="font-medium">Clean-work notes</span>
-                    <textarea
-                      rows={3}
-                      className="p-2 rounded border dark:bg-zinc-800 dark:border-zinc-700 w-full"
-                      value={form?.cultivationProfile?.cleanWorkNotes || ""}
-                      onChange={(e) => updateCultivationProfile("cleanWorkNotes", e.target.value)}
-                      placeholder="SAB/FFU handling, still-air rest time, flame/ISO habits, risky steps..."
-                    />
-                  </label>
-                  <label className="space-y-1 text-sm">
-                    <span className="font-medium">Contamination watchouts</span>
-                    <textarea
-                      rows={3}
-                      className="p-2 rounded border dark:bg-zinc-800 dark:border-zinc-700 w-full"
-                      value={form?.cultivationProfile?.contaminationNotes || ""}
-                      onChange={(e) => updateCultivationProfile("contaminationNotes", e.target.value)}
-                      placeholder="Known weak points, visual signs, smells, prevention notes..."
-                    />
-                  </label>
-                  <label className="space-y-1 text-sm md:col-span-2">
-                    <span className="font-medium">Bulk / fruiting notes</span>
-                    <textarea
-                      rows={3}
-                      className="p-2 rounded border dark:bg-zinc-800 dark:border-zinc-700 w-full"
-                      value={form?.cultivationProfile?.bulkNotes || ""}
-                      onChange={(e) => updateCultivationProfile("bulkNotes", e.target.value)}
-                      placeholder="Pinning behavior, casing preference, FAE sensitivity, harvest timing..."
-                    />
-                  </label>
-                </div>
-              </div>
-
               <input
                 type="file"
                 accept="image/*"
@@ -3858,17 +3130,6 @@ export default function StrainManager(props) {
               >
                 <GitBranch className="w-4 h-4" />
                 Lineage
-              </button>
-              <button
-                className={`chip flex items-center gap-1 ${
-                  viewTab === "profile" ? "accent-chip" : ""
-                }`}
-                onClick={() => setViewTab("profile")}
-                aria-pressed={viewTab === "profile" ? "true" : "false"}
-                title="Show strain-specific SOP and cultivation targets"
-              >
-                <TestTube className="w-4 h-4" />
-                Profile
               </button>
 
               {viewTab === "lineage" && (
@@ -4323,320 +3584,9 @@ export default function StrainManager(props) {
                     : rootsListUI}
                 </>
               )}
-
-              {viewTab === "profile" && (
-                <div className="space-y-4">
-                  <div className="flex flex-wrap items-start justify-between gap-3 rounded-2xl border border-emerald-200 bg-emerald-50/70 p-4 dark:border-emerald-900/70 dark:bg-emerald-950/20">
-                    <div>
-                      <h4 className="text-base font-semibold">Cultivation Profile</h4>
-                      <p className="mt-1 text-sm text-zinc-600 dark:text-zinc-300">
-                        SOP defaults and strain-specific cultivation targets for {selectedStrainRecord?.name || viewStrain?.name || "this strain"}.
-                      </p>
-                      {!selectedProfileHasDetails ? (
-                        <p className="mt-2 text-xs text-emerald-700 dark:text-emerald-300">
-                          This card is still using the default CNM workflow profile. Edit the strain to customize exact targets and watchouts.
-                        </p>
-                      ) : null}
-                    </div>
-                    {selectedStrainRecord ? (
-                      <button
-                        type="button"
-                        className="chip chip--active"
-                        onClick={() => {
-                          setViewStrain(null);
-                          loadBuilderForStrain(selectedStrainRecord);
-                        }}
-                      >
-                        Edit profile
-                      </button>
-                    ) : null}
-                  </div>
-
-                  <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3 text-sm">
-                    <div className="rounded-xl border border-zinc-200 bg-white p-3 dark:border-zinc-800 dark:bg-zinc-950/40">
-                      <div className="text-xs uppercase tracking-wide text-zinc-500">Workflow</div>
-                      <div className="mt-1 font-semibold">{selectedCultivationProfile.preferredWorkflow || "—"}</div>
-                    </div>
-                    <div className="rounded-xl border border-zinc-200 bg-white p-3 dark:border-zinc-800 dark:bg-zinc-950/40">
-                      <div className="text-xs uppercase tracking-wide text-zinc-500">Grain prep</div>
-                      <div className="mt-1 font-semibold">{selectedCultivationProfile.preferredGrain || "—"}</div>
-                      <div className="mt-1 text-xs text-zinc-500">{selectedCultivationProfile.grainPrepMethod || "—"}</div>
-                    </div>
-                    <div className="rounded-xl border border-zinc-200 bg-white p-3 dark:border-zinc-800 dark:bg-zinc-950/40">
-                      <div className="text-xs uppercase tracking-wide text-zinc-500">Substrate</div>
-                      <div className="mt-1 font-semibold">{selectedCultivationProfile.preferredSubstrate || "—"}</div>
-                    </div>
-                    <div className="rounded-xl border border-zinc-200 bg-white p-3 dark:border-zinc-800 dark:bg-zinc-950/40">
-                      <div className="text-xs uppercase tracking-wide text-zinc-500">Clean work</div>
-                      <div className="mt-1 font-semibold">{selectedCultivationProfile.cleanWorkspace || "—"}</div>
-                    </div>
-                    <div className="rounded-xl border border-zinc-200 bg-white p-3 dark:border-zinc-800 dark:bg-zinc-950/40">
-                      <div className="text-xs uppercase tracking-wide text-zinc-500">Contam risk</div>
-                      <div className="mt-1 font-semibold">{selectedCultivationProfile.contaminationRisk || "—"}</div>
-                    </div>
-                    <div className="rounded-xl border border-zinc-200 bg-white p-3 dark:border-zinc-800 dark:bg-zinc-950/40">
-                      <div className="text-xs uppercase tracking-wide text-zinc-500">Expected timing</div>
-                      <div className="mt-1 font-semibold">
-                        Colonize {selectedCultivationProfile.expectedColonizationDays || "—"}d · Fruit {selectedCultivationProfile.expectedFruitingDays || "—"}d
-                      </div>
-                    </div>
-                  </div>
-
-                  <div className="grid grid-cols-1 md:grid-cols-3 gap-3 text-sm">
-                    <div className="rounded-xl border border-zinc-200 bg-white p-3 dark:border-zinc-800 dark:bg-zinc-950/40">
-                      <div className="text-xs uppercase tracking-wide text-zinc-500">Colonization target</div>
-                      <div className="mt-1 font-semibold">
-                        {formatProfileRange(selectedCultivationProfile.colonizationTempMinF, selectedCultivationProfile.colonizationTempMaxF, "°F")}
-                      </div>
-                    </div>
-                    <div className="rounded-xl border border-zinc-200 bg-white p-3 dark:border-zinc-800 dark:bg-zinc-950/40">
-                      <div className="text-xs uppercase tracking-wide text-zinc-500">Fruiting temp</div>
-                      <div className="mt-1 font-semibold">
-                        {formatProfileRange(selectedCultivationProfile.fruitingTempMinF, selectedCultivationProfile.fruitingTempMaxF, "°F")}
-                      </div>
-                    </div>
-                    <div className="rounded-xl border border-zinc-200 bg-white p-3 dark:border-zinc-800 dark:bg-zinc-950/40">
-                      <div className="text-xs uppercase tracking-wide text-zinc-500">Fruiting humidity</div>
-                      <div className="mt-1 font-semibold">
-                        {formatProfileRange(selectedCultivationProfile.fruitingHumidityMin, selectedCultivationProfile.fruitingHumidityMax, "%")}
-                      </div>
-                    </div>
-                  </div>
-
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-sm">
-                    <div className="rounded-xl border border-zinc-200 bg-white p-3 dark:border-zinc-800 dark:bg-zinc-950/40">
-                      <div className="font-semibold">Agar / LC notes</div>
-                      <p className="mt-1 whitespace-pre-wrap text-zinc-600 dark:text-zinc-300">
-                        {joinProfileNotes(selectedCultivationProfile.agarNotes, selectedCultivationProfile.lcNotes) || "No agar or LC notes saved yet."}
-                      </p>
-                    </div>
-                    <div className="rounded-xl border border-zinc-200 bg-white p-3 dark:border-zinc-800 dark:bg-zinc-950/40">
-                      <div className="font-semibold">Grain / bulk notes</div>
-                      <p className="mt-1 whitespace-pre-wrap text-zinc-600 dark:text-zinc-300">
-                        {joinProfileNotes(selectedCultivationProfile.grainNotes, selectedCultivationProfile.bulkNotes) || "No grain or bulk notes saved yet."}
-                      </p>
-                    </div>
-                    <div className="rounded-xl border border-zinc-200 bg-white p-3 dark:border-zinc-800 dark:bg-zinc-950/40">
-                      <div className="font-semibold">Clean-work notes</div>
-                      <p className="mt-1 whitespace-pre-wrap text-zinc-600 dark:text-zinc-300">
-                        {selectedCultivationProfile.cleanWorkNotes || "No SAB/FFU notes saved yet."}
-                      </p>
-                    </div>
-                    <div className="rounded-xl border border-zinc-200 bg-white p-3 dark:border-zinc-800 dark:bg-zinc-950/40">
-                      <div className="font-semibold">Contamination watchouts</div>
-                      <p className="mt-1 whitespace-pre-wrap text-zinc-600 dark:text-zinc-300">
-                        {selectedCultivationProfile.contaminationNotes || "No contamination watchouts saved yet."}
-                      </p>
-                    </div>
-                  </div>
-                </div>
-              )}
             </div>
           </div>
         </div>
-      )}
-
-
-      {tradeSyringeOpen && (
-        <Modal
-          open={tradeSyringeOpen}
-          onClose={() => {
-            if (tradeSaving) return;
-            setTradeSyringeOpen(false);
-            setTradeError("");
-          }}
-          title="Make LC Syringe"
-          size="lg"
-        >
-          <form onSubmit={createTradeLcSyringe} className="space-y-4">
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-              <div className="md:col-span-2">
-                <label className="block text-sm font-medium mb-1">Source LC</label>
-                <select
-                  className="chip w-full"
-                  value={tradeSyringe.sourceGrowId}
-                  onChange={(e) =>
-                    setTradeSyringe((prev) => ({
-                      ...prev,
-                      sourceGrowId: e.target.value,
-                    }))
-                  }
-                >
-                  <option value="">Select LC from Library or active grows</option>
-                  {lcTradeSourceOptions.map((source) => {
-                    const labelParts = [
-                      source.abbreviation || "",
-                      source.strainName || source.strain || "Unknown strain",
-                    ].filter(Boolean);
-                    return (
-                      <option key={source.id} value={source.id}>
-                        [{source.sourceKind === "library" ? "Library" : "Grow"}] {labelParts.join(" — ")} · {Number(source.availableMl || 0).toFixed(2)} ml available
-                      </option>
-                    );
-                  })}
-                </select>
-              </div>
-
-              <div>
-                <label className="block text-sm font-medium mb-1">Trade syringes to make</label>
-                <input
-                  type="number"
-                  min="1"
-                  step="1"
-                  className="chip w-full"
-                  value={tradeSyringe.syringeCount}
-                  onChange={(e) =>
-                    setTradeSyringe((prev) => ({
-                      ...prev,
-                      syringeCount: e.target.value,
-                    }))
-                  }
-                />
-              </div>
-
-              <div>
-                <label className="block text-sm font-medium mb-1">mL per syringe</label>
-                <input
-                  type="number"
-                  min="0.1"
-                  step="0.1"
-                  className="chip w-full"
-                  value={tradeSyringe.mlPerSyringe}
-                  onChange={(e) =>
-                    setTradeSyringe((prev) => ({
-                      ...prev,
-                      mlPerSyringe: e.target.value,
-                    }))
-                  }
-                />
-              </div>
-
-              <div>
-                <label className="block text-sm font-medium mb-1">Storage location</label>
-                <select
-                  className="chip w-full"
-                  value={tradeSyringe.location}
-                  onChange={(e) =>
-                    setTradeSyringe((prev) => ({
-                      ...prev,
-                      location: e.target.value,
-                    }))
-                  }
-                >
-                  {(storageLocations.length
-                    ? storageLocations
-                    : DEFAULT_STORAGE_LOCATIONS.map((name) => ({ id: name, name }))
-                  ).map((row) => (
-                    <option key={row.id} value={row.name}>
-                      {row.name}
-                    </option>
-                  ))}
-                </select>
-              </div>
-
-              <div>
-                <label className="block text-sm font-medium mb-1">Acquired date</label>
-                <input
-                  type="date"
-                  className="chip w-full"
-                  value={tradeSyringe.acquired}
-                  onChange={(e) =>
-                    setTradeSyringe((prev) => ({
-                      ...prev,
-                      acquired: e.target.value,
-                    }))
-                  }
-                />
-              </div>
-
-              <div className="md:col-span-2">
-                <label className="block text-sm font-medium mb-1">
-                  Deduct syringe supply from COG (optional)
-                </label>
-                <select
-                  className="chip w-full"
-                  value={tradeSyringe.syringeSupplyId}
-                  onChange={(e) =>
-                    setTradeSyringe((prev) => ({
-                      ...prev,
-                      syringeSupplyId: e.target.value,
-                    }))
-                  }
-                >
-                  <option value="">No syringe COG deduction</option>
-                  {syringeSupplyOptions.map((supply) => (
-                    <option key={supply.id} value={supply.id}>
-                      {supply.name} · {Number(supply.quantity || 0)} {supply.unit || "syringe"} on hand
-                    </option>
-                  ))}
-                </select>
-              </div>
-
-              <div className="md:col-span-2">
-                <label className="block text-sm font-medium mb-1">Notes</label>
-                <textarea
-                  rows={3}
-                  className="chip w-full"
-                  value={tradeSyringe.notes}
-                  onChange={(e) =>
-                    setTradeSyringe((prev) => ({
-                      ...prev,
-                      notes: e.target.value,
-                    }))
-                  }
-                  placeholder="Optional notes for this storage item"
-                />
-              </div>
-            </div>
-
-            <div className="rounded-xl border border-zinc-200 dark:border-zinc-800 bg-zinc-50 dark:bg-zinc-900/50 p-3 text-sm">
-              <div>
-                <strong>Output:</strong> {Math.max(0, Math.floor(Number(tradeSyringe.syringeCount || 0)))} syringe
-                {Math.floor(Number(tradeSyringe.syringeCount || 0)) === 1 ? "" : "s"} · {tradeSyringeTotalMl.toFixed(2)} ml total
-              </div>
-              <div className="mt-1 text-zinc-500 dark:text-zinc-400">
-                {selectedTradeSource ? (
-                  <>
-                    Source: <strong>{selectedTradeSource.abbreviation || selectedTradeSource.strainName || selectedTradeSource.strain || "LC"}</strong> · {selectedTradeSource.sourceKind === "library" ? "Library item" : "Grow source"} ·
-                    Remaining after pull:{" "}
-                    <strong>
-                      {Math.max(0, Number(selectedTradeSource.availableMl || 0) - tradeSyringeTotalMl).toFixed(2)} ml
-                    </strong>
-                  </>
-                ) : (
-                  <>Select an LC source from Library or active grows to see the volume pull summary.</>
-                )}
-              </div>
-            </div>
-
-            {tradeError ? (
-              <div className="rounded-xl border border-red-300 bg-red-50 px-3 py-2 text-sm text-red-800 dark:border-red-700 dark:bg-red-950/40 dark:text-red-200">
-                {tradeError}
-              </div>
-            ) : null}
-
-            <div className="flex flex-wrap justify-end gap-2">
-              <button
-                type="button"
-                className="chip"
-                onClick={() => {
-                  if (tradeSaving) return;
-                  setTradeSyringeOpen(false);
-                  setTradeError("");
-                }}
-              >
-                Cancel
-              </button>
-              <button
-                type="submit"
-                disabled={tradeSaving}
-                className="chip chip--active"
-              >
-                {tradeSaving ? "Creating…" : "Create LC Syringe"}
-              </button>
-            </div>
-          </form>
-        </Modal>
       )}
 
       {manageLocOpen && (

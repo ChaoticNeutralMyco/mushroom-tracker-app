@@ -1,4 +1,5 @@
 // tests/e2e/sop-workflow.spec.ts
+// regression-v58-sop-dashboard-handoff
 import { test, expect, Locator, Page } from "@playwright/test";
 import {
   clickAppTab,
@@ -258,42 +259,26 @@ async function markFirstSopChecklistItemDone(page: Page) {
 async function selectSopAnalyticsReport(page: Page) {
   await clickAppTab(page, "Analytics");
 
-  const chartSelect = page
-    .getByTestId("analytics-chart-select")
-    .or(
-      page
-        .locator("select")
-        .filter({ has: page.locator("option", { hasText: "SOP / Workflow Performance" }) })
-        .first()
-    )
+  const cultivationTab = page
+    .getByRole("tab", { name: /Cultivation/i })
     .first();
 
-  await expect(chartSelect).toBeVisible({ timeout: 30_000 });
+  await expect(cultivationTab).toBeVisible({ timeout: 30_000 });
+  await cultivationTab.click();
 
-  try {
-    await chartSelect.selectOption("sopWorkflow");
-  } catch {
-    await selectOptionByText(chartSelect, "SOP / Workflow Performance");
+  const report = page.getByTestId("analytics-report-sopWorkflow");
+  await expect(report).toBeVisible({ timeout: 30_000 });
+
+  const toggle = report.getByRole("button", { name: /SOP \/ Workflow Performance/i }).first();
+  await expect(toggle).toBeVisible({ timeout: 20_000 });
+
+  if ((await toggle.getAttribute("aria-expanded")) !== "true") {
+    await toggle.click();
   }
 
-  await expect
-    .poll(
-      async () => chartSelect.inputValue().catch(() => ""),
-      {
-        timeout: 10_000,
-        intervals: [250, 500, 1000],
-      }
-    )
-    .toBe("sopWorkflow");
-
-  /*
-   * Keep this assertion intentionally light.
-   * The important proof is that Analytics accepts the SOP report selection without crashing.
-   * Exact SOP report text is brittle because hidden <option> nodes and print/report surfaces can
-   * contain the same labels as the visible report.
-   */
-  await expect(page.getByRole("tab", { name: "Analytics" })).toHaveAttribute("aria-selected", "true", {
-    timeout: 10_000,
+  await expect(toggle).toHaveAttribute("aria-expanded", "true", { timeout: 10_000 });
+  await expect(report).toContainText(/SOP-started grows|No SOP-started grows/i, {
+    timeout: 20_000,
   });
 }
 
@@ -326,7 +311,9 @@ test("SOP workflow templates can create operational grows, tasks, checklist prog
 
   await expect(recipeDialog).toContainText(/New Recipe/i, { timeout: 20_000 });
   await expect(recipeDialog).toContainText(/Recipe Steps \/ Instructions/i, { timeout: 20_000 });
-  await expect(recipeDialog).toContainText(/Create a repeatable agar workflow/i, { timeout: 20_000 });
+  await expect(
+    recipeDialog.getByPlaceholder(/Write step-by-step instructions/i)
+  ).toHaveValue(/Create a repeatable agar workflow/i, { timeout: 20_000 });
   await expect(recipeDialog.getByRole("button", { name: /Save Recipe/i })).toBeVisible({ timeout: 20_000 });
 
   await recipeDialog.getByRole("button", { name: /Cancel/i }).click();
@@ -358,6 +345,35 @@ test("SOP workflow templates can create operational grows, tasks, checklist prog
   await form.getByRole("button", { name: /^Create$/i }).click();
   await continueNoRecipeWarningIfPresent(page);
   await expect(form).toBeHidden({ timeout: 30_000 });
+
+  await expect
+    .poll(
+      async () => {
+        const grows = await listFirestoreDocuments(
+          session,
+          `users/${session.userId}/grows`
+        );
+
+        return grows.some((grow) => {
+          const strain = String(grow?.strain || grow?.strainName || "");
+          const type = String(grow?.type || grow?.growType || "");
+          const stage = String(grow?.stage || "");
+
+          return (
+            strain === SOP_STRAIN_NAME &&
+            /agar/i.test(type) &&
+            /inoculated/i.test(stage)
+          );
+        });
+      },
+      {
+        timeout: 30_000,
+        intervals: [500, 750, 1000, 1500],
+      }
+    )
+    .toBeTruthy();
+
+  await clickAppTab(page, "Dashboard");
 
   const row = await expectGrowRow(page, {
     strain: SOP_STRAIN_NAME,
