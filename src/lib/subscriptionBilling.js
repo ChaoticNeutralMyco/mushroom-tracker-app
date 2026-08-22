@@ -208,11 +208,24 @@ export function getSubscriptionPlanBillingAction({
   }
 
   if (hasManagedStripeSubscription(sourceEntitlement)) {
-    if (safeCurrentPlanId === safePlanId) {
+    const stripePlanId = normalizedText(sourceEntitlement?.planId);
+
+    if (stripePlanId === safePlanId) {
       return {
         kind: "portal",
         label: "Manage billing",
         disabled: false,
+      };
+    }
+
+    if (
+      safeCurrentPlanId !== stripePlanId &&
+      safeCurrentPlanId === safePlanId
+    ) {
+      return {
+        kind: "none",
+        label: "Promotional access active",
+        disabled: true,
       };
     }
 

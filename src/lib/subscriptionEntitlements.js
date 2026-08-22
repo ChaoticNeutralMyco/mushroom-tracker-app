@@ -32,6 +32,7 @@ export const SUBSCRIPTION_ENTITLEMENT_SOURCES = Object.freeze({
   TESTER_CODE: "tester_code",
   STRIPE: "stripe",
   ADMIN: "admin",
+  ADMIN_PROMOTION: "admin_promotion",
   MANUAL: "manual",
 });
 

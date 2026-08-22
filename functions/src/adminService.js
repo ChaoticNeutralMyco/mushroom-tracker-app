@@ -1,6 +1,7 @@
 // functions/src/adminService.js
 
 import { randomUUID } from "node:crypto";
+import { getAuth } from "firebase-admin/auth";
 import {
   FieldValue,
   Timestamp,
@@ -18,6 +19,7 @@ import {
   SUBSCRIPTION_ACCESS_RANKS,
   SUBSCRIPTION_PLAN_IDS,
   SUBSCRIPTION_SOURCES,
+  SUBSCRIPTION_STATUSES,
 } from "./subscriptionConfig.js";
 import {
   asValidDate,
@@ -25,7 +27,10 @@ import {
   requirePlanId,
   requireUid,
 } from "./entitlementModel.js";
-import { resolveEffectiveGrowAccessPlan } from "./growService.js";
+import {
+  isActiveGrowDocument,
+  resolveEffectiveGrowAccessPlan,
+} from "./growService.js";
 
 const PROMOTIONAL_PLAN_SET = new Set(PROMOTIONAL_SUBSCRIPTION_PLAN_IDS);
 
@@ -263,6 +268,24 @@ export function isPromotionalGrantActive(grant, now = new Date()) {
   );
 }
 
+function isPromotionalGrantOpen(grant, now = new Date()) {
+  if (!grant || normalizeText(grant.status).toLowerCase() !== "active") {
+    return false;
+  }
+
+  const currentDate = asValidDate(now) || new Date();
+  const startsAt = asValidDate(grant.startsAt);
+  const endsAt = asValidDate(grant.endsAt);
+  const planId = normalizeText(grant.planId).toLowerCase();
+
+  return Boolean(
+    startsAt &&
+      endsAt &&
+      endsAt.getTime() > currentDate.getTime() &&
+      PROMOTIONAL_PLAN_SET.has(planId)
+  );
+}
+
 export function resolveEffectiveSubscriptionPlanId({
   entitlement = null,
   promotionalGrant = null,
@@ -314,7 +337,7 @@ function assertGrantDoesNotReduceAccess({
   }
 
   if (
-    isPromotionalGrantActive(existingGrant, now) &&
+    isPromotionalGrantOpen(existingGrant, now) &&
     planRank(requestedPlanId) < planRank(existingGrant.planId)
   ) {
     throw new AdminServiceError(
@@ -324,6 +347,45 @@ function assertGrantDoesNotReduceAccess({
   }
 
   return protectedPaidPlan;
+}
+
+function getDeferredPromotionAnchor({
+  entitlement,
+  requestedPlanId,
+  now,
+}) {
+  if (!entitlement || typeof entitlement !== "object") return null;
+
+  const baseAccess = resolveEffectiveGrowAccessPlan(entitlement, now);
+
+  if (planRank(requestedPlanId) > planRank(baseAccess.planId)) {
+    return null;
+  }
+
+  const status = normalizeText(entitlement.status).toLowerCase();
+  if (
+    ![
+      SUBSCRIPTION_STATUSES.ACTIVE,
+      SUBSCRIPTION_STATUSES.TRIALING,
+      SUBSCRIPTION_STATUSES.PAST_DUE,
+    ].includes(status)
+  ) {
+    return null;
+  }
+
+  const candidates = [
+    asValidDate(entitlement.trialEndsAt),
+    asValidDate(entitlement.graceEndsAt),
+    asValidDate(entitlement.currentPeriodEndsAt),
+  ].filter(
+    (date) => date && date.getTime() > now.getTime()
+  );
+
+  if (candidates.length === 0) return null;
+
+  return candidates.reduce((latest, candidate) =>
+    candidate.getTime() > latest.getTime() ? candidate : latest
+  );
 }
 
 function buildAuditSnapshot(grant) {
@@ -391,27 +453,28 @@ export async function grantPromotionalAccess({
       ? grantSnapshot.data()
       : null;
 
-    const protectedPaidPlan = assertGrantDoesNotReduceAccess({
+    assertGrantDoesNotReduceAccess({
       entitlement,
       existingGrant,
       requestedPlanId: safePlanId,
       now: currentDate,
     });
 
-    const existingActive = isPromotionalGrantActive(
+    const existingOpen = isPromotionalGrantOpen(
       existingGrant,
       currentDate
     );
-    const existingEnd = existingActive
+    const existingEnd = existingOpen
       ? asValidDate(existingGrant?.endsAt)
       : null;
-    const paidPeriodEnd =
-      protectedPaidPlan === safePlanId
-        ? asValidDate(entitlement?.currentPeriodEndsAt)
-        : null;
+    const deferredAnchor = getDeferredPromotionAnchor({
+      entitlement,
+      requestedPlanId: safePlanId,
+      now: currentDate,
+    });
     const newGrantAnchor =
-      paidPeriodEnd && paidPeriodEnd.getTime() > currentDate.getTime()
-        ? paidPeriodEnd
+      deferredAnchor && deferredAnchor.getTime() > currentDate.getTime()
+        ? deferredAnchor
         : currentDate;
     const extensionAnchor =
       existingEnd && existingEnd.getTime() > newGrantAnchor.getTime()
@@ -422,7 +485,7 @@ export async function grantPromotionalAccess({
         safeDurationDays * 24 * 60 * 60 * 1000
     );
     const startsAt =
-      existingActive && asValidDate(existingGrant?.startsAt)
+      existingOpen && asValidDate(existingGrant?.startsAt)
         ? asValidDate(existingGrant.startsAt)
         : newGrantAnchor;
     const revision = Number(existingGrant?.revision || 0) + 1;
@@ -570,3 +633,169 @@ export async function revokePromotionalAccess({
     grant: serializeGrant(stored.exists ? stored.data() : null),
   };
 }
+
+const ADMIN_ACCOUNT_PAGE_SIZE_DEFAULT = 25;
+const ADMIN_ACCOUNT_PAGE_SIZE_MAX = 100;
+
+function normalizeAdminPageSize(value) {
+  if (value === null || value === undefined || value === "") {
+    return ADMIN_ACCOUNT_PAGE_SIZE_DEFAULT;
+  }
+
+  const numeric = Number(value);
+  if (!Number.isInteger(numeric) || numeric < 1) {
+    throw new AdminServiceError(
+      "Admin account page size must be a positive integer.",
+      "invalid-argument"
+    );
+  }
+
+  return Math.min(numeric, ADMIN_ACCOUNT_PAGE_SIZE_MAX);
+}
+
+function normalizeAdminPageToken(value) {
+  const token = normalizeText(value);
+  if (!token) return undefined;
+
+  if (token.length > 2048) {
+    throw new AdminServiceError(
+      "Admin account page token is invalid.",
+      "invalid-argument"
+    );
+  }
+
+  return token;
+}
+
+function serializeEntitlementForAdmin(entitlement, now) {
+  if (!entitlement || typeof entitlement !== "object") {
+    return {
+      exists: false,
+      planId: SUBSCRIPTION_PLAN_IDS.FREE,
+      accessPlanId: SUBSCRIPTION_PLAN_IDS.FREE,
+      status: "missing",
+      source: "missing",
+      currentPeriodEndsAt: null,
+      stripeManaged: false,
+    };
+  }
+
+  const access = resolveEffectiveGrowAccessPlan(entitlement, now);
+  const source = normalizeText(entitlement.source).toLowerCase();
+  const status = normalizeText(entitlement.status).toLowerCase();
+  const storedPlanId =
+    normalizeText(entitlement.planId).toLowerCase() ||
+    SUBSCRIPTION_PLAN_IDS.FREE;
+
+  return {
+    exists: true,
+    planId: storedPlanId,
+    accessPlanId: access.planId,
+    status: status || "unknown",
+    source: source || "unknown",
+    currentPeriodEndsAt: serializeDate(entitlement.currentPeriodEndsAt),
+    stripeManaged: Boolean(
+      source === SUBSCRIPTION_SOURCES.STRIPE &&
+        entitlement.stripeCustomerId &&
+        entitlement.stripeSubscriptionId
+    ),
+  };
+}
+
+async function buildAdminAccountRecord({
+  db,
+  userRecord,
+  adminConfig,
+  now,
+}) {
+  const uid = requireUid(userRecord?.uid);
+  const [entitlementSnapshot, grantSnapshot, growsSnapshot] = await Promise.all([
+    entitlementRef(db, uid).get(),
+    adminGrantRef(db, uid).get(),
+    db.collection("users").doc(uid).collection("grows").get(),
+  ]);
+
+  const entitlement = entitlementSnapshot.exists
+    ? entitlementSnapshot.data()
+    : null;
+  const grant = grantSnapshot.exists ? grantSnapshot.data() : null;
+  const baseAccess = resolveEffectiveGrowAccessPlan(entitlement, now);
+  const effectivePlanId = resolveEffectiveSubscriptionPlanId({
+    entitlement,
+    promotionalGrant: grant,
+    now,
+  });
+  const promotionActive = isPromotionalGrantActive(grant, now);
+  const activeGrowCount = growsSnapshot.docs.reduce(
+    (count, snapshot) =>
+      count + (isActiveGrowDocument(snapshot.data() || {}) ? 1 : 0),
+    0
+  );
+
+  return {
+    uid,
+    email: normalizeText(userRecord.email) || null,
+    displayName: normalizeText(userRecord.displayName) || null,
+    emailVerified: userRecord.emailVerified === true,
+    disabled: userRecord.disabled === true,
+    createdAt: serializeDate(userRecord.metadata?.creationTime),
+    lastSignInAt: serializeDate(userRecord.metadata?.lastSignInTime),
+    isAuthorizedAdmin: isAuthorizedAdminUid(uid, adminConfig),
+    entitlement: serializeEntitlementForAdmin(entitlement, now),
+    effectivePlanId,
+    baseAccessPlanId: baseAccess.planId,
+    promotion: serializeGrant(grant),
+    promotionActive,
+    promotionApplied:
+      promotionActive && effectivePlanId !== baseAccess.planId,
+    activeGrowCount,
+  };
+}
+
+export async function listAdminAccounts({
+  db = getFirestore(),
+  auth = getAuth(),
+  actorUid,
+  adminConfig,
+  pageSize = ADMIN_ACCOUNT_PAGE_SIZE_DEFAULT,
+  pageToken = null,
+  now = new Date(),
+} = {}) {
+  const safeActorUid = assertAuthorizedAdminUid(actorUid, adminConfig);
+  const config = normalizeAdminConfig(adminConfig);
+  const safePageSize = normalizeAdminPageSize(pageSize);
+  const safePageToken = normalizeAdminPageToken(pageToken);
+  const currentDate = asValidDate(now) || new Date();
+
+  let listed;
+  try {
+    listed = await auth.listUsers(safePageSize, safePageToken);
+  } catch (error) {
+    throw new AdminServiceError(
+      "The account directory could not be loaded.",
+      "unavailable",
+      {
+        cause: normalizeText(error?.code) || "auth-list-users-failed",
+      }
+    );
+  }
+
+  const accounts = await Promise.all(
+    listed.users.map((userRecord) =>
+      buildAdminAccountRecord({
+        db,
+        userRecord,
+        adminConfig: config,
+        now: currentDate,
+      })
+    )
+  );
+
+  return {
+    actorUid: safeActorUid,
+    accounts,
+    nextPageToken: normalizeText(listed.pageToken) || null,
+    pageSize: safePageSize,
+  };
+}
+

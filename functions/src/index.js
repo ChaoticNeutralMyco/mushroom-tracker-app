@@ -39,6 +39,7 @@ import {
   AdminServiceError,
   grantPromotionalAccess,
   isAuthorizedAdminUid,
+  listAdminAccounts,
   parseAdminConfig,
   revokePromotionalAccess,
 } from "./adminService.js";
@@ -333,6 +334,50 @@ export const getMyAdminAccess = onCall(
     }
   }
 );
+
+export const adminListAccounts = onCall(
+  {
+    region: SUBSCRIPTION_BACKEND_REGION,
+    secrets: adminSecretBindings,
+  },
+  async (request) => {
+    if (!request.auth?.uid) {
+      throw new HttpsError("unauthenticated", "Sign in is required.");
+    }
+
+    try {
+      const result = await listAdminAccounts({
+        db: initializeBackend(),
+        auth: getAuth(),
+        actorUid: request.auth.uid,
+        adminConfig: adminConfigFromEnvironment(),
+        pageSize: request.data?.pageSize,
+        pageToken: request.data?.pageToken,
+        now: new Date(),
+      });
+
+      logger.info("Admin account directory loaded.", {
+        actorUid: request.auth.uid,
+        count: result.accounts.length,
+        hasNextPage: Boolean(result.nextPageToken),
+      });
+
+      return {
+        accounts: result.accounts,
+        nextPageToken: result.nextPageToken,
+        pageSize: result.pageSize,
+      };
+    } catch (error) {
+      logger.warn("adminListAccounts rejected", {
+        actorUid: request.auth.uid,
+        code: error?.code || "unknown",
+        message: error?.message || "Unknown admin account-list error",
+      });
+      throw callableError(error);
+    }
+  }
+);
+
 
 export const adminGrantPromotionalAccess = onCall(
   {

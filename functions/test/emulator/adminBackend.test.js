@@ -3,10 +3,12 @@
 import test, { after, before, beforeEach } from "node:test";
 import assert from "node:assert/strict";
 import { deleteApp, getApps, initializeApp } from "firebase-admin/app";
+import { getAuth } from "firebase-admin/auth";
 import { getFirestore } from "firebase-admin/firestore";
 import {
   AdminServiceError,
   grantPromotionalAccess,
+  listAdminAccounts,
   parseAdminConfig,
   revokePromotionalAccess,
 } from "../../src/adminService.js";
@@ -150,6 +152,74 @@ test("unauthorized accounts cannot grant promotional access", async () => {
   );
 });
 
+
+test("authorized admins can list account subscription state while unauthorized users cannot", async () => {
+  const directoryAuth = getAuth(app);
+  const user = await directoryAuth.createUser({
+    email: `admin-directory-${Date.now()}@cnm.test`,
+    emailVerified: true,
+  });
+
+  await seedEntitlement(user.uid, {
+    planId: SUBSCRIPTION_PLAN_IDS.HOBBY,
+    status: SUBSCRIPTION_STATUSES.ACTIVE,
+    source: SUBSCRIPTION_SOURCES.STRIPE,
+    stripeCustomerId: "cus_directory",
+    stripeSubscriptionId: "sub_directory",
+    currentPeriodEndsAt: new Date("2026-09-22T12:00:00.000Z"),
+  });
+  await seedActiveGrows(user.uid, 2);
+
+  await grantPromotionalAccess({
+    db,
+    actorUid: "primary-admin",
+    targetUid: user.uid,
+    planId: "lab",
+    durationDays: 14,
+    reason: "Directory test promotion",
+    eventId: `directory-promo-${user.uid}`,
+    adminConfig,
+    now: "2026-08-22T12:00:00.000Z",
+  });
+
+  await assert.rejects(
+    listAdminAccounts({
+      db,
+      auth: directoryAuth,
+      actorUid: "ordinary-user",
+      adminConfig,
+      pageSize: 100,
+      now: "2026-08-22T12:01:00.000Z",
+    }),
+    (error) => {
+      assert.equal(error instanceof AdminServiceError, true);
+      assert.equal(error.code, "permission-denied");
+      return true;
+    }
+  );
+
+  const listed = await listAdminAccounts({
+    db,
+    auth: directoryAuth,
+    actorUid: "primary-admin",
+    adminConfig,
+    pageSize: 100,
+    now: "2026-08-22T12:01:00.000Z",
+  });
+
+  const account = listed.accounts.find((entry) => entry.uid === user.uid);
+  assert.ok(account);
+  assert.equal(account.email, user.email);
+  assert.equal(account.emailVerified, true);
+  assert.equal(account.entitlement.planId, SUBSCRIPTION_PLAN_IDS.HOBBY);
+  assert.equal(account.entitlement.stripeManaged, true);
+  assert.equal(account.baseAccessPlanId, SUBSCRIPTION_PLAN_IDS.HOBBY);
+  assert.equal(account.effectivePlanId, SUBSCRIPTION_PLAN_IDS.LAB);
+  assert.equal(account.promotionActive, true);
+  assert.equal(account.promotionApplied, true);
+  assert.equal(account.activeGrowCount, 2);
+});
+
 test("authorized promotion upgrades and extends without mutating the base entitlement", async () => {
   const uid = "promotion-user";
   await seedEntitlement(uid);
@@ -262,6 +332,52 @@ test("same-tier paid promotions begin after the trusted paid period end", async 
   assert.equal(entitlement.planId, SUBSCRIPTION_PLAN_IDS.HOBBY);
   assert.equal(entitlement.source, SUBSCRIPTION_SOURCES.STRIPE);
   assert.equal(entitlement.stripeSubscriptionId, "sub_extension");
+});
+
+
+test("promotions granted during an active Trial begin after the trusted trial ends", async () => {
+  const uid = "trial-promo-extension-user";
+
+  await db.doc(`users/${uid}/billing/entitlement`).set({
+    planId: SUBSCRIPTION_PLAN_IDS.TRIAL,
+    status: SUBSCRIPTION_STATUSES.TRIALING,
+    source: SUBSCRIPTION_SOURCES.TRIAL,
+    trialStartedAt: new Date("2026-08-20T12:00:00.000Z"),
+    trialEndsAt: new Date("2026-09-03T12:00:00.000Z"),
+    featureOverrides: {},
+    limitOverrides: {},
+    revision: 1,
+  });
+
+  const result = await grantPromotionalAccess({
+    db,
+    actorUid: "primary-admin",
+    targetUid: uid,
+    planId: "lab",
+    durationDays: 30,
+    reason: "Thirty days after Trial",
+    eventId: "trial-promo-extension",
+    adminConfig,
+    now: "2026-08-22T12:00:00.000Z",
+  });
+
+  assert.equal(result.grant.startsAt, "2026-09-03T12:00:00.000Z");
+  assert.equal(result.grant.endsAt, "2026-10-03T12:00:00.000Z");
+
+  const extended = await grantPromotionalAccess({
+    db,
+    actorUid: "primary-admin",
+    targetUid: uid,
+    planId: "lab",
+    durationDays: 10,
+    reason: "Extend the scheduled Trial follow-on",
+    eventId: "trial-promo-extension-2",
+    adminConfig,
+    now: "2026-08-23T12:00:00.000Z",
+  });
+
+  assert.equal(extended.grant.startsAt, "2026-09-03T12:00:00.000Z");
+  assert.equal(extended.grant.endsAt, "2026-10-13T12:00:00.000Z");
 });
 
 test("promotional grants cannot reduce active Stripe-paid access", async () => {

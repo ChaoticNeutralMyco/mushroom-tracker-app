@@ -92,6 +92,10 @@ export default function SubscriptionPage({ activeGrowCount = 0 }) {
     entitlementExists,
     resolution,
     grace,
+    promotionalGrant,
+    promotionActive,
+    promotionScheduled,
+    promotionApplied,
     billingBusy,
     billingAction,
     billingError,
@@ -200,6 +204,30 @@ export default function SubscriptionPage({ activeGrowCount = 0 }) {
               Dismiss
             </button>
           </div>
+        </section>
+      ) : null}
+
+      {promotionalGrant?.status === "active" ? (
+        <section
+          className="rounded-2xl border border-violet-200 bg-violet-50 p-4 text-sm text-violet-950 dark:border-violet-900/70 dark:bg-violet-950/30 dark:text-violet-100"
+          data-testid="subscription-promotional-access"
+        >
+          <p className="font-semibold">
+            {promotionScheduled
+              ? "Promotional access scheduled"
+              : promotionApplied
+                ? `Promotional ${SUBSCRIPTION_PLANS[promotionalGrant.planId]?.label || "plan"} access active`
+                : "Promotional access on file"}
+          </p>
+          <p className="mt-1 leading-6">
+            {promotionScheduled
+              ? `${SUBSCRIPTION_PLANS[promotionalGrant.planId]?.label || "Promotional"} access starts ${formatDate(promotionalGrant.startsAt)} and runs through ${formatDate(promotionalGrant.endsAt)}.`
+              : promotionActive && promotionApplied
+                ? `This temporary access runs through ${formatDate(promotionalGrant.endsAt)}. Your underlying ${sourceEntitlement?.source === "stripe" ? "Stripe subscription" : "account entitlement"} remains unchanged.`
+                : promotionActive
+                  ? `The promotion runs through ${formatDate(promotionalGrant.endsAt)}, but your existing access is already equal or higher.`
+                  : `This promotional grant is not currently active.`}
+          </p>
         </section>
       ) : null}
 

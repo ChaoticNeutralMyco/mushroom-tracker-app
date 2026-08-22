@@ -122,6 +122,43 @@ describe("subscription billing client safety", () => {
     });
   });
 
+
+  it("keeps Stripe billing tied to the purchased tier during a higher promotion", () => {
+    const sourceEntitlement = {
+      planId: "hobby",
+      status: "active",
+      source: "stripe",
+      stripeCustomerId: "cus_promo",
+      stripeSubscriptionId: "sub_promo",
+    };
+
+    expect(
+      getSubscriptionPlanBillingAction({
+        planId: "hobby",
+        currentPlanId: "lab",
+        sourceEntitlement,
+        accessReady: true,
+      })
+    ).toEqual({
+      kind: "portal",
+      label: "Manage billing",
+      disabled: false,
+    });
+
+    expect(
+      getSubscriptionPlanBillingAction({
+        planId: "lab",
+        currentPlanId: "lab",
+        sourceEntitlement,
+        accessReady: true,
+      })
+    ).toEqual({
+      kind: "none",
+      label: "Promotional access active",
+      disabled: true,
+    });
+  });
+
   it("uses Checkout for new, trial, tester, canceled, and expired paid access", () => {
     expect(
       getSubscriptionPlanBillingAction({

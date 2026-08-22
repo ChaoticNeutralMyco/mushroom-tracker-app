@@ -76,6 +76,9 @@ import { useSubscription } from "./providers/SubscriptionProvider.jsx";
 import {
   getSubscriptionFeatureGateState,
 } from "./lib/subscriptionFeatureGates.js";
+import {
+  getMyAdminAccess as fetchMyAdminAccess,
+} from "./lib/adminApi.js";
 import { ConfirmProvider } from "./components/ui/ConfirmDialog";
 import {
   DEFAULT_ACCENT,
@@ -103,6 +106,7 @@ const TaskManager = React.lazy(() => import("./components/Tasks/TaskManager"));
 const PostProcessManager = React.lazy(() => import("./components/postprocess/PostProcessManager"));
 const GrowTimeline = React.lazy(() => import("./components/Grow/GrowTimeline"));
 const ScanBarcodeModal = React.lazy(() => import("./components/ui/ScanBarcodeModal"));
+const AdminDashboard = React.lazy(() => import("./pages/AdminDashboard.jsx"));
 
 const prefetchers = {
   analytics: () => import("./pages/Analytics"),
@@ -116,6 +120,7 @@ const prefetchers = {
   archive: () => import("./pages/Archive"),
   settings: () => import("./pages/Settings"),
   tasks: () => import("./components/Tasks/TaskManager"),
+  admin: () => import("./pages/AdminDashboard.jsx"),
 };
 
 const useFunctionsEmulator =
@@ -271,6 +276,10 @@ const SettingsSkeleton = () => (
 export default function App() {
   const subscription = useSubscription();
   const [user, setUser] = useState(null);
+  const [adminAccess, setAdminAccess] = useState({
+    ready: false,
+    authorized: false,
+  });
 
   const [rawGrows, setRawGrows] = useState(undefined);
   const [recipes, setRecipes] = useState(undefined);
@@ -322,6 +331,10 @@ export default function App() {
         "settings",
       ]);
 
+      if (adminAccess.authorized) {
+        allowedTabs.add("admin");
+      }
+
       if (tab && allowedTabs.has(tab) && tab !== scanParamRef.current.tab) {
         scanParamRef.current.tab = tab;
         setActiveTab(tab);
@@ -335,7 +348,49 @@ export default function App() {
     } catch {
       // ignore bad query strings
     }
-  }, [location.search]);
+  }, [adminAccess.authorized, location.search]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    if (!user) {
+      setAdminAccess({ ready: true, authorized: false });
+      if (activeTab === "admin") setActiveTab("dashboard");
+      return () => {
+        cancelled = true;
+      };
+    }
+
+    setAdminAccess({ ready: false, authorized: false });
+
+    fetchMyAdminAccess()
+      .then((result) => {
+        if (cancelled) return;
+        setAdminAccess({
+          ready: true,
+          authorized: result?.authorized === true,
+        });
+      })
+      .catch((accessError) => {
+        if (cancelled) return;
+        console.warn("Administrator access check failed:", accessError);
+        setAdminAccess({ ready: true, authorized: false });
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [user?.uid]);
+
+  useEffect(() => {
+    if (
+      activeTab === "admin" &&
+      adminAccess.ready &&
+      !adminAccess.authorized
+    ) {
+      setActiveTab("dashboard");
+    }
+  }, [activeTab, adminAccess.authorized, adminAccess.ready]);
 
   const splashStartRef = useRef(Date.now());
   const [showSplash, setShowSplash] = useState(true);
@@ -1292,6 +1347,8 @@ export default function App() {
         return <CalendarSkeleton />;
       case "settings":
         return <SettingsSkeleton />;
+      case "admin":
+        return <DashboardSkeleton />;
       default:
         return <DashboardSkeleton />;
     }
@@ -1431,6 +1488,7 @@ export default function App() {
                     ["strains", "Strains"],
                     ["labels", "Labels"],
                     ["archive", "Archive"],
+                    ...(adminAccess.authorized ? [["admin", "Admin"]] : []),
                     ["settings", "Settings"],
                   ].map(([key, label]) => {
                     const isActive = activeTab === key;
@@ -1691,6 +1749,10 @@ export default function App() {
                     <div className="bg-white dark:bg-zinc-900 rounded-2xl shadow p-4">
                       <Archive grows={grows} onUpdateGrow={onUpdateGrow} />
                     </div>
+                  )}
+
+                  {activeTab === "admin" && adminAccess.authorized && (
+                    <AdminDashboard />
                   )}
 
                   {activeTab === "settings" && (

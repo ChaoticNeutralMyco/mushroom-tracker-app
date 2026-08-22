@@ -39,6 +39,9 @@ import {
   getTrialNoticeState,
 } from "../lib/subscriptionTrial.js";
 import {
+  applyPromotionalGrantToRuntime,
+} from "../lib/subscriptionPromotions.js";
+import {
   SUBSCRIPTION_LIMIT_KEYS,
   SUBSCRIPTION_TRIAL_CONFIG,
 } from "../lib/subscriptionPlans.js";
@@ -87,6 +90,8 @@ export function SubscriptionProvider({ children }) {
   const [billingBusy, setBillingBusy] = useState(false);
   const [billingAction, setBillingAction] = useState(null);
   const [billingError, setBillingError] = useState("");
+  const [promotionalGrant, setPromotionalGrant] = useState(null);
+  const [promotionReady, setPromotionReady] = useState(!auth.currentUser);
 
   useEffect(() => {
     const timer = window.setInterval(() => setNow(new Date()), 60_000);
@@ -95,12 +100,15 @@ export function SubscriptionProvider({ children }) {
 
   useEffect(() => {
     let unsubEntitlement = null;
+    let unsubPromotion = null;
     let unsubUi = null;
 
     const stopUserListeners = () => {
       if (unsubEntitlement) unsubEntitlement();
+      if (unsubPromotion) unsubPromotion();
       if (unsubUi) unsubUi();
       unsubEntitlement = null;
+      unsubPromotion = null;
       unsubUi = null;
     };
 
@@ -113,10 +121,13 @@ export function SubscriptionProvider({ children }) {
       setBillingError("");
       setUiState(EMPTY_UI_STATE);
       setUiReady(false);
+      setPromotionalGrant(null);
+      setPromotionReady(false);
 
       if (!nextUser) {
         setRuntime(buildUnavailableSubscriptionRuntime());
         setUiReady(true);
+        setPromotionReady(true);
         setLoading(false);
         return;
       }
@@ -126,6 +137,13 @@ export function SubscriptionProvider({ children }) {
 
       const entitlementPath = getUserEntitlementDocumentPath(nextUser.uid);
       const entitlementRef = doc(db, entitlementPath);
+      const promotionRef = doc(
+        db,
+        "users",
+        nextUser.uid,
+        "billing",
+        "adminGrant"
+      );
       const uiRef = doc(
         db,
         "users",
@@ -159,6 +177,19 @@ export function SubscriptionProvider({ children }) {
             "Subscription status could not be refreshed. Free access is being used until the connection recovers."
           );
           setLoading(false);
+        }
+      );
+
+      unsubPromotion = onSnapshot(
+        promotionRef,
+        (snapshot) => {
+          setPromotionalGrant(snapshot.exists() ? snapshot.data() || {} : null);
+          setPromotionReady(true);
+        },
+        (snapshotError) => {
+          console.warn("Promotional access listener failed:", snapshotError);
+          setPromotionalGrant(null);
+          setPromotionReady(true);
         }
       );
 
@@ -200,10 +231,21 @@ export function SubscriptionProvider({ children }) {
     );
   }, [now, user]);
 
-  const accessReady = runtime.accessReady === true && !loading;
+  const effectiveRuntime = useMemo(
+    () => applyPromotionalGrantToRuntime(runtime, promotionalGrant, now),
+    [now, promotionalGrant, runtime]
+  );
+
+  const accessReady =
+    effectiveRuntime.accessReady === true && !loading && promotionReady;
 
   const trialNotice = useMemo(() => {
-    if (!user || !uiReady || !accessReady) {
+    if (
+      !user ||
+      !uiReady ||
+      !accessReady ||
+      effectiveRuntime.promotionApplied === true
+    ) {
       return {
         shouldShow: false,
         phase: "none",
@@ -224,7 +266,15 @@ export function SubscriptionProvider({ children }) {
       expirationAcknowledged: Boolean(uiState.trialExpirationAcknowledgedAt),
       timeZone: SUBSCRIPTION_TRIAL_CONFIG.defaultDismissalTimeZone,
     });
-  }, [accessReady, now, runtime.trialEntitlement, uiReady, uiState, user]);
+  }, [
+    accessReady,
+    effectiveRuntime.promotionApplied,
+    now,
+    runtime.trialEntitlement,
+    uiReady,
+    uiState,
+    user,
+  ]);
 
   const dismissTrialNotice = useCallback(async () => {
     if (!user || !trialNotice?.dateKey || trialNotice.phase === "none") {
@@ -262,8 +312,8 @@ export function SubscriptionProvider({ children }) {
 
   const hasFeature = useCallback(
     (featureKey) =>
-      accessReady && canEntitlementUseFeature(runtime.entitlement, featureKey),
-    [accessReady, runtime.entitlement]
+      accessReady && canEntitlementUseFeature(effectiveRuntime.entitlement, featureKey),
+    [accessReady, effectiveRuntime.entitlement]
   );
 
   const getLimit = useCallback(
@@ -275,9 +325,9 @@ export function SubscriptionProvider({ children }) {
         );
       }
 
-      return getEntitlementLimit(runtime.entitlement, limitKey);
+      return getEntitlementLimit(effectiveRuntime.entitlement, limitKey);
     },
-    [accessReady, runtime.entitlement]
+    [accessReady, effectiveRuntime.entitlement]
   );
 
   const clearBillingError = useCallback(() => {
@@ -398,14 +448,19 @@ export function SubscriptionProvider({ children }) {
       accessReady,
       uiReady,
       error,
-      entitlement: runtime.entitlement,
+      entitlement: effectiveRuntime.entitlement,
       sourceEntitlement: runtime.sourceEntitlement,
       trialEntitlement: runtime.trialEntitlement,
       entitlementExists: runtime.entitlementExists,
-      resolution: runtime.resolution,
+      resolution: effectiveRuntime.resolution,
       grace: runtime.grace,
+      promotionalGrant: effectiveRuntime.promotionalGrant,
+      promotionActive: effectiveRuntime.promotionActive === true,
+      promotionScheduled: effectiveRuntime.promotionScheduled === true,
+      promotionApplied: effectiveRuntime.promotionApplied === true,
+      promotionReady,
       summary: buildSubscriptionRuntimeSummary({
-        entitlement: runtime.entitlement,
+        entitlement: effectiveRuntime.entitlement,
         sourceEntitlement: runtime.sourceEntitlement,
         now,
         grace: runtime.grace,
@@ -434,6 +489,8 @@ export function SubscriptionProvider({ children }) {
       uiReady,
       error,
       runtime,
+      effectiveRuntime,
+      promotionReady,
       now,
       trialNotice,
       dismissTrialNotice,
