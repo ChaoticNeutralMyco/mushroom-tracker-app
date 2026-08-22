@@ -7,6 +7,7 @@ import { onAuthStateChanged } from "firebase/auth";
 import { QRCodeSVG } from "qrcode.react";
 import { Printer } from "lucide-react";
 import { isActiveGrow } from "../../lib/growFilters";
+import { SUBSCRIPTION_FEATURE_KEYS } from "../../lib/subscriptionPlans.js";
 import {
   buildLotCode,
   getLabelMetadataSnapshot,
@@ -425,6 +426,22 @@ function LabelPrint(props) {
 
   const hasFinishedGoodsProp = Object.prototype.hasOwnProperty.call(props || {}, "finishedGoods");
   const propFinishedGoods = hasFinishedGoodsProp ? props.finishedGoods || [] : undefined;
+  const canUsePostProcessLabels = props?.canUsePostProcessLabels !== false;
+  const onSubscriptionFeatureBlocked =
+    typeof props?.onSubscriptionFeatureBlocked === "function"
+      ? props.onSubscriptionFeatureBlocked
+      : () => false;
+
+  const requestPostProcessLabelAccess = () => {
+    if (canUsePostProcessLabels) return true;
+    onSubscriptionFeatureBlocked({
+      featureKey: SUBSCRIPTION_FEATURE_KEYS.POST_PROCESS_LABELS,
+      actionLabel: "Preview or print Post Processing labels",
+      supportingText:
+        "Grow and cultivation labels remain available on every plan. Finished-inventory and packaged-SKU labels require Lab access.",
+    });
+    return false;
+  };
 
   const [uid, setUid] = useState(() => auth.currentUser?.uid || null);
   const location = useLocation();
@@ -508,7 +525,12 @@ function LabelPrint(props) {
 
   const [source, setSource] = useState(() => {
     try {
-      return normalizeLabelSource(localStorage.getItem(LOCAL_KEY_SOURCE) || "grows");
+      const saved = normalizeLabelSource(
+        localStorage.getItem(LOCAL_KEY_SOURCE) || "grows"
+      );
+      return saved === "finished_goods" && !canUsePostProcessLabels
+        ? "grows"
+        : saved;
     } catch {}
     return "grows";
   });
@@ -518,11 +540,22 @@ function LabelPrint(props) {
       const params = new URLSearchParams(location.search || "");
       if (!params.has("labelSource")) return;
       const requested = normalizeLabelSource(params.get("labelSource") || "grows");
+      if (requested === "finished_goods" && !canUsePostProcessLabels) {
+        requestPostProcessLabelAccess();
+        setSource("grows");
+        return;
+      }
       setSource(requested);
     } catch {
       // ignore bad label source query strings
     }
-  }, [location.search]);
+  }, [canUsePostProcessLabels, location.search]);
+
+  useEffect(() => {
+    if (source === "finished_goods" && !canUsePostProcessLabels) {
+      setSource("grows");
+    }
+  }, [canUsePostProcessLabels, source]);
 
   const [watermarkEnabled, setWatermarkEnabled] = useState(() => {
     try {
@@ -651,7 +684,10 @@ function LabelPrint(props) {
   }, [hasLibraryProp, uid]);
 
   useEffect(() => {
-    if (hasFinishedGoodsProp || !uid) return undefined;
+    if (hasFinishedGoodsProp || !uid || !canUsePostProcessLabels) {
+      if (!canUsePostProcessLabels) setFetchedFinishedGoods([]);
+      return undefined;
+    }
 
     let cancelled = false;
 
@@ -669,7 +705,7 @@ function LabelPrint(props) {
     return () => {
       cancelled = true;
     };
-  }, [hasFinishedGoodsProp, uid]);
+  }, [canUsePostProcessLabels, hasFinishedGoodsProp, uid]);
 
   useEffect(() => {
     let abort = false;
@@ -716,7 +752,11 @@ function LabelPrint(props) {
 
   const baseGrows = hasGrowsProp ? propGrows : fetched;
   const baseLibrary = hasLibraryProp ? propLibraryItems : fetchedLibrary;
-  const baseFinishedGoods = hasFinishedGoodsProp ? propFinishedGoods : fetchedFinishedGoods;
+  const baseFinishedGoods = canUsePostProcessLabels
+    ? hasFinishedGoodsProp
+      ? propFinishedGoods
+      : fetchedFinishedGoods
+    : [];
 
   const allGrows = useMemo(() => baseGrows || [], [baseGrows]);
   const allLibrary = useMemo(() => baseLibrary || [], [baseLibrary]);
@@ -1016,6 +1056,10 @@ function LabelPrint(props) {
   };
 
   const printNow = async () => {
+    if (source === "finished_goods" && !requestPostProcessLabelAccess()) {
+      return;
+    }
+
     if (!selectedIds.size) {
       alert("Select at least one label to print.");
       return;
@@ -1127,11 +1171,19 @@ function LabelPrint(props) {
             <select
               className="rounded border border-zinc-300 bg-white px-2 py-1 text-sm"
               value={source}
-              onChange={(e) => setSource(normalizeLabelSource(e.target.value))}
+              onChange={(e) => {
+                const nextSource = normalizeLabelSource(e.target.value);
+                if (nextSource === "finished_goods" && !requestPostProcessLabelAccess()) {
+                  return;
+                }
+                setSource(nextSource);
+              }}
             >
               <option value="grows">Grows</option>
               <option value="library">Stored Items</option>
-              <option value="finished_goods">Finished Inventory</option>
+              <option value="finished_goods">
+                Finished Inventory{canUsePostProcessLabels ? "" : " (Lab)"}
+              </option>
             </select>
           </div>
 

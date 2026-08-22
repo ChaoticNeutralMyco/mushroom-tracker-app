@@ -12,8 +12,20 @@ export type GrowRowMatcher =
       status?: RegExp | string;
     };
 
+type FirebaseAuthState = {
+  uid: string;
+  persisted: boolean;
+  authEmulator: boolean;
+};
+
 function safeVisible(locator: Locator) {
   return locator.isVisible().catch(() => false);
+}
+
+function emulatorHarnessRequired() {
+  return /^(1|true|yes)$/i.test(
+    String(process.env.E2E_REQUIRE_FIREBASE_EMULATORS || "")
+  );
 }
 
 function escapeRegExp(value: string) {
@@ -95,6 +107,126 @@ async function dismissTutorialIfPresent(page: Page) {
   }
 }
 
+async function readFirebaseAuthState(page: Page): Promise<FirebaseAuthState> {
+  return page.evaluate(async () => {
+    const mod = await import("/src/firebase-config.js");
+    await mod.authReady;
+
+    if (typeof mod.auth.authStateReady === "function") {
+      await mod.auth.authStateReady();
+    }
+
+    const uid = String(mod.auth.currentUser?.uid || "");
+    const authEntries = Object.keys(localStorage)
+      .filter((key) => key.startsWith("firebase:authUser:"))
+      .map((key) => ({ key, value: String(localStorage.getItem(key) || "") }));
+    const persisted = Boolean(
+      uid &&
+        authEntries.some(
+          (entry) => entry.value.includes(uid) || authEntries.length === 1
+        )
+    );
+
+    return {
+      uid,
+      persisted,
+      authEmulator: Boolean((mod.auth as any)?.emulatorConfig),
+    };
+  });
+}
+
+async function signInEmulatorThroughUi(page: Page) {
+  if (!emulatorHarnessRequired()) {
+    throw new Error("Firebase authentication was lost outside the emulator harness.");
+  }
+
+  const email = process.env.E2E_EMAIL;
+  const password = process.env.E2E_PASSWORD;
+  if (!email || !password) {
+    throw new Error(
+      "The emulator harness cannot restore authentication without E2E_EMAIL and E2E_PASSWORD."
+    );
+  }
+
+  const emailInput = page.locator('input[type="email"]').first();
+  const passwordInput = page.locator('input[type="password"]').first();
+  const signInButton = page.getByRole("button", { name: /^Sign in$/i });
+
+  await expect(emailInput).toBeVisible({ timeout: 20_000 });
+  await expect(passwordInput).toBeVisible({ timeout: 20_000 });
+  await emailInput.fill(email);
+  await passwordInput.fill(password);
+  await expect(signInButton).toBeEnabled({ timeout: 20_000 });
+  await signInButton.click();
+}
+
+async function shellOrAuthState(page: Page) {
+  const signOutButton = page.getByRole("button", { name: /sign out/i });
+  const dashboardTab = page.getByRole("tab", { name: /^Dashboard$/i });
+  const tutorialHeading = page.getByText(/Welcome to your Dashboard/i);
+  const emailInput = page.locator('input[type="email"]').first();
+  const passwordInput = page.locator('input[type="password"]').first();
+  const signInButton = page.getByRole("button", { name: /^Sign in$/i });
+
+  if (
+    (await safeVisible(signOutButton)) ||
+    (await safeVisible(dashboardTab)) ||
+    (await safeVisible(tutorialHeading))
+  ) {
+    return "shell" as const;
+  }
+
+  if (
+    (await safeVisible(emailInput)) &&
+    (await safeVisible(passwordInput)) &&
+    (await safeVisible(signInButton))
+  ) {
+    return "auth" as const;
+  }
+
+  return "pending" as const;
+}
+
+async function waitForShellOrAuth(page: Page, timeoutMs = 45_000) {
+  const startedAt = Date.now();
+
+  while (Date.now() - startedAt < timeoutMs) {
+    const state = await shellOrAuthState(page);
+    if (state !== "pending") return state;
+    await page.waitForTimeout(250);
+  }
+
+  throw new Error("The app did not reach either an authenticated shell or the sign-in form.");
+}
+
+export async function waitForFirebaseAuthSession(
+  page: Page,
+  timeoutMs = 45_000
+) {
+  const startedAt = Date.now();
+  let lastState: FirebaseAuthState | null = null;
+
+  while (Date.now() - startedAt < timeoutMs) {
+    try {
+      lastState = await readFirebaseAuthState(page);
+      const emulatorOkay =
+        !emulatorHarnessRequired() || lastState.authEmulator;
+
+      if (lastState.uid && lastState.persisted && emulatorOkay) {
+        return lastState;
+      }
+    } catch {
+      // Ignore transient module/navigation errors while the app settles.
+    }
+
+    await page.waitForTimeout(250);
+  }
+
+  throw new Error(
+    `Firebase Auth did not reach a durable signed-in state. uid=${lastState?.uid || "none"} persisted=${String(lastState?.persisted || false)} emulator=${String(lastState?.authEmulator || false)}`
+  );
+}
+
 async function waitForOptionValueByText(
   locator: Locator,
   matcher: RegExp | string,
@@ -131,28 +263,25 @@ async function waitForOptionValueByText(
 }
 
 export async function waitForAppShell(page: Page) {
-  const signOutButton = page.getByRole("button", { name: /sign out/i });
-  const dashboardTab = page.getByRole("tab", { name: /^Dashboard$/i });
-  const tutorialHeading = page.getByText(/Welcome to your Dashboard/i);
+  let state = await waitForShellOrAuth(page);
 
-  await expect
-    .poll(
-      async () => {
-        if (await safeVisible(signOutButton)) return true;
-        if (await safeVisible(dashboardTab)) return true;
-        if (await safeVisible(tutorialHeading)) return true;
-        return false;
-      },
-      {
-        timeout: 45_000,
-        intervals: [250, 500, 1000, 1500, 2000],
-      }
-    )
-    .toBe(true);
+  if (state === "auth") {
+    await signInEmulatorThroughUi(page);
+    state = await waitForShellOrAuth(page);
+  }
 
+  if (state !== "shell") {
+    throw new Error("The app did not reach the authenticated shell.");
+  }
+
+  if (emulatorHarnessRequired()) {
+    await waitForFirebaseAuthSession(page);
+  }
   await markGuideToursSeen(page);
   await dismissTutorialIfPresent(page);
-  await expect(dashboardTab).toBeVisible({ timeout: 15_000 });
+  await expect(page.getByRole("tab", { name: /^Dashboard$/i })).toBeVisible({
+    timeout: 15_000,
+  });
 }
 
 export async function gotoDashboard(page: Page) {

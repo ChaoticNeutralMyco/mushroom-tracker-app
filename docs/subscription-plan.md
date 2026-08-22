@@ -1,148 +1,210 @@
-﻿<!-- docs/subscription-plan.md -->
+<!-- docs/subscription-plan.md -->
 
 # Chaotic Neutral Myco Tracker Subscription Plan
 
-Planning-only document for subscription tiers, trials, downgrade behavior, tester codes, and future Stripe/Firebase enforcement.
+This document records the subscription model currently implemented in the app and the trusted backend work that is still pending.
 
-This file does not change runtime behavior.
+It does not change runtime behavior.
 
-## Current Rule
+## Current Public Plans
 
-Every implementation step must be small enough that both checks stay green:
+The app has four public plans:
 
-- `npm run build`
-- `npm run test:e2e:regression`
+| Plan | Billing status | Active grows | Purpose |
+|---|---|---:|---|
+| Free | Available | 6 | Complete personal cultivation toolkit |
+| Hobby | Pricing pending | 30 | Same features as Free with higher grow capacity |
+| Cultivator | Pricing pending | Unlimited | SOP workflows, generated tasks, and advanced cultivation analytics |
+| Lab | Pricing pending | Unlimited | Full operational workflow for processing, inventory, labels, and sales |
 
-No large paywall rewrites. No hidden tabs or blocking modals until the plan is implemented one step at a time.
+Trial and Admin are internal entitlement types, not public paid plans.
 
-## Trial Model
+There is no public Pro tier. The legacy `pro` plan ID maps to Cultivator for compatibility.
 
-New users should receive a 7-day full-access trial.
+## Fourteen-Day Trial
 
-During trial:
+A new account without an entitlement record receives a fourteen-day trial with full Lab access.
 
-- No practical limits.
-- All non-admin features are unlocked.
-- First-time educational prompts explain which tier keeps a feature after trial.
-- Trial should feel like guided onboarding.
+During the trial:
 
-After trial:
+- All Lab features are available.
+- Active grows are unlimited.
+- Admin-only tools are not included.
+- Daily required trial reminders begin with seven days remaining.
+- Trial access is resolved from the entitlement runtime before restricted actions are enabled.
 
-- User falls back to Free unless subscribed or given a tester code.
-- User data is not deleted.
-- User can choose which data stays active under Free limits.
-- Extra data is archived/read-only and can be restored after upgrade.
+When the trial expires:
 
-## Planned Tiers
+- The account falls back to Free unless another active entitlement exists.
+- Records are not deleted, hidden, or automatically archived.
+- Existing downgrade-safe workflows and safety actions remain available.
+- New restricted records and reactivations above the Free active-grow limit are blocked.
 
-| Tier | Price Idea | Active Grows | Recipes | Supplies | Purpose |
-|---|---:|---:|---:|---:|---|
-| Trial | 7 days free | No practical limit | No practical limit | No practical limit | Full guided preview |
-| Free | $0 | 5 | 3 | 10 | Basic tracker and COG preview |
-| Hobby | $4.99/month | 15 | 15 | 50 | Recipes and cost tracking |
-| Cultivator | $9.99/month | 50 | Unlimited | Unlimited | Serious home grower tools |
-| Pro | $19.99/month | 150 | Unlimited | Unlimited | Advanced analytics and reports |
-| Lab | $39.99/month | 500 | Unlimited | Unlimited | Operational/lab workflows |
-| Admin | Internal | Unlimited | Unlimited | Unlimited | Owner/dev/support access |
+Trusted server timestamps are still required before production billing. The current client runtime is not the final authority for trial provisioning.
 
-## Feature Strategy
+## Current Feature Boundaries
 
-Free should not hide COG completely. It should provide enough of a preview to show value.
+### Free
 
-Free should include:
+Free includes:
 
-- 5 active grows
-- 3 recipes
-- 10 supplies
-- COG Lite
-- Basic notes
-- Basic stage tracking
-- Basic tasks
-- Basic strain notes
-- Export all raw data
+- Grow lifecycle and stage tracking
+- Strain library
+- Grow and stage photos
+- Recipes
+- Manual tasks and reminders
+- Calendar
+- Backup and import
+- Raw-data export
+- Basic analytics
+- Basic cost tracking
+- Environmental tracking and target editing
+- Grow and cultivation labels
+- Up to 6 active grows
 
-Paid tiers should unlock:
+### Hobby
 
-- More active grows
-- More recipes
-- More supplies
-- Full COG breakdown
-- Inventory deduction
-- Grow-level cost rollups
-- Label printing
-- Photos
-- SOP task generation
-- Advanced analytics
-- Contamination analytics
-- Environmental logs
-- Reports
-- Post-processing
-- Finished inventory
-- Batch/audit tools
+Hobby includes the same feature set as Free with up to 30 active grows.
 
-## Downgrade Rules
+### Cultivator
 
-Never delete user data because a trial ends or a subscription lapses.
+Cultivator includes everything in Hobby plus:
 
-When over plan limits:
+- Unlimited active grows
+- SOP workflows
+- SOP-generated tasks and checklists
+- Advanced cultivation analytics
+- Analytics exports
+- Advanced cost analytics
 
-1. User can still export all data.
-2. User chooses what stays active.
-3. Extra grows, recipes, and supplies are archived, not deleted.
-4. Archived data can be restored after upgrade.
-5. Expired users should see “your data is safe” messaging, not hostile lockout messaging.
+Environmental tracking remains available to every tier. There is no separate advanced-environmental-controls paywall.
+
+### Lab
+
+Lab includes everything in Cultivator plus:
+
+- Post Processing
+- Finished Inventory
+- Package runs and SKUs
+- Post Processing and packaged-SKU labels
+- Sales and outbound inventory tracking
+- FEFO controls
+- Final disposition
+- Inventory audit history
+- Lab, production, inventory, and sales analytics
+
+Grow and cultivation labels remain available on every public plan. Post Processing and packaged-SKU labels require Lab access.
+
+## Downgrade and Plan-End Rules
+
+Subscription changes must never delete user data.
+
+When a trial or paid plan ends:
+
+1. The account falls back to Free unless another valid entitlement exists.
+2. Existing records remain visible.
+3. Raw-data export remains available.
+4. Existing SOP-linked grows, tasks, checklists, and workflow history can still be viewed and completed.
+5. New restricted records are blocked.
+6. Reactivating grows above the current plan limit is blocked.
+7. Waste, destruction, recall, reservation release, and final-disposition safety actions remain available.
+8. Upgrading or receiving a valid trusted entitlement restores the applicable features.
+
+The app uses reassuring “your data is safe” messaging rather than destructive lockouts.
+
+## Past-Due Grace Period
+
+A paid plan with `past_due` status receives up to three days of existing paid access when a trusted billing timestamp is available.
+
+Trusted timing uses:
+
+- `graceEndsAt`, when supplied by the backend
+- Otherwise `pastDueStartedAt`
+- Otherwise `currentPeriodEndsAt`
+
+After the grace period, or when no trusted timing anchor exists, the account safely falls back to Free without deleting records.
 
 ## Tester Codes
 
-Tester/friend codes should eventually be separate from Stripe promo codes.
+Tester and friend codes are planned but are not active.
 
-Examples:
+Rules:
 
-- `CNM-JUNE-TESTER` gives Pro for 30 days.
-- `CNM-FOUNDER-2026` gives Lab for 12 months.
-- `CNM-VET-BETA` gives Cultivator for 90 days.
+- No public example codes are stored in this document or exposed in the client.
+- React must not validate codes or grant entitlements.
+- Redemption must happen through an authenticated, admin-controlled backend function.
+- Tester entitlements must be written to the same trusted entitlement model used by billing.
 
-Tester code redemption should eventually happen through a Cloud Function, not front-end-only logic.
+Tester codes are separate from Stripe promotion codes.
 
-## Future Stripe Model
+## Pricing and Billing Status
 
-Stripe should wait until the tier UX and enforcement model are stable.
+Paid-plan prices are not approved or configured.
 
-Future flow:
+The following are not connected yet:
 
-1. User chooses a plan.
-2. App starts Stripe Checkout.
-3. Stripe webhook updates Firebase entitlement data.
-4. App reads entitlement from Firestore.
-5. Cloud Functions enforce limits.
-6. Stripe Customer Portal handles billing management.
+- Stripe Checkout
+- Stripe Customer Portal
+- Stripe webhooks
+- Production entitlement writes
+- Billing management
+- Tester-code redemption
+
+Disabled plan buttons in Settings are informational only.
+
+## Entitlement Model
+
+The app reads the entitlement document at:
+
+`users/{uid}/billing/entitlement`
+
+The current model supports fields such as:
+
+- `planId`
+- `status`
+- `source`
+- `trialStartedAt`
+- `trialEndsAt`
+- `currentPeriodEndsAt`
+- `pastDueStartedAt`
+- `graceEndsAt`
+- `featureOverrides`
+- `limitOverrides`
+- `testerCodeId`
+- `stripeCustomerId`
+- `stripeSubscriptionId`
+- `updatedAt`
+
+Missing entitlements can resolve to the configured Lab trial. Existing malformed or unreadable entitlements fail safely to Free.
 
 ## Security Model
 
-React gating is only for user experience.
+React gating is user-experience protection only. It is not sufficient security.
 
-Real enforcement should eventually use:
+Production enforcement must use:
 
 - Firebase Auth
 - Firestore entitlement documents
-- Firebase custom claims
+- Firebase custom claims where appropriate
 - Firestore Security Rules
 - Cloud Functions
 - Stripe webhooks
+- Server timestamps
 - Admin-only tester-code functions
+- Atomic server-side limit enforcement
 
-Do not rely on localStorage, React state, or front-end-only checks for paid access.
+Do not use these as a paid-access authority:
 
-## Safe Implementation Order
+- `localStorage`
+- React state
+- Device time
+- Front-end-only checks
 
-1. Add this planning document.
-2. Add static plan config without importing it.
-3. Add Billing page shell without entitlement logic.
-4. Add copy explaining the future trial.
-5. Add passive “future paid feature” badges.
-6. Add local entitlement preview behind a dev flag.
-7. Add tester-code placeholder UI.
-8. Add Firestore entitlement read.
-9. Add Cloud Function enforcement.
-10. Add Stripe test mode.
-11. Harden public launch flow.
+## Required Verification
+
+Every subscription change must keep these checks green:
+
+- `npm run test:subscription`
+- `npm run test:integration`
+- `npm run build`
+- `npm run test:e2e:regression`

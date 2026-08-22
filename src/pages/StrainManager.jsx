@@ -18,7 +18,6 @@ import {
 import { auth, db, storage } from "../firebase-config";
 import { onAuthStateChanged } from "firebase/auth";
 import { isArchivedish, normalizeStage, normalizeStatus } from "../lib/growFilters";
-import { ref as storageRef, uploadBytes, getDownloadURL, deleteObject } from "firebase/storage";
 import {
   UploadCloud,
   Trash2,
@@ -62,6 +61,19 @@ import {
   clampStrainCardSummaryText,
   buildDefaultStrainCardDesign,
 } from "../lib/strain-cards";
+import {
+  STRAIN_IMAGE_KIND_CARD,
+  STRAIN_IMAGE_KIND_PROFILE,
+  cleanupStrainImageAssets,
+  getStrainImageStoragePath,
+  getStrainStorageAssets,
+  uploadStrainImageAsset,
+} from "../lib/strain-image-storage";
+import {
+  deleteGrowPhoto,
+  getPhotoTimeMs,
+  normalizePhotoRecord,
+} from "../lib/photo-storage";
 
 /* ---------- helpers ---------- */
 const norm = (s) => String(s || "").trim().toLowerCase();
@@ -122,22 +134,6 @@ const isContamGrow = (g) => {
     g?.contaminated === true ||
     String(g?.result || "").toLowerCase() === "contaminated"
   );
-};
-
-// Timestamp helper for photos that may use createdAt or timestamp
-const photoTime = (p) => {
-  const v = p?.createdAt || p?.timestamp;
-  const d = asDate(v);
-  return d ? d.getTime() : 0;
-};
-
-// Extract Storage path from a download URL
-const pathFromDownloadURL = (url) => {
-  try {
-    const m = String(url).match(/\/o\/([^?]+)/);
-    if (m && m[1]) return decodeURIComponent(m[1]);
-  } catch {}
-  return null;
 };
 
 /* ---------- species presets ---------- */
@@ -373,6 +369,7 @@ const EMPTY_CARD_BUILDER = {
   mushroomArtKey: "cube-4",
   artMode: "preset",
   frontArtUrl: "",
+  frontArtStoragePath: "",
 };
 
 function buildCardBuilderSeed(seed = {}) {
@@ -385,6 +382,10 @@ function buildCardBuilderSeed(seed = {}) {
   return {
     ...EMPTY_CARD_BUILDER,
     ...normalized,
+    frontArtStoragePath:
+      builderSeed?.frontArtStoragePath ||
+      getStrainImageStoragePath({ frontArtUrl: builderSeed?.frontArtUrl || "" }) ||
+      "",
     artOffsetX: Number.isFinite(artOffsetX) ? artOffsetX : 0,
     artOffsetY: Number.isFinite(artOffsetY) ? artOffsetY : 0,
     artScale: Number.isFinite(artScale) ? artScale : 1,
@@ -575,6 +576,7 @@ export default function StrainManager(props) {
     genetics: "",
     notes: "",
     photoURL: "",
+    photoStoragePath: "",
     cardBuilder: buildCardBuilderSeed({}),
   });
   const [imageFile, setImageFile] = useState(null);
@@ -842,6 +844,10 @@ export default function StrainManager(props) {
         genetics: strainDoc.genetics || "",
         notes: strainDoc.notes || "",
         photoURL: strainDoc.photoURL || "",
+        photoStoragePath:
+          strainDoc.photoStoragePath ||
+          getStrainImageStoragePath({ photoURL: strainDoc.photoURL || "" }) ||
+          "",
         cardBuilder: buildCardBuilderSeed(strainDoc),
       });
       setImageFile(null);
@@ -862,6 +868,7 @@ export default function StrainManager(props) {
       genetics: "",
       notes: "",
       photoURL: "",
+      photoStoragePath: "",
       cardBuilder: buildCardBuilderSeed({}),
     });
     setImageFile(null);
@@ -872,30 +879,79 @@ export default function StrainManager(props) {
     scrollBuilderIntoView();
   }, [scrollBuilderIntoView]);
 
-  const uploadImage = async () => {
-    if (!imageFile) return form.photoURL || "";
-    if (typeof onUploadStrainImage === "function") {
-      return await onUploadStrainImage(imageFile);
+  const normalizeUploadedAsset = (result, kind, fallbackUrl = "", fallbackPath = "") => {
+    if (typeof result === "string") {
+      return {
+        kind,
+        url: result,
+        storagePath: getStrainImageStoragePath({ url: result }) || fallbackPath || "",
+      };
     }
+    return {
+      kind,
+      url: result?.url || fallbackUrl || "",
+      storagePath:
+        result?.storagePath ||
+        getStrainImageStoragePath({ url: result?.url || fallbackUrl || "" }) ||
+        fallbackPath ||
+        "",
+    };
+  };
+
+  const uploadImage = async () => {
+    const fallback = normalizeUploadedAsset(
+      null,
+      STRAIN_IMAGE_KIND_PROFILE,
+      form.photoURL || "",
+      form.photoStoragePath || ""
+    );
+    if (!imageFile) return fallback;
+
     const u = auth.currentUser;
-    if (!u) return form.photoURL || "";
-    const path = `users/${u.uid}/strains/${Date.now()}_${imageFile.name}`;
-    const r = storageRef(storage, path);
-    await uploadBytes(r, imageFile);
-    return await getDownloadURL(r);
+    if (!u) throw new Error("You must be signed in to upload a strain image.");
+    const result =
+      typeof onUploadStrainImage === "function"
+        ? await onUploadStrainImage(imageFile, STRAIN_IMAGE_KIND_PROFILE)
+        : await uploadStrainImageAsset({
+            storage,
+            uid: u.uid,
+            file: imageFile,
+            kind: STRAIN_IMAGE_KIND_PROFILE,
+          });
+    return normalizeUploadedAsset(
+      result,
+      STRAIN_IMAGE_KIND_PROFILE,
+      fallback.url,
+      fallback.storagePath
+    );
   };
 
   const uploadCardArt = async () => {
-    if (!cardArtFile) return form?.cardBuilder?.frontArtUrl || "";
-    if (typeof onUploadStrainImage === "function") {
-      return await onUploadStrainImage(cardArtFile);
-    }
+    const fallback = normalizeUploadedAsset(
+      null,
+      STRAIN_IMAGE_KIND_CARD,
+      form?.cardBuilder?.frontArtUrl || "",
+      form?.cardBuilder?.frontArtStoragePath || ""
+    );
+    if (!cardArtFile) return fallback;
+
     const u = auth.currentUser;
-    if (!u) return form?.cardBuilder?.frontArtUrl || "";
-    const path = `users/${u.uid}/strain-cards/${Date.now()}_${cardArtFile.name}`;
-    const r = storageRef(storage, path);
-    await uploadBytes(r, cardArtFile);
-    return await getDownloadURL(r);
+    if (!u) throw new Error("You must be signed in to upload card art.");
+    const result =
+      typeof onUploadStrainImage === "function"
+        ? await onUploadStrainImage(cardArtFile, STRAIN_IMAGE_KIND_CARD)
+        : await uploadStrainImageAsset({
+            storage,
+            uid: u.uid,
+            file: cardArtFile,
+            kind: STRAIN_IMAGE_KIND_CARD,
+          });
+    return normalizeUploadedAsset(
+      result,
+      STRAIN_IMAGE_KIND_CARD,
+      fallback.url,
+      fallback.storagePath
+    );
   };
 
   const resetForm = () => {
@@ -906,6 +962,7 @@ export default function StrainManager(props) {
       genetics: "",
       notes: "",
       photoURL: "",
+      photoStoragePath: "",
       cardBuilder: buildCardBuilderSeed({}),
     });
     setImageFile(null);
@@ -936,8 +993,15 @@ export default function StrainManager(props) {
   const handleSubmit = async (e) => {
     e.preventDefault();
     setError("");
+
+    const uploadedAssets = [];
+    let saveCompleted = false;
+
     try {
       setSaving(true);
+      const u = auth.currentUser;
+      if (!u) throw new Error("You must be signed in to save a strain.");
+
       const cleanName = String(form.name || "").trim();
       const cleanScientificName = String(fuzzyPickSpecies(form.scientificName) || "").trim();
       const duplicateMatch = findMatchingStrainCard(cleanName, editingId || null);
@@ -949,21 +1013,37 @@ export default function StrainManager(props) {
           `A similar strain card already exists for “${duplicateMatch.name}”. Use that card instead of creating a duplicate.`
         );
       }
+      if (!cleanName) throw new Error("Strain name is required.");
 
-      const photoURL = await uploadImage();
-      const frontArtUrl = await uploadCardArt();
+      const previousStrain = editingId
+        ? (Array.isArray(strainsSourceForMatching) ? strainsSourceForMatching : []).find(
+            (strain) => strain?.id === editingId
+          ) || null
+        : null;
+      const previousAssets = getStrainStorageAssets(previousStrain || {}, u.uid);
+
+      const photoAsset = await uploadImage();
+      if (imageFile && photoAsset.storagePath) uploadedAssets.push(photoAsset);
+
+      const cardArtAsset = await uploadCardArt();
+      if (cardArtFile && cardArtAsset.storagePath) uploadedAssets.push(cardArtAsset);
+
       const cardBuilder = {
         ...buildCardBuilderSeed({
           ...form,
           name: cleanName,
           scientificName: cleanScientificName,
-          photoURL,
+          photoURL: photoAsset.url,
+          photoStoragePath: photoAsset.storagePath,
           cardBuilder: {
             ...(form.cardBuilder || EMPTY_CARD_BUILDER),
-            frontArtUrl: frontArtUrl || form?.cardBuilder?.frontArtUrl || "",
+            frontArtUrl: cardArtAsset.url || "",
+            frontArtStoragePath: cardArtAsset.storagePath || "",
           },
         }),
         enabled: form?.cardBuilder?.enabled !== false,
+        frontArtUrl: cardArtAsset.url || "",
+        frontArtStoragePath: cardArtAsset.storagePath || "",
       };
 
       const data = {
@@ -972,11 +1052,13 @@ export default function StrainManager(props) {
         description: form.description || "",
         genetics: form.genetics || "",
         notes: form.notes || "",
-        photoURL,
+        photoURL: photoAsset.url || "",
+        photoStoragePath: photoAsset.storagePath || "",
         cardBuilder,
+        pendingStorageCleanupPaths: [],
       };
-      if (!data.name) throw new Error("Strain name is required.");
 
+      let savedId = editingId || null;
       if (editingId) {
         if (typeof onUpdateStrain === "function") {
           await onUpdateStrain(editingId, {
@@ -984,16 +1066,12 @@ export default function StrainManager(props) {
             updatedAt: new Date().toISOString(),
           });
         } else {
-          const u = auth.currentUser;
-          if (!u) return;
           await updateDoc(doc(db, "users", u.uid, "strains", editingId), {
             ...data,
             updatedAt: serverTimestamp(),
           });
         }
       } else {
-        const u = auth.currentUser;
-        if (!u) throw new Error("You must be signed in to save a strain.");
         const createdAt = new Date().toISOString();
         const createdPayload = {
           ...data,
@@ -1005,14 +1083,74 @@ export default function StrainManager(props) {
           createdAt: serverTimestamp(),
           updatedAt: serverTimestamp(),
         });
+        savedId = createdRef.id;
         if (!hasStrainsProp) {
           setLocalStrains((prev) => [...prev, { id: createdRef.id, ...createdPayload }]);
         }
         addNameToCache(data.name);
       }
+
+      saveCompleted = true;
       await ensureSpeciesSaved(data.scientificName);
+
+      const activePaths = new Set(
+        getStrainStorageAssets(data, u.uid).map((asset) => asset.storagePath)
+      );
+      const staleAssets = previousAssets.filter(
+        (asset) => asset.storagePath && !activePaths.has(asset.storagePath)
+      );
+
+      if (staleAssets.length > 0) {
+        const cleanup = await cleanupStrainImageAssets({
+          storage,
+          uid: u.uid,
+          assets: staleAssets,
+        });
+
+        if (cleanup.failed.length > 0 && savedId) {
+          const pendingStorageCleanupPaths = cleanup.failed.map((entry) => ({
+            kind: entry.kind,
+            storagePath: entry.storagePath,
+            url: entry.url || "",
+          }));
+          try {
+            const cleanupPatch = {
+              pendingStorageCleanupPaths,
+              updatedAt: new Date().toISOString(),
+            };
+            if (typeof onUpdateStrain === "function") {
+              await onUpdateStrain(savedId, cleanupPatch);
+            } else {
+              await updateDoc(doc(db, "users", u.uid, "strains", savedId), {
+                ...cleanupPatch,
+                updatedAt: serverTimestamp(),
+              });
+            }
+          } catch (cleanupTrackingError) {
+            console.warn(
+              "Could not record pending strain-image cleanup:",
+              cleanupTrackingError?.message || cleanupTrackingError
+            );
+            setError(
+              "The strain was saved, but an older image could not be removed or recorded for retry. Keep this form open and try saving again."
+            );
+            return;
+          }
+        }
+      }
+
       resetForm();
     } catch (err) {
+      if (!saveCompleted && uploadedAssets.length > 0) {
+        const u = auth.currentUser;
+        if (u) {
+          await cleanupStrainImageAssets({
+            storage,
+            uid: u.uid,
+            assets: uploadedAssets,
+          });
+        }
+      }
       console.error(err);
       setError(err?.message || "Failed to save strain.");
     } finally {
@@ -1024,18 +1162,125 @@ export default function StrainManager(props) {
     loadBuilderForStrain(s);
   };
 
+  const deleteStrainRecordWithAssets = async (strainDoc) => {
+    const u = auth.currentUser;
+    const id = strainDoc?.id;
+    if (!u || !id) return;
+
+    const assets = getStrainStorageAssets(strainDoc, u.uid);
+    if (assets.length > 0) {
+      const cleanup = await cleanupStrainImageAssets({
+        storage,
+        uid: u.uid,
+        assets,
+      });
+      if (cleanup.failed.length > 0) {
+        const pendingStorageCleanupPaths = cleanup.failed.map((entry) => ({
+          kind: entry.kind,
+          storagePath: entry.storagePath,
+          url: entry.url || "",
+        }));
+        const deletedPaths = new Set(cleanup.deletedPaths);
+        const currentProfilePath = getStrainImageStoragePath({
+          storagePath: strainDoc.photoStoragePath,
+          photoURL: strainDoc.photoURL,
+        });
+        const currentCardPath = getStrainImageStoragePath({
+          storagePath: strainDoc?.cardBuilder?.frontArtStoragePath,
+          frontArtUrl: strainDoc?.cardBuilder?.frontArtUrl,
+        });
+        const trackingPatch = {
+          pendingStorageCleanupPaths,
+          updatedAt: new Date().toISOString(),
+        };
+        if (currentProfilePath && deletedPaths.has(currentProfilePath)) {
+          trackingPatch.photoURL = "";
+          trackingPatch.photoStoragePath = "";
+        }
+        if (currentCardPath && deletedPaths.has(currentCardPath)) {
+          trackingPatch.cardBuilder = {
+            ...(strainDoc.cardBuilder || EMPTY_CARD_BUILDER),
+            frontArtUrl: "",
+            frontArtStoragePath: "",
+          };
+        }
+        try {
+          if (typeof onUpdateStrain === "function") {
+            await onUpdateStrain(id, trackingPatch);
+          } else {
+            await updateDoc(doc(db, "users", u.uid, "strains", id), {
+              ...trackingPatch,
+              updatedAt: serverTimestamp(),
+            });
+          }
+        } catch (trackingError) {
+          console.warn(
+            "Could not record failed strain-image cleanup:",
+            trackingError?.message || trackingError
+          );
+        }
+        throw new Error(
+          "The strain was not deleted because one or more stored images could not be removed. Any images that were removed were cleared from the strain record. Try again after checking your connection."
+        );
+      }
+    }
+
+    try {
+      if (typeof onDeleteStrain === "function") {
+        await onDeleteStrain(id);
+      } else {
+        await deleteDoc(doc(db, "users", u.uid, "strains", id));
+      }
+    } catch (deleteError) {
+      const clearedCardBuilder = {
+        ...(strainDoc.cardBuilder || EMPTY_CARD_BUILDER),
+        frontArtUrl: "",
+        frontArtStoragePath: "",
+      };
+      try {
+        const patch = {
+          photoURL: "",
+          photoStoragePath: "",
+          cardBuilder: clearedCardBuilder,
+          pendingStorageCleanupPaths: [],
+          updatedAt: new Date().toISOString(),
+        };
+        if (typeof onUpdateStrain === "function") {
+          await onUpdateStrain(id, patch);
+        } else {
+          await updateDoc(doc(db, "users", u.uid, "strains", id), {
+            ...patch,
+            updatedAt: serverTimestamp(),
+          });
+        }
+      } catch (clearError) {
+        console.warn(
+          "Could not clear strain image references after delete failure:",
+          clearError?.message || clearError
+        );
+      }
+      throw new Error(
+        "The stored images were removed, but the strain record could not be deleted. Its image links were cleared; try deleting the strain again."
+      );
+    }
+  };
+
   const handleDelete = async (id) => {
     if (!id) return;
     if (
       !(await confirm({ title: "Delete strain?", message: "Delete this strain? This cannot be undone.", tone: "danger" }))
     )
       return;
-    if (typeof onDeleteStrain === "function") {
-      await onDeleteStrain(id);
-    } else {
-      const u = auth.currentUser;
-      if (!u) return;
-      await deleteDoc(doc(db, "users", u.uid, "strains", id));
+
+    const strainDoc = (Array.isArray(strainsSourceForMatching) ? strainsSourceForMatching : []).find(
+      (strain) => strain?.id === id
+    ) || { id };
+
+    try {
+      await deleteStrainRecordWithAssets(strainDoc);
+    } catch (deleteError) {
+      console.error(deleteError);
+      window.alert(deleteError?.message || "Failed to delete strain.");
     }
   };
 
@@ -1379,20 +1624,19 @@ export default function StrainManager(props) {
     )
       return;
 
-    if (typeof onDeleteStrain === "function") {
+    try {
       for (const id of selectedStrains) {
-        await onDeleteStrain(id);
+        const strainDoc = (Array.isArray(strainsSourceForMatching)
+          ? strainsSourceForMatching
+          : []
+        ).find((strain) => strain?.id === id) || { id };
+        await deleteStrainRecordWithAssets(strainDoc);
       }
-    } else {
-      const u = auth.currentUser;
-      if (!u) return;
-      await Promise.all(
-        selectedStrains.map((id) =>
-          deleteDoc(doc(db, "users", u.uid, "strains", id))
-        )
-      );
+      setSelectedStrains([]);
+    } catch (deleteError) {
+      console.error(deleteError);
+      window.alert(deleteError?.message || "Failed to delete one or more strains.");
     }
-    setSelectedStrains([]);
   };
 
   /* ---------------- Fetch photos for Gallery ---------------- */
@@ -1422,10 +1666,12 @@ export default function StrainManager(props) {
             )
           );
           rows = rows.concat(
-            snap.docs.map((d) => ({ id: d.id, ...d.data() }))
+            snap.docs.map((d) =>
+              normalizePhotoRecord({ id: d.id, ...d.data() })
+            )
           );
         }
-        rows.sort((a, b) => photoTime(b) - photoTime(a));
+        rows.sort((a, b) => getPhotoTimeMs(b) - getPhotoTimeMs(a));
         setStrainPhotos(rows);
         setGallerySelected(new Set());
         setGallerySelectMode(false);
@@ -1449,37 +1695,15 @@ export default function StrainManager(props) {
 
   const deleteOnePhoto = async (photo) => {
     const uidCurrent = auth.currentUser?.uid;
-    if (!uidCurrent || !photo?.id) return;
-    try {
-      const storagePath = photo.storagePath || pathFromDownloadURL(photo.url);
-      if (storagePath) {
-        try {
-          await deleteObject(storageRef(storage, storagePath));
-        } catch (e) {
-          console.warn("Storage delete warning:", e?.message || e);
-        }
-      }
-      await deleteDoc(doc(db, "users", uidCurrent, "photos", photo.id));
+    if (!uidCurrent || !photo?.id) return null;
 
-      if (photo.growId) {
-        const gRef = doc(db, "users", uidCurrent, "grows", photo.growId);
-        try {
-          const gSnap = await getDoc(gRef);
-          if (gSnap.exists() && gSnap.data()?.coverPhotoId === photo.id) {
-            await updateDoc(gRef, {
-              coverPhotoId: null,
-              coverUrl: null,
-              coverStoragePath: null,
-              coverUpdatedAt: serverTimestamp(),
-            });
-          }
-        } catch (e) {
-          console.warn("Cover clear warning:", e?.message || e);
-        }
-      }
-    } catch (e) {
-      throw e;
-    }
+    return deleteGrowPhoto({
+      db,
+      storage,
+      uid: uidCurrent,
+      growId: photo.growId || "",
+      photo,
+    });
   };
 
   const onBatchDeletePhotos = async () => {
@@ -1490,13 +1714,25 @@ export default function StrainManager(props) {
       return;
 
     const ids = new Set(gallerySelected);
-    const list = strainPhotos.filter((p) => ids.has(p.id));
-    for (const p of list) {
-      await deleteOnePhoto(p);
+    const list = strainPhotos.filter((photo) => ids.has(photo.id));
+    const deletedIds = new Set();
+
+    try {
+      for (const photo of list) {
+        await deleteOnePhoto(photo);
+        deletedIds.add(photo.id);
+        setStrainPhotos((current) =>
+          current.filter((item) => item.id !== photo.id)
+        );
+      }
+      clearGallerySelection();
+      setGallerySelectMode(false);
+    } catch (error) {
+      setGallerySelected(
+        new Set(list.filter((photo) => !deletedIds.has(photo.id)).map((photo) => photo.id))
+      );
+      window.alert(error?.message || "One or more photos could not be deleted.");
     }
-    setStrainPhotos((curr) => curr.filter((p) => !ids.has(p.id)));
-    clearGallerySelection();
-    setGallerySelectMode(false);
   };
 
   const beginCaptionEdit = (p) => {
@@ -2794,13 +3030,38 @@ export default function StrainManager(props) {
                 aria-label="Notes"
                 rows={3}
               />
-              <input
-                type="file"
-                accept="image/*"
-                onChange={(e) => setImageFile(e.target.files?.[0] || null)}
-                className="md:col-span-2"
-                aria-label="Upload strain image"
-              />
+              <div className="md:col-span-2 space-y-2">
+                <input
+                  type="file"
+                  accept="image/*"
+                  onChange={(e) => setImageFile(e.target.files?.[0] || null)}
+                  className="block w-full text-sm"
+                  aria-label="Upload strain image"
+                />
+                {(imageFile || form.photoURL) && (
+                  <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-zinc-500 dark:text-zinc-400">
+                    <span className="break-all">
+                      {imageFile?.name
+                        ? `Pending upload: ${imageFile.name}`
+                        : `Saved image: ${form.photoURL}`}
+                    </span>
+                    <button
+                      type="button"
+                      className="chip"
+                      onClick={() => {
+                        setImageFile(null);
+                        setForm((current) => ({
+                          ...current,
+                          photoURL: "",
+                          photoStoragePath: "",
+                        }));
+                      }}
+                    >
+                      Clear strain image
+                    </button>
+                  </div>
+                )}
+              </div>
 
               <div className="md:col-span-2 rounded-2xl border border-zinc-200 dark:border-zinc-800 bg-zinc-50 dark:bg-zinc-950/60 p-4 space-y-4">
                 <div className="flex flex-wrap items-center justify-between gap-3">
@@ -2844,6 +3105,7 @@ export default function StrainManager(props) {
                         onClick={() => {
                           setCardArtFile(null);
                           updateCardBuilder("frontArtUrl", "");
+                          updateCardBuilder("frontArtStoragePath", "");
                           updateCardBuilder("artMode", "preset");
                         }}
                       >
@@ -3486,12 +3748,14 @@ export default function StrainManager(props) {
                                     !(await confirm({ title: "Delete photo?", message: "Delete this photo? This cannot be undone.", tone: "danger" }))
                                   )
                                     return;
-                                  await deleteOnePhoto(p);
-                                  setStrainPhotos((curr) =>
-                                    curr.filter(
-                                      (x) => x.id !== p.id
-                                    )
-                                  );
+                                  try {
+                                    await deleteOnePhoto(p);
+                                    setStrainPhotos((current) =>
+                                      current.filter((item) => item.id !== p.id)
+                                    );
+                                  } catch (error) {
+                                    window.alert(error?.message || "Photo deletion failed.");
+                                  }
                                 }}
                                 className="absolute right-2 top-2 z-20 rounded-md bg-red-600/90 px-2 py-1 text-xs text-white hover:bg-red-600 focus:outline-none focus:ring-2 focus:ring-red-400"
                                 aria-label="Delete photo"
@@ -3549,9 +3813,9 @@ export default function StrainManager(props) {
                               )}
                               <div className="opacity-70 mt-1">
                                 {label} ·{" "}
-                                {photoTime(p)
+                                {getPhotoTimeMs(p)
                                   ? new Date(
-                                      photoTime(p)
+                                      getPhotoTimeMs(p)
                                     ).toLocaleString()
                                   : "—"}
                               </div>

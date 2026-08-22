@@ -1,7 +1,8 @@
+// src/utils/OnboardingCoach.jsx
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useLocation } from "react-router-dom";
-import stepsByRoute, { TOUR_VERSION } from "./tourSteps";
+import stepsByRoute, { TOUR_CONTROL_EVENT, TOUR_VERSION } from "./tourSteps";
 
 /**
  * OnboardingCoach
@@ -63,13 +64,18 @@ export default function OnboardingCoach({ pageKey, enabled = true }) {
   /* ---------- auto-open on first visit ---------- */
   useEffect(() => {
     if (!isEnabled) return;
-    const seenKey = seenStorageKey(routeKey);
-    const seen = localStorage.getItem(seenKey) === "1";
+    let seen = false;
+    try {
+      seen = localStorage.getItem(seenStorageKey(routeKey)) === "1";
+    } catch {}
+
     setIdx(0);
     setMenuOpen(false);
+    setOpen(false);
+
     if (!seen && steps.length) {
-      const t = setTimeout(() => setOpen(true), 400);
-      return () => clearTimeout(t);
+      const timer = window.setTimeout(() => setOpen(true), 400);
+      return () => window.clearTimeout(timer);
     }
   }, [isEnabled, routeKey, steps.length]);
 
@@ -104,7 +110,7 @@ export default function OnboardingCoach({ pageKey, enabled = true }) {
     const onKey = (e) => {
       if (e.key === "Escape") {
         e.preventDefault();
-        closeForRoute(false); // don't mark seen on ESC
+        closeForRoute(true);
         return;
       }
       if (e.key === "Tab") {
@@ -141,29 +147,39 @@ export default function OnboardingCoach({ pageKey, enabled = true }) {
   useEffect(() => {
     if (!isEnabled || !open) return;
 
+    const target = getTargetEl(steps[idx]?.selector);
+    if (target) {
+      const initialRect = target.getBoundingClientRect();
+      const outsideViewport =
+        initialRect.top < 12 || initialRect.bottom > window.innerHeight - 12;
+      if (outsideViewport) {
+        target.scrollIntoView({ block: "center", inline: "nearest", behavior: "auto" });
+      }
+    }
+
     const update = () => {
-      const target = getTargetEl(steps[idx]?.selector);
-      const rect = target ? target.getBoundingClientRect() : null;
+      const currentTarget = getTargetEl(steps[idx]?.selector);
+      const rect = currentTarget ? currentTarget.getBoundingClientRect() : null;
       positionSpotlight(spotlightRef.current, rect);
       positionTooltip(tooltipRef.current, rect);
     };
 
     update();
-    const ro = new ResizeObserver(update);
-    ro.observe(document.documentElement);
+    const ro = typeof ResizeObserver === "function" ? new ResizeObserver(update) : null;
+    ro?.observe(document.documentElement);
     window.addEventListener("scroll", update, true);
-    const mo = new MutationObserver(update);
-    mo.observe(document.body, { childList: true, subtree: true });
+    const mo = typeof MutationObserver === "function" ? new MutationObserver(update) : null;
+    mo?.observe(document.body, { childList: true, subtree: true });
 
     return () => {
-      try { ro.disconnect(); } catch {}
-      try { mo.disconnect(); } catch {}
+      try { ro?.disconnect(); } catch {}
+      try { mo?.disconnect(); } catch {}
       window.removeEventListener("scroll", update, true);
     };
   }, [isEnabled, open, idx, steps]);
 
   const startReplay = () => {
-    if (!isEnabled) return;
+    if (!isEnabled || !steps.length) return;
     setIdx(0);
     setOpen(true);
     setMenuOpen(false);
@@ -177,23 +193,43 @@ export default function OnboardingCoach({ pageKey, enabled = true }) {
 
   const resetAllPages = () => {
     if (!isEnabled) return;
-    try {
-      const keys = [];
-      for (let i = 0; i < localStorage.length; i++) {
-        const k = localStorage.key(i);
-        if (k && k.startsWith("tour.seen:")) keys.push(k);
-      }
-      keys.forEach((k) => localStorage.removeItem(k));
-    } catch {}
+    clearAllSeenTours();
+    try { localStorage.setItem("tour.version", String(TOUR_VERSION)); } catch {}
     startReplay();
   };
+
+  useEffect(() => {
+    const handleTourControl = (event) => {
+      const action = event?.detail?.action;
+      const requestedRoute = String(event?.detail?.routeKey || routeKey).toLowerCase();
+
+      if (action === "reset-all") {
+        clearAllSeenTours();
+        try { localStorage.setItem("tour.version", String(TOUR_VERSION)); } catch {}
+        if (isEnabled && steps.length) startReplay();
+        return;
+      }
+
+      if (requestedRoute !== routeKey) return;
+
+      if (action === "reset-page") {
+        try { localStorage.removeItem(seenStorageKey(routeKey)); } catch {}
+        startReplay();
+      } else if (action === "replay") {
+        startReplay();
+      }
+    };
+
+    window.addEventListener(TOUR_CONTROL_EVENT, handleTourControl);
+    return () => window.removeEventListener(TOUR_CONTROL_EVENT, handleTourControl);
+  }, [isEnabled, routeKey, steps.length]);
 
   const closeForRoute = (markSeen = true) => {
     if (markSeen) try { localStorage.setItem(seenStorageKey(routeKey), "1"); } catch {}
     setOpen(false);
   };
 
-  if (!isEnabled) return null;            // <-- hides both help menu and onboarding
+  if (!isEnabled || !steps.length) return null;
   if (!portalEl) return null;
 
   const bodyUI = (
@@ -219,8 +255,10 @@ export default function OnboardingCoach({ pageKey, enabled = true }) {
           className="onb-overlay"
           aria-modal="true"
           role="dialog"
-          onClick={(e) => {
-            if (!tooltipRef.current?.contains(e.target)) next(1);
+          onClick={(event) => {
+            if (tooltipRef.current?.contains(event.target)) return;
+            if (idx < steps.length - 1) next(1);
+            else closeForRoute(true);
           }}
         >
           <div ref={spotlightRef} className="onb-spotlight" aria-hidden="true" />
@@ -276,6 +314,16 @@ function routeToKey(pathname) {
 function seenStorageKey(routeKey) {
   return `tour.seen:${routeKey}`;
 }
+function clearAllSeenTours() {
+  try {
+    const keys = [];
+    for (let index = 0; index < localStorage.length; index += 1) {
+      const key = localStorage.key(index);
+      if (key?.startsWith("tour.seen:")) keys.push(key);
+    }
+    keys.forEach((key) => localStorage.removeItem(key));
+  } catch {}
+}
 function getTargetEl(selector) {
   if (!selector) return null;
   try { return document.querySelector(selector); } catch { return null; }
@@ -297,7 +345,7 @@ function positionTooltip(el, rect) {
   if (!el) return;
   const vpW = window.innerWidth;
   const vpH = window.innerHeight;
-  const estimateW = 360;
+  const estimateW = Math.min(360, Math.max(0, vpW - 16));
   const estimateH = 160;
 
   let left = (vpW - estimateW) / 2;
@@ -310,8 +358,10 @@ function positionTooltip(el, rect) {
     left = Math.min(vpW - estimateW - 16, Math.max(16, rect.left));
   }
 
-  el.style.left = `${Math.max(8, left)}px`;
-  el.style.top = `${Math.max(8, top)}px`;
+  const maxLeft = Math.max(8, vpW - estimateW - 8);
+  const maxTop = Math.max(8, vpH - estimateH - 8);
+  el.style.left = `${Math.min(maxLeft, Math.max(8, left))}px`;
+  el.style.top = `${Math.min(maxTop, Math.max(8, top))}px`;
   el.style.width = `${estimateW}px`;
 }
 function getFocusable(root) {
@@ -347,10 +397,10 @@ const Menu = React.forwardRef(function Menu({ onReplay, onResetThis, onResetAll 
   return (
     <>
       <div ref={ref} className="onb-menu" role="menu" aria-label="Guide menu">
-        <button className="onb-menu-item" onClick={onReplay}>▶ Replay guide (this page)</button>
-        <button className="onb-menu-item" onClick={onResetThis}>↺ Reset this page</button>
+        <button className="onb-menu-item" onClick={onReplay}>▶ Replay this page</button>
+        <button className="onb-menu-item" onClick={onResetThis}>↺ Restart this page tour</button>
         <hr className="onb-menu-sep" />
-        <button className="onb-menu-item danger" onClick={onResetAll}>⟲ Reset ALL pages</button>
+        <button className="onb-menu-item danger" onClick={onResetAll}>⟲ Restart all page tours</button>
       </div>
       <style>{styles}</style>
     </>

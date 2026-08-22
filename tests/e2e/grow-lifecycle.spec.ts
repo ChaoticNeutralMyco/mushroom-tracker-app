@@ -105,6 +105,26 @@ const FIREBASE_WEB_DEFAULTS = {
 };
 
 const FIRESTORE_REST_TIMEOUT_MS = 15_000;
+const FIRESTORE_EMULATOR_HOST = String(
+  process.env.FIRESTORE_EMULATOR_HOST || ""
+).trim();
+const REQUIRE_FIREBASE_EMULATORS = /^(1|true|yes)$/i.test(
+  String(process.env.E2E_REQUIRE_FIREBASE_EMULATORS || "")
+);
+
+function firestoreRestOrigin() {
+  if (FIRESTORE_EMULATOR_HOST) {
+    return `http://${FIRESTORE_EMULATOR_HOST}/v1`;
+  }
+
+  if (REQUIRE_FIREBASE_EMULATORS) {
+    throw new Error(
+      "E2E_REQUIRE_FIREBASE_EMULATORS is enabled, but FIRESTORE_EMULATOR_HOST is missing."
+    );
+  }
+
+  return "https://firestore.googleapis.com/v1";
+}
 
 function randomFirestoreId(length = 20) {
   const alphabet =
@@ -140,7 +160,7 @@ function firestoreDocumentName(session: NodeAuthSession, path: string) {
 
 function firestoreDocumentsBaseUrl(session: NodeAuthSession, path = "") {
   const suffix = path ? `/${path}` : "";
-  return `https://firestore.googleapis.com/v1/projects/${session.projectId}/databases/(default)/documents${suffix}`;
+  return `${firestoreRestOrigin()}/projects/${session.projectId}/databases/(default)/documents${suffix}`;
 }
 
 function encodeFirestoreValue(value: any): any {
@@ -573,8 +593,9 @@ async function addStrainLibraryItem(page: Page) {
 
   await form.getByTestId("strain-library-submit").click();
 
+  const libraryItemLabel = `${e2eData.strainLibrary.type} — ${e2eData.strainLibrary.strainName}`;
   await expect(
-    page.getByText(e2eData.strainLibrary.strainName)
+    page.getByText(libraryItemLabel, { exact: true }).first()
   ).toBeVisible({ timeout: 20_000 });
 }
 

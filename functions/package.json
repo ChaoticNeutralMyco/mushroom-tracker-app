@@ -1,0 +1,22 @@
+{
+  "name": "chaotic-neutral-myco-functions",
+  "version": "0.1.1",
+  "private": true,
+  "type": "module",
+  "main": "src/index.js",
+  "engines": {
+    "node": "22"
+  },
+  "scripts": {
+    "check:runtime": "node -e \"const major=Number(process.versions.node.split('.')[0]); if (major !== 22) { console.error('Expected Node.js 22, received ' + process.version); process.exit(1); } console.log('Node runtime verified: ' + process.version);\"",
+    "check": "node --check src/index.js && node --check src/subscriptionConfig.js && node --check src/entitlementModel.js && node --check src/entitlementService.js && node --check src/testerCodeService.js && node --check src/growService.js && node --check src/billingService.js",
+    "test": "node --test test/unit/*.test.js",
+    "test:emulator": "node --test --test-concurrency=1 test/emulator/*.test.js",
+    "audit:runtime": "npm audit --omit=dev --omit=optional --audit-level=critical"
+  },
+  "dependencies": {
+    "@google-cloud/firestore": "8.7.0",
+    "firebase-admin": "14.2.0",
+    "firebase-functions": "7.3.0"
+  }
+}

@@ -1,3 +1,4 @@
+// src/lib/persist-idb.js
 import { set, get, del, createStore } from "idb-keyval";
 import { PersistQueryClientProvider } from "@tanstack/react-query-persist-client"; // keeps types available
 

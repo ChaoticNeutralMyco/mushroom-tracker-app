@@ -11,6 +11,7 @@ import PackagingLabelPreview, {
   DEMO_PACKAGING_LABEL_DATA,
 } from "./PackagingLabelPreview";
 import { isActiveGrow } from "../../lib/growFilters";
+import { SUBSCRIPTION_FEATURE_KEYS } from "../../lib/subscriptionPlans.js";
 import {
   getLotWorkflowState,
   isFinishedGoodsLot,
@@ -270,6 +271,22 @@ const buildPackagingDataForLot = (lot) => {
 
 export default function LabelPrintWrapper(props) {
   const location = useLocation();
+  const canUsePostProcessLabels = props?.canUsePostProcessLabels !== false;
+  const onSubscriptionFeatureBlocked =
+    typeof props?.onSubscriptionFeatureBlocked === "function"
+      ? props.onSubscriptionFeatureBlocked
+      : () => false;
+
+  const requestPostProcessLabelAccess = () => {
+    if (canUsePostProcessLabels) return true;
+    onSubscriptionFeatureBlocked({
+      featureKey: SUBSCRIPTION_FEATURE_KEYS.POST_PROCESS_LABELS,
+      actionLabel: "Preview or print Post Processing labels",
+      supportingText:
+        "Grow and cultivation labels remain available on every plan. Finished-inventory and packaged-SKU labels require Lab access.",
+    });
+    return false;
+  };
   const requestedPackagingLotId = useMemo(
     () => new URLSearchParams(location.search).get("labelLotId") || "",
     [location.search]
@@ -381,7 +398,7 @@ export default function LabelPrintWrapper(props) {
   useEffect(() => {
     if (hasFinishedGoodsProp) return undefined;
 
-    if (!uid) {
+    if (!uid || !canUsePostProcessLabels) {
       setFetchedFinishedGoods([]);
       return undefined;
     }
@@ -397,11 +414,15 @@ export default function LabelPrintWrapper(props) {
         unsubLots?.();
       } catch {}
     };
-  }, [hasFinishedGoodsProp, uid]);
+  }, [canUsePostProcessLabels, hasFinishedGoodsProp, uid]);
 
   const growsSource = hasGrowsProp ? propGrows : fetchedGrows;
   const librarySource = hasLibraryProp ? propLibraryItems : fetchedLibraryItems;
-  const finishedGoodsSource = hasFinishedGoodsProp ? propFinishedGoods : fetchedFinishedGoods;
+  const finishedGoodsSource = canUsePostProcessLabels
+    ? hasFinishedGoodsProp
+      ? propFinishedGoods
+      : fetchedFinishedGoods
+    : [];
 
   const activeGrows = useMemo(() => {
     return Array.isArray(growsSource) ? growsSource.filter(isActiveGrow) : [];
@@ -500,6 +521,7 @@ export default function LabelPrintWrapper(props) {
         </div>
       </div>
 
+      {canUsePostProcessLabels ? (
       <div className="rounded-2xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 p-4 space-y-3">
         <div className="flex flex-wrap items-end justify-between gap-3">
           <div>
@@ -548,10 +570,37 @@ export default function LabelPrintWrapper(props) {
         )}
       </div>
 
+      ) : (
+        <div
+          className="rounded-2xl border border-violet-200 bg-violet-50 p-5 text-violet-950 dark:border-violet-900/60 dark:bg-violet-950/25 dark:text-violet-100"
+          data-testid="postprocess-labels-locked"
+        >
+          <div className="flex flex-wrap items-start justify-between gap-4">
+            <div className="max-w-3xl">
+              <div className="font-semibold">Post Processing labels require Lab access</div>
+              <p className="mt-1 text-sm leading-6">
+                Finished-inventory and packaged-SKU label previews and printing are locked on this
+                plan. Grow, culture, stored-item, and other cultivation labels remain available
+                below.
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={requestPostProcessLabelAccess}
+              className="rounded-full accent-bg px-4 py-2 text-sm font-semibold text-white"
+            >
+              View Lab access
+            </button>
+          </div>
+        </div>
+      )}
+
       <LabelPrint
         grows={activeGrows}
         libraryItems={activeLibrary}
-        finishedGoods={finishedGoodsBuckets.active}
+        finishedGoods={canUsePostProcessLabels ? finishedGoodsBuckets.active : []}
+        canUsePostProcessLabels={canUsePostProcessLabels}
+        onSubscriptionFeatureBlocked={onSubscriptionFeatureBlocked}
       />
     </div>
   );

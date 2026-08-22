@@ -1,4 +1,6 @@
 // src/lib/postprocess.js
+// postprocess-v40-harvest-closure-traceability
+// postprocess-v39-final-disposition-consistency
 // postprocess-v38-fefo-rotation-and-audit
 // postprocess-v37-accurate-packaged-dose-and-sku
 // postprocess-v29-production-parent-output-finalize
@@ -452,6 +454,25 @@ export function buildDryLotId(growId = "") {
   return `dry_${String(growId || "").trim()}`;
 }
 
+export function buildHarvestIntakeMovementId(growId = "") {
+  return `harvest_intake_${String(growId || "").trim()}`;
+}
+
+export function buildGrowDryLotLinkUpdate({
+  lotId = "",
+  linkedDate = "",
+  linkedAt = null,
+} = {}) {
+  const normalizedLotId = String(lotId || "").trim();
+  if (!normalizedLotId) throw new Error("Missing dry lot ID.");
+
+  return {
+    dryLotId: normalizedLotId,
+    dryLotLinkedDate: linkedDate || toLocalYYYYMMDD(new Date()),
+    dryLotLinkedAt: linkedAt,
+  };
+}
+
 export function buildDryLotName(grow = {}) {
   const label = getGrowLabel(grow);
   const date = getGrowHarvestDate(grow);
@@ -637,6 +658,118 @@ export function isArchivedOrDepletedMaterialLot(record = {}) {
   return isArchivedPostProcessRecord(record) || !hasPositiveRemainingQuantity(record);
 }
 
+const TERMINAL_PROCESS_BATCH_STATUSES = new Set([
+  "archived",
+  "void",
+  "cancelled",
+  "canceled",
+  "failed",
+  "rejected",
+]);
+
+function getMaterialLotBestByValue(record = {}) {
+  const shelfLife = record?.shelfLife && typeof record.shelfLife === "object" ? record.shelfLife : {};
+  return safeString(
+    shelfLife?.expirationDate ||
+      shelfLife?.bestBy ||
+      record?.expirationDate ||
+      record?.bestBy
+  );
+}
+
+export function getMaterialLotFinalDispositionState(record = {}, asOfDate = "") {
+  if (!record || isArchivedPostProcessRecord(record) || !hasPositiveRemainingQuantity(record)) {
+    return {
+      required: false,
+      reasonCode: "",
+      reasonLabel: "",
+      recommendedMethod: "",
+    };
+  }
+
+  const status = safeString(record?.status).toLowerCase();
+  const qcStatus = safeString(record?.qc?.status || record?.qcStatus).toLowerCase();
+  const workflow = getLotWorkflowState(record);
+
+  if (["destroyed"].includes(status)) {
+    return {
+      required: true,
+      reasonCode: "destroyed_status_with_remaining",
+      reasonLabel: "Marked destroyed but still has remaining inventory",
+      recommendedMethod: "discarded",
+    };
+  }
+
+  if (["rejected", "failed"].includes(status) || ["fail", "failed", "rejected"].includes(qcStatus)) {
+    return {
+      required: true,
+      reasonCode: "failed_qc",
+      reasonLabel: "Failed or rejected quality control",
+      recommendedMethod: "failed_qc",
+    };
+  }
+
+  if (workflow.recalled || status === "recalled") {
+    return {
+      required: true,
+      reasonCode: "recall",
+      reasonLabel: workflow.recallReason || "Recalled inventory",
+      recommendedMethod: "recall",
+    };
+  }
+
+  if (status === "expired") {
+    return {
+      required: true,
+      reasonCode: "expired",
+      reasonLabel: "Marked expired",
+      recommendedMethod: "expired",
+    };
+  }
+
+  const bestByValue = getMaterialLotBestByValue(record);
+  const bestByDate = parseAnyDate(bestByValue);
+  const currentDate = parseAnyDate(asOfDate || toLocalYYYYMMDD(new Date()));
+  if (bestByDate && currentDate) {
+    const target = new Date(bestByDate);
+    const current = new Date(currentDate);
+    target.setHours(0, 0, 0, 0);
+    current.setHours(0, 0, 0, 0);
+    if (target < current) {
+      return {
+        required: true,
+        reasonCode: "expired",
+        reasonLabel: `Expired${bestByValue ? ` on ${bestByValue}` : ""}`,
+        recommendedMethod: "expired",
+      };
+    }
+  }
+
+  if (["consumed", "sold_out", "soldout", "depleted"].includes(status)) {
+    return {
+      required: true,
+      reasonCode: "terminal_status_with_remaining",
+      reasonLabel: "Terminal status still has remaining inventory",
+      recommendedMethod: "other",
+    };
+  }
+
+  return {
+    required: false,
+    reasonCode: "",
+    reasonLabel: "",
+    recommendedMethod: "",
+  };
+}
+
+export function isMaterialLotUsableForProcessing(record = {}, asOfDate = "") {
+  if (!isActiveMaterialLot(record)) return false;
+  const disposition = getMaterialLotFinalDispositionState(record, asOfDate);
+  if (disposition.required) return false;
+  const workflow = getLotWorkflowState(record);
+  return !workflow.recalled && !workflow.quarantined && !workflow.qcHold;
+}
+
 export function getLotStatus(lot = {}) {
   if (!lot) return "unknown";
   if (isArchivedPostProcessRecord(lot)) return "archived";
@@ -666,7 +799,7 @@ export function isActiveProcessBatch(batch = {}) {
   if (!batch || (!isProductionBatch(batch) && !String(batch?.processType || "").trim())) return false;
 
   const status = getProcessBatchStatus(batch);
-  if (status === "archived" || status === "void") return false;
+  if (TERMINAL_PROCESS_BATCH_STATUSES.has(status)) return false;
   if (status === "completed" && batch?.outputLotId) return false;
 
   return true;
@@ -678,7 +811,7 @@ export function isArchivedProcessBatch(batch = {}) {
   if (!isProductionBatch(batch) && !String(batch?.processType || "").trim()) return false;
 
   const status = getProcessBatchStatus(batch);
-  return status === "archived" || status === "void" || (status === "completed" && Boolean(batch?.outputLotId));
+  return TERMINAL_PROCESS_BATCH_STATUSES.has(status) || (status === "completed" && Boolean(batch?.outputLotId));
 }
 
 export function buildCostRollup(record = {}) {
@@ -1022,14 +1155,40 @@ export async function createDryLotFromGrow({ userId, grow }) {
 
   const lotId = buildDryLotId(grow.id);
   const lotRef = doc(db, "users", userId, "materialLots", lotId);
+  const growRef = doc(db, "users", userId, "grows", grow.id);
+  const movementRef = doc(
+    db,
+    "users",
+    userId,
+    "inventoryMovements",
+    buildHarvestIntakeMovementId(grow.id)
+  );
   const lotSnap = await getDoc(lotRef);
-
-  if (lotSnap.exists()) {
-    return { created: false, lotId, lot: { id: lotSnap.id, ...lotSnap.data() } };
-  }
 
   const today = toLocalYYYYMMDD(new Date());
   const harvestedDate = getGrowHarvestDate(grow) || today;
+  const linkUpdate = buildGrowDryLotLinkUpdate({
+    lotId,
+    linkedDate: today,
+    linkedAt: serverTimestamp(),
+  });
+
+  if (lotSnap.exists()) {
+    const repairBatch = writeBatch(db);
+    repairBatch.update(growRef, {
+      ...linkUpdate,
+      updatedAt: serverTimestamp(),
+    });
+    await repairBatch.commit();
+
+    return {
+      created: false,
+      linked: true,
+      lotId,
+      lot: { id: lotSnap.id, ...lotSnap.data() },
+    };
+  }
+
   const label = getGrowLabel(grow);
   const strain = grow?.strain || grow?.strainName || "";
   const sourceBatchTotalCost = getGrowBatchTotalCost(grow);
@@ -1070,25 +1229,35 @@ export async function createDryLotFromGrow({ userId, grow }) {
     updatedAt: serverTimestamp(),
   });
 
-  const movementRef = doc(collection(db, "users", userId, "inventoryMovements"));
-  batch.set(movementRef, {
-    movementType: "create_lot_from_grow",
-    lotId,
-    processType: "harvest_intake",
-    direction: "in",
-    sourceGrowId: grow.id,
-    sourceType: "grow",
-    quantity: dryTotal,
-    unit: "g",
-    date: harvestedDate || today,
-    note: "Dry material lot created from harvested grow.",
-    createdAt: serverTimestamp(),
+  batch.set(
+    movementRef,
+    {
+      movementType: "create_lot_from_grow",
+      lotId,
+      processType: "harvest_intake",
+      direction: "in",
+      sourceGrowId: grow.id,
+      sourceType: "grow",
+      quantity: dryTotal,
+      unit: "g",
+      date: harvestedDate || today,
+      note: "Dry material lot created from harvested grow.",
+      createdAt: serverTimestamp(),
+      updatedAt: serverTimestamp(),
+    },
+    { merge: true }
+  );
+
+  batch.update(growRef, {
+    ...linkUpdate,
+    updatedAt: serverTimestamp(),
   });
 
   await batch.commit();
   const createdSnap = await getDoc(lotRef);
   return {
     created: true,
+    linked: true,
     lotId,
     lot: createdSnap.exists() ? { id: createdSnap.id, ...createdSnap.data() } : null,
   };
@@ -2836,6 +3005,145 @@ export async function createPackagedFinishedLot({
       name: childName,
       lotCode: finalLotCode,
       remainingSourceQuantity: nextRemaining,
+    };
+  });
+}
+
+export async function recordMaterialLotFinalDisposition({
+  userId,
+  lotId,
+  quantity,
+  date,
+  reason,
+  method,
+  note,
+  trigger,
+}) {
+  if (!userId) throw new Error("Missing user.");
+  if (!lotId) throw new Error("Missing lot.");
+
+  const normalizedQuantity = sanitizePositiveNumber(quantity);
+  const normalizedDate = safeString(date) || toLocalYYYYMMDD(new Date());
+  const normalizedReason = safeString(reason);
+  const normalizedMethod = safeString(method) || "discarded";
+  const normalizedNote = safeString(note);
+  const normalizedTrigger = safeString(trigger) || "manual_disposition";
+
+  if (normalizedQuantity <= 0) throw new Error("Enter a quantity greater than zero.");
+  if (!normalizedReason) throw new Error("Enter a reason before completing final disposition.");
+
+  return runTransaction(db, async (tx) => {
+    const lotRef = doc(db, "users", userId, "materialLots", lotId);
+    const lotSnap = await tx.get(lotRef);
+    if (!lotSnap.exists()) throw new Error("Material lot could not be found.");
+
+    const lot = lotSnap.data() || {};
+    if (isArchivedPostProcessRecord(lot)) {
+      throw new Error("This material lot is already archived.");
+    }
+
+    const remaining = lotRemaining(lot);
+    const available = getLotAvailableQuantity(lot);
+    if (remaining <= 0) throw new Error("This material lot has no remaining inventory.");
+    if (normalizedQuantity > available) {
+      throw new Error(
+        `${lot?.name || lotId} only has ${formatQty(available, lot?.unit || "units", getQtyDigitsForUnit(lot?.unit || "units"))} available after reservations.`
+      );
+    }
+
+    const nextRemaining = sanitizePositiveNumber(remaining - normalizedQuantity);
+    const completed = nextRemaining <= 0;
+    const previousDisposition =
+      lot?.finalDisposition && typeof lot.finalDisposition === "object" ? lot.finalDisposition : {};
+    const previousDestroyed = sanitizePositiveNumber(
+      valueOrFallback(
+        previousDisposition?.totalQuantity,
+        lot?.destructionSummary?.destroyedQuantity,
+        0
+      )
+    );
+
+    const finalDisposition = {
+      type: "destroy",
+      trigger: normalizedTrigger,
+      method: normalizedMethod,
+      reason: normalizedReason,
+      note: normalizedNote,
+      lastQuantity: normalizedQuantity,
+      totalQuantity: sanitizePositiveNumber(previousDestroyed + normalizedQuantity),
+      lastDate: normalizedDate,
+      completed,
+      completedAt: completed ? normalizedDate : safeString(previousDisposition?.completedAt),
+    };
+
+    const lotUpdate = {
+      remainingQuantity: nextRemaining,
+      status: completed ? "destroyed" : nextLotStatus(nextRemaining, lotInitial(lot)),
+      finalDisposition,
+      destructionSummary: {
+        destroyedQuantity: finalDisposition.totalQuantity,
+        lastDestroyedQuantity: normalizedQuantity,
+        lastDestroyedAt: normalizedDate,
+        lastDestroyReason: normalizedReason,
+        lastDestroyMethod: normalizedMethod,
+      },
+      lastOutboundMovementType: "destroy",
+      lastOutboundMovementDate: normalizedDate,
+      updatedDate: normalizedDate,
+      updatedAt: serverTimestamp(),
+    };
+
+    if (isFinishedGoodsLot(lot)) {
+      lotUpdate.outboundSummary = buildOutboundSnapshot(
+        lot?.outboundSummary || {},
+        "destroy",
+        "out",
+        normalizedQuantity,
+        0
+      );
+    }
+
+    if (completed) {
+      lotUpdate.archived = true;
+      lotUpdate.archivedAt = normalizedDate;
+      lotUpdate.destroyedAt = normalizedDate;
+      lotUpdate.reservations = [];
+      lotUpdate.reservationQuantity = 0;
+    }
+
+    tx.update(lotRef, lotUpdate);
+
+    const movementRef = doc(collection(db, "users", userId, "inventoryMovements"));
+    tx.set(movementRef, {
+      movementType: "destroy",
+      dispositionType: "final_disposition",
+      dispositionTrigger: normalizedTrigger,
+      lotId,
+      lotType: safeString(lot?.lotType || lot?.inventoryCategory),
+      processType: "material_inventory",
+      direction: "out",
+      sourceGrowId:
+        safeString(lot?.sourceGrowId) ||
+        (Array.isArray(lot?.sourceGrowIds) ? safeString(lot.sourceGrowIds[0]) : "") ||
+        null,
+      sourceType: "lot",
+      quantity: normalizedQuantity,
+      unit: lot?.unit || "units",
+      date: normalizedDate,
+      reason: normalizedReason,
+      destroyMethod: normalizedMethod,
+      note:
+        normalizedNote ||
+        `Final disposition removed ${formatQty(normalizedQuantity, lot?.unit || "units", getQtyDigitsForUnit(lot?.unit || "units"))} from ${lot?.name || lotId}.`,
+      createdAt: serverTimestamp(),
+    });
+
+    return {
+      success: true,
+      lotId,
+      remainingQuantity: nextRemaining,
+      status: lotUpdate.status,
+      archived: completed,
     };
   });
 }

@@ -1,81 +1,79 @@
 // src/hooks/useTaskReminders.js
 import { useEffect, useRef } from "react";
+import { deliverLocalReminder, getTaskReminderState } from "../lib/reminder-utils";
 
 /**
- * Periodically scans tasks and fires a browser notification when a task is
- * within its reminder window or overdue. It also writes back lastNotifiedAt
- * so we don't spam.
+ * Runs task reminders while the app is open.
  *
- * Usage: useTaskReminders({ tasks, onUpdate })
+ * Notification permission is intentionally managed from Settings so the app
+ * does not prompt from multiple components. Each task reminder is written with
+ * a stable lastNotifiedKey so an overdue task is not repeated every few minutes.
  */
-export default function useTaskReminders({ tasks = [], onUpdate, intervalMs = 30000 }) {
+export default function useTaskReminders({
+  tasks = [],
+  onUpdate,
+  enabled = true,
+  intervalMs = 60_000,
+}) {
   const timerRef = useRef(null);
+  const onUpdateRef = useRef(onUpdate);
+  const deliveredThisSessionRef = useRef(new Set());
 
   useEffect(() => {
-    // Ask once for permission (best-effort)
-    if (typeof window !== "undefined" && "Notification" in window) {
-      if (Notification.permission === "default") {
-        try {
-          Notification.requestPermission().catch(() => {});
-        } catch {}
-      }
-    }
-  }, []);
+    onUpdateRef.current = onUpdate;
+  }, [onUpdate]);
 
   useEffect(() => {
-    if (!onUpdate) return;
+    if (!enabled || typeof onUpdateRef.current !== "function") return undefined;
 
     const tick = () => {
       const now = Date.now();
 
-      tasks.forEach((t) => {
-        if (!t || t.completedAt || !t.dueAt) return;
+      for (const task of Array.isArray(tasks) ? tasks : []) {
+        const state = getTaskReminderState(task, now);
+        if (!state?.shouldNotify || deliveredThisSessionRef.current.has(state.key)) continue;
+        if (!task?.id) continue;
 
-        const due = new Date(t.dueAt).getTime();
-        const leadMin = typeof t.remindLead === "number" ? Math.max(0, t.remindLead) : null;
-        const triggerAt = leadMin != null ? due - leadMin * 60000 : due;
+        deliveredThisSessionRef.current.add(state.key);
 
-        const last = t.lastNotifiedAt ? new Date(t.lastNotifiedAt).getTime() : 0;
-
-        // Fire when we pass triggerAt; throttle repeat notification for 5 minutes
-        const shouldNotify = now >= triggerAt && now - last >= 5 * 60 * 1000;
-
-        if (shouldNotify) {
-          // Try Notification API
-          let shown = false;
-          try {
-            if (typeof window !== "undefined" && "Notification" in window && Notification.permission === "granted") {
-              const bodyParts = [];
-              if (t.growName || t.growId) bodyParts.push(`Grow: ${t.growName || t.growId}`);
-              if (t.dueAt) bodyParts.push(`Due: ${new Date(t.dueAt).toLocaleString()}`);
-              const body = bodyParts.join("\n");
-
-              new Notification(t.title || "Task reminder", { body });
-              shown = true;
-            }
-          } catch {}
-
-          // Fallback: attention via title blink
-          if (!shown && typeof document !== "undefined") {
-            const orig = document.title;
-            document.title = `🔔 ${t.title || "Task reminder"} — ${orig}`;
-            setTimeout(() => (document.title = orig), 2500);
-          }
-
-          // Mark as notified
-          onUpdate(t.id, { lastNotifiedAt: new Date().toISOString() });
+        const bodyParts = [];
+        if (task.growName || task.growId) {
+          bodyParts.push(`Grow: ${task.growName || task.growId}`);
         }
-      });
+        bodyParts.push(`Due: ${new Date(state.dueMs).toLocaleString()}`);
+
+        deliverLocalReminder(task.title || "Task reminder", bodyParts.join("\n"));
+
+        const patch = {
+          lastNotifiedAt: new Date(now).toISOString(),
+          lastNotifiedKey: state.key,
+        };
+
+        try {
+          const result = onUpdateRef.current(task.id, patch);
+          if (result && typeof result.catch === "function") {
+            result.catch(() => {
+              // Keep the session key so a failed write cannot spam repeatedly.
+            });
+          }
+        } catch {
+          // Keep the session key so a failed write cannot spam repeatedly.
+        }
+      }
     };
 
-    // immediate + interval
     tick();
-    clearInterval(timerRef.current);
-    timerRef.current = setInterval(tick, intervalMs);
+    timerRef.current = window.setInterval(tick, Math.max(10_000, Number(intervalMs) || 60_000));
+
+    const onVisibilityChange = () => {
+      if (document.visibilityState === "visible") tick();
+    };
+    document.addEventListener("visibilitychange", onVisibilityChange);
 
     return () => {
-      clearInterval(timerRef.current);
+      if (timerRef.current) window.clearInterval(timerRef.current);
       timerRef.current = null;
+      document.removeEventListener("visibilitychange", onVisibilityChange);
     };
-  }, [tasks, onUpdate, intervalMs]);
+  }, [enabled, intervalMs, tasks]);
 }

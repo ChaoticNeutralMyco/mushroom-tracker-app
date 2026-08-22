@@ -11,31 +11,105 @@ service cloud.firestore {
       return isSignedIn() && request.auth.uid == uid;
     }
 
-    // The authenticated user may manage their own profile document.
+    function hasField(data, field) {
+      return data.keys().hasAny([field]);
+    }
+
+    function fieldIn(data, field, values) {
+      return hasField(data, field) && data[field] in values;
+    }
+
+    function isArchivedGrow(data) {
+      return
+        (hasField(data, "archived") && data.archived == true) ||
+        (hasField(data, "isArchived") && data.isArchived == true) ||
+        (hasField(data, "inArchive") && data.inArchive == true) ||
+        (hasField(data, "archivedAt") && data.archivedAt != null) ||
+        (hasField(data, "archivedOn") && data.archivedOn != null) ||
+        (hasField(data, "archived_on") && data.archived_on != null) ||
+        (hasField(data, "deleted") && data.deleted == true) ||
+        (hasField(data, "deletedAt") && data.deletedAt != null) ||
+        fieldIn(data, "status", [
+          "Archived", "archived", "ARCHIVED",
+          "Contaminated", "contaminated", "CONTAMINATED"
+        ]) ||
+        fieldIn(data, "stage", [
+          "Harvested", "harvested", "HARVESTED",
+          "Consumed", "consumed", "CONSUMED",
+          "Contaminated", "contaminated", "CONTAMINATED"
+        ]) ||
+        (
+          hasField(data, "amountTotal") &&
+          hasField(data, "amountUsed") &&
+          data.amountTotal is number &&
+          data.amountUsed is number &&
+          data.amountTotal > 0 &&
+          data.amountUsed >= data.amountTotal
+        );
+    }
+
+    function isActiveGrow(data) {
+      return
+        !isArchivedGrow(data) &&
+        !fieldIn(data, "status", ["Stored", "stored", "STORED"]) &&
+        !fieldIn(data, "stage", ["Harvested", "harvested", "HARVESTED"]) &&
+        (
+          fieldIn(data, "status", ["Active", "active", "ACTIVE"]) ||
+          fieldIn(data, "stage", [
+            "Inoculated", "inoculated", "INOCULATED",
+            "Colonizing", "colonizing", "COLONIZING",
+            "Colonized", "colonized", "COLONIZED",
+            "Colonised", "colonised", "COLONISED",
+            "Fruiting", "fruiting", "FRUITING"
+          ])
+        );
+    }
+
+    function wouldReactivateGrow() {
+      return !isActiveGrow(resource.data) && isActiveGrow(request.resource.data);
+    }
+
     match /users/{uid} {
       allow read, create, update, delete: if isOwner(uid);
 
-      // Subscription entitlements are readable by the owning user but must be
-      // written by trusted server code through the Firebase Admin SDK.
+      // Subscription entitlements, the grow-capacity serialization lock, and
+      // their audit records are readable by the owner but writable only by
+      // trusted Firebase Admin backend code.
       match /billing/{document=**} {
         allow read: if isOwner(uid);
         allow create, update, delete: if false;
       }
 
-      // Current application data lives under users/{uid}/... . This recursive
-      // owner rule covers present and nested collections such as grows,
-      // environmentLogs, recipes/items, supplies, tasks, photos, notes,
-      // strains, species, library, settings, storage locations, material lots,
-      // process batches, inventory movements, supply audits, and clean queue.
-      // Billing is deliberately excluded from client writes above.
+      // All grow creation is trusted-backend-only so browser clients cannot
+      // race the active-grow limit. Existing grows remain owner-editable,
+      // completable, archivable, storable, and deletable. Only transitions
+      // from inactive to active must use the trusted reactivation callable.
+      match /grows/{growId} {
+        allow read: if isOwner(uid);
+        allow create: if false;
+        allow update: if isOwner(uid) && !wouldReactivateGrow();
+        allow delete: if isOwner(uid);
+      }
+
+      // Preserve owner access to any nested grow records without allowing the
+      // recursive owner rule below to reopen writes on the grow document.
+      match /grows/{growId}/{subcollectionId}/{document=**} {
+        allow read, create, update, delete: if isOwner(uid);
+      }
+
+      // Current application data lives under users/{uid}/... . Billing and
+      // grow documents are deliberately excluded because they have stricter
+      // rules above.
       match /{collectionId}/{document=**} {
         allow read, create, update, delete:
-          if isOwner(uid) && collectionId != 'billing';
+          if isOwner(uid) &&
+             collectionId != 'billing' &&
+             collectionId != 'grows';
       }
     }
 
-    // Tester codes must not be enumerable, redeemable, or editable directly
-    // by browser clients. A future trusted backend should validate them.
+    // Tester codes and redemption records are private backend data. Browser
+    // clients cannot enumerate, read, create, update, or delete them.
     match /testerCodes/{document=**} {
       allow read, write: if false;
     }

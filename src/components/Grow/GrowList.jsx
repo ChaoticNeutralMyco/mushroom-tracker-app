@@ -197,6 +197,9 @@ export default function GrowList({
   showAddButton = false,
   onUpdateStatus,
   onUpdateStage,
+  onUpdateGrow,
+  onValidateReactivationBatch,
+  onReactivateGrowBatch,
   onDeleteGrow,
 }) {
   const confirm = useConfirm();
@@ -701,11 +704,16 @@ export default function GrowList({
       updatedAt: serverTimestamp(),
     };
 
-    await updateDoc(doc(db, "users", uid, "grows", id), patch);
+    if (onUpdateGrow) {
+      await onUpdateGrow(id, patch);
+    } else if (onUpdateStatus) {
+      await onUpdateStatus(id, nextStatus);
+    } else {
+      await updateDoc(doc(db, "users", uid, "grows", id), patch);
+    }
 
     setLocalStatus((p) => ({ ...p, [id]: nextStatus }));
     setLocalArchived((p) => ({ ...p, [id]: archive }));
-    onUpdateStatus?.(id, nextStatus);
   }
 
   const applyStage = async (id, stage) => {
@@ -858,7 +866,40 @@ export default function GrowList({
   const batchUnarchive = async () => {
     if (!selectedIds.length) return;
     if (!(await confirm(`Unarchive ${selectedIds.length} grow(s)?`))) return;
-    await Promise.all(selectedIds.map((id) => applyStatus(id, "Active")));
+
+    const updates = selectedIds.map((id) => ({
+      growId: id,
+      patch: {
+        status: "Active",
+        archived: false,
+        archivedAt: null,
+      },
+    }));
+
+    onValidateReactivationBatch?.(updates);
+
+    if (typeof onReactivateGrowBatch === "function") {
+      await onReactivateGrowBatch(updates);
+      setLocalStatus((prev) => {
+        const next = { ...prev };
+        selectedIds.forEach((id) => {
+          next[id] = "Active";
+        });
+        return next;
+      });
+      setLocalArchived((prev) => {
+        const next = { ...prev };
+        selectedIds.forEach((id) => {
+          next[id] = false;
+        });
+        return next;
+      });
+    } else {
+      for (const id of selectedIds) {
+        await applyStatus(id, "Active");
+      }
+    }
+
     clearSel();
   };
 
@@ -890,7 +931,39 @@ export default function GrowList({
     if (!ids.length) return;
     if (!(await confirm(`Unstore ${ids.length} grow(s)?`))) return;
 
-    await Promise.all(ids.map((id) => applyStatus(id, "Active")));
+    const updates = ids.map((id) => ({
+      growId: id,
+      patch: {
+        status: "Active",
+        archived: false,
+        archivedAt: null,
+      },
+    }));
+
+    onValidateReactivationBatch?.(updates);
+
+    if (typeof onReactivateGrowBatch === "function") {
+      await onReactivateGrowBatch(updates);
+      setLocalStatus((prev) => {
+        const next = { ...prev };
+        ids.forEach((id) => {
+          next[id] = "Active";
+        });
+        return next;
+      });
+      setLocalArchived((prev) => {
+        const next = { ...prev };
+        ids.forEach((id) => {
+          next[id] = false;
+        });
+        return next;
+      });
+    } else {
+      for (const id of ids) {
+        await applyStatus(id, "Active");
+      }
+    }
+
     clearSel();
   };
 
@@ -1285,6 +1358,7 @@ export default function GrowList({
             editingGrow={editingGrowFull}
             onClose={() => setEditingGrowFull(null)}
             onSaveComplete={() => setEditingGrowFull(null)}
+            onUpdateGrow={onUpdateGrow}
             grows={[...itemsActiveRaw, ...itemsArchived]}
             recipes={Array.isArray(recipes) ? recipes : []}
             supplies={Array.isArray(supplies) ? supplies : []}

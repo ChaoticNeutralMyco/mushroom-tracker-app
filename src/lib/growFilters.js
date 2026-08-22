@@ -3,7 +3,7 @@
 // - Active definition tightened per spec:
 //   Active = NOT archived, NOT deleted, NOT stored, NOT harvested,
 //            and (status === "Active" OR stage ∈ {Inoculated, Colonizing, Colonized, Fruiting})
-// - Archived-ish covers explicit archived flags and fully-consumed items.
+// - Archived-ish covers explicit archived flags, completed harvests, and fully-consumed items.
 // - Exports remain stable for existing imports across the app.
 
 // ---------- Normalizers ----------
@@ -106,7 +106,17 @@ export function isArchivedish(g = {}) {
   // Deleted items are treated as archived for listing purposes (but kept for analytics)
   const isDeleted = g.deleted === true || !!g.deletedAt;
 
-  if (archivedFlags || status === "archived" || stage === "Consumed" || isDeleted) return true;
+  if (
+    archivedFlags ||
+    status === "archived" ||
+    status === "contaminated" ||
+    stage === "Harvested" ||
+    stage === "Consumed" ||
+    stage === "Contaminated" ||
+    isDeleted
+  ) {
+    return true;
+  }
 
   // “Fully consumed” by new fields also counts as archived-ish
   const { total, available } = remainingInfo(g);

@@ -1,6 +1,5 @@
 // src/lib/delete-all.js
 // Full-account purge helpers used by Settings “Delete All Data”.
-// Added: deleteGrowDataOnly() to wipe grow-related collections while preserving recipes/supplies.
 import { db, storage, auth } from "../firebase-config";
 import {
   writeBatch,
@@ -10,9 +9,31 @@ import {
   getDocs,
   doc,
 } from "firebase/firestore";
+import {
+  GROW_DATA_COLLECTIONS,
+  NESTED_USER_DATA_COLLECTIONS,
+  USER_DATA_COLLECTIONS,
+} from "./user-data-backup";
 
 // ---------- Firestore purge (batched) ----------
 const DEFAULT_BATCH_SIZE = 300;
+
+async function deleteCollectionRef(
+  colRef,
+  { batchSize = DEFAULT_BATCH_SIZE } = {}
+) {
+  let total = 0;
+  while (true) {
+    const page = await getDocs(query(colRef, qLimit(batchSize)));
+    if (page.size === 0) break;
+    const batch = writeBatch(db);
+    page.forEach((snap) => batch.delete(snap.ref));
+    await batch.commit();
+    total += page.size;
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+  return total;
+}
 
 async function deleteUserSubcollection(
   uid,
@@ -20,162 +41,98 @@ async function deleteUserSubcollection(
   { batchSize = DEFAULT_BATCH_SIZE } = {}
 ) {
   const colRef = collection(db, "users", uid, collName);
+  const nestedNames = NESTED_USER_DATA_COLLECTIONS[collName] || [];
   let total = 0;
+
   while (true) {
     const page = await getDocs(query(colRef, qLimit(batchSize)));
     if (page.size === 0) break;
+
+    for (const snap of page.docs) {
+      for (const nestedName of nestedNames) {
+        total += await deleteCollectionRef(
+          collection(db, "users", uid, collName, snap.id, nestedName),
+          { batchSize }
+        );
+      }
+    }
+
     const batch = writeBatch(db);
-    page.forEach((snap) =>
-      batch.delete(doc(db, "users", uid, collName, snap.id))
-    );
+    page.forEach((snap) => batch.delete(doc(db, "users", uid, collName, snap.id)));
     await batch.commit();
     total += page.size;
-    await new Promise((r) => setTimeout(r, 0)); // yield to UI
+    await new Promise((resolve) => setTimeout(resolve, 0));
   }
   return total;
 }
 
-/** Deletes all known subcollections under users/{uid}. */
+/** Deletes all known app-owned subcollections under users/{uid}. */
 export async function deleteAllUserFirestore(uid, progress = () => {}) {
-  // NOTE: Extra names are included intentionally — they are safe no-ops if absent.
-  // This list now covers Strain Library / Storage collections too.
-  const collections = [
-    // core
-    "grows",
-    "recipes",
-    "supplies",
-    "labels",
-    "strains",
-    "clean_queue",
-    "tasks",
-    "timeline",
-    "analytics",
-    "events",
-    "notes",
-    "photos",
-    "images",
-    "audit",
-    "logs",
-
-    // post processing
-    "materialLots",
-    "processBatches",
-    "inventoryMovements",
-
-    // post-processing / sales aliases used by older experiments and test helpers
-    "packageRuns",
-    "packagedLots",
-    "finishedInventory",
-    "finishedProducts",
-    "productBatches",
-    "products",
-    "sales",
-    "salesOrders",
-    "salesRecords",
-    "outboundLogs",
-    "outboundMovements",
-    "ledger",
-    "inventoryLedger",
-    "supply_audits",
-
-    // misc app support
-    "settings",
-    "preferences",
-    "prefs",
-    "storageLocations",
-    "storage_locations",
-
-    // strain library / storage (cover common variants)
-    "library",
-    "library_items",
-    "strain_library",
-    "strainLibrary",
-    "strainLibraryItems",
-    "storage",
-    "storages",
-  ];
-
   let deleted = 0;
-  for (const name of collections) {
+  for (const name of USER_DATA_COLLECTIONS) {
     progress(`Deleting ${name}…`);
     deleted += await deleteUserSubcollection(uid, name);
   }
   return { deleted };
 }
 
-/** Deletes only grow-related subcollections, preserving recipes/supplies/settings. */
+async function deleteStoragePrefix(path) {
+  const { ref, listAll, deleteObject } = await import("firebase/storage");
+  const root = ref(storage, path);
+  let deletedFiles = 0;
+
+  async function walkAndDelete(prefixRef) {
+    const { items, prefixes } = await listAll(prefixRef);
+    for (const item of items) {
+      try {
+        await deleteObject(item);
+        deletedFiles += 1;
+      } catch {
+        // Continue best-effort cleanup for the remaining files.
+      }
+    }
+    for (const child of prefixes) await walkAndDelete(child);
+  }
+
+  await walkAndDelete(root);
+  return deletedFiles;
+}
+
+/** Deletes grow, task, photo, and post-processing data while preserving recipes/settings. */
 export async function deleteGrowDataOnly(progress = () => {}) {
   const uid = auth.currentUser?.uid;
   if (!uid) throw new Error("Not signed in.");
 
-  const growCollections = [
-    "grows",
-    "tasks",
-    "timeline",
-    "analytics",
-    "events",
-    "notes",
-    "photos",
-    "images",
-    "materialLots",
-    "processBatches",
-    "inventoryMovements",
-    "packageRuns",
-    "packagedLots",
-    "finishedInventory",
-    "finishedProducts",
-    "productBatches",
-    "sales",
-    "salesOrders",
-    "salesRecords",
-    "outboundLogs",
-    "outboundMovements",
-    "ledger",
-    "inventoryLedger",
-  ];
-
   let deleted = 0;
-  for (const name of growCollections) {
+  for (const name of GROW_DATA_COLLECTIONS) {
     progress(`Deleting ${name}…`);
     deleted += await deleteUserSubcollection(uid, name);
   }
 
-  // Best-effort Storage cleanup for grow photos/files
+  // Live grow photos use users/{uid}/photos. Keep the old grows prefix cleanup
+  // as a compatibility pass for earlier builds that stored files there.
+  let deletedFiles = 0;
+  let storageCleanupAttempted = false;
   try {
-    const { ref, listAll, deleteObject } = await import("firebase/storage");
-    const root = ref(storage, `users/${uid}/grows`);
-    async function walkAndDelete(prefixRef) {
-      const { items, prefixes } = await listAll(prefixRef);
-      for (const item of items) {
-        await deleteObject(item).catch(() => {});
-      }
-      for (const p of prefixes) await walkAndDelete(p);
-    }
-    await walkAndDelete(root);
+    storageCleanupAttempted = true;
+    progress("Deleting grow photo files…");
+    deletedFiles += await deleteStoragePrefix(`users/${uid}/photos`);
+    deletedFiles += await deleteStoragePrefix(`users/${uid}/grows`);
   } catch {
-    // ignore storage errors
+    // Storage cleanup remains best-effort; Firestore deletion has already completed.
   }
 
-  return { deleted };
+  return { deleted, deletedFiles, storageCleanupAttempted };
 }
 
 // ---------- Storage purge (best-effort) ----------
 async function deleteAllUserStorage(uid, progress = () => {}) {
   try {
-    const { ref, listAll, deleteObject } = await import("firebase/storage");
-    const root = ref(storage, `users/${uid}`);
-    async function walkAndDelete(prefixRef) {
-      const { items, prefixes } = await listAll(prefixRef);
-      for (const item of items) {
-        await deleteObject(item).catch(() => {});
-      }
-      for (const p of prefixes) await walkAndDelete(p);
-    }
     progress("Deleting Storage files…");
-    await walkAndDelete(root);
-    return { deletedFiles: true };
+    const deletedFileCount = await deleteStoragePrefix(`users/${uid}`);
+    return { deletedFiles: true, deletedFileCount };
   } catch {
-    return { deletedFiles: false };
+    return { deletedFiles: false, deletedFileCount: 0 };
   }
 }
 
@@ -204,13 +161,13 @@ export async function clearAllLocalCaches() {
   );
 }
 
-/** High-level entry called from Settings. Leaves Auth account intact. */
+/** High-level entry called from Settings. Leaves the Firebase Auth account intact. */
 export async function deleteAllUserData({ progress = () => {} } = {}) {
   const uid = auth.currentUser?.uid;
   if (!uid) throw new Error("Not signed in.");
   progress("Purging Firestore…");
-  const fs = await deleteAllUserFirestore(uid, progress);
+  const firestoreResult = await deleteAllUserFirestore(uid, progress);
   progress("Purging Storage…");
-  const st = await deleteAllUserStorage(uid, progress);
-  return { ...fs, ...st };
+  const storageResult = await deleteAllUserStorage(uid, progress);
+  return { ...firestoreResult, ...storageResult };
 }

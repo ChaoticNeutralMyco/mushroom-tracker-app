@@ -1,3 +1,4 @@
+// src/lib/units.js
 // Lightweight unit helpers used by RecipeManager (and elsewhere).
 
 // Canonical unit lists

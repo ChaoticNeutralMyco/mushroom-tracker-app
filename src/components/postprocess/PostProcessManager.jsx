@@ -1,4 +1,6 @@
 // src/components/postprocess/PostProcessManager.jsx
+// postprocess-v44-harvest-closure-traceability
+// postprocess-v43-final-disposition-consistency
 // postprocess-v42-collapsible-postprocess-sales-focus
 // postprocess-v41-active-sales-with-historical-rollups
 // postprocess-v40-fefo-rotation-and-audit
@@ -47,19 +49,28 @@ import {
   getLotReservedQuantity,
   getLotStatus,
   getLowStockThreshold,
+  getMaterialLotFinalDispositionState,
   getProcessBatchStatus,
   getProductTypeMeta,
   getRecipeSnapshot,
   isActiveMaterialLot,
   isActiveProcessBatch,
   isArchivedOrDepletedMaterialLot,
+  isMaterialLotUsableForProcessing,
   isFinishedGoodsLot,
   isLowStockLot,
   parseAnyDate,
   createPackagedFinishedLot,
   recordFinishedInventoryMovement,
+  recordMaterialLotFinalDisposition,
   toLocalYYYYMMDD,
 } from "../../lib/postprocess";
+import {
+  LAB_OPERATION_ACTIONS,
+  getInventoryMovementRequirement,
+  getLabOperationRequirement,
+} from "../../lib/subscriptionLabAccess.js";
+import { SUBSCRIPTION_FEATURE_KEYS } from "../../lib/subscriptionPlans.js";
 
 function sortByNewest(items = []) {
   return items.slice().sort((a, b) => {
@@ -916,6 +927,17 @@ function getDefaultMovementFormForLot(lot = {}, today = "") {
     return { ...base, ...priceDefaults, movementType: "sample", destinationType: "internal" };
   }
   return { ...base, ...priceDefaults, movementType: "sell", destinationType: "customer" };
+}
+
+function getDefaultFinalDispositionForm(lot = {}, today = "") {
+  const state = getMaterialLotFinalDispositionState(lot, today);
+  return {
+    quantity: String(getLotAvailableQuantity(lot) || ""),
+    date: today,
+    method: state.recommendedMethod || "discarded",
+    reason: state.reasonLabel || "",
+    note: "",
+  };
 }
 
 function getSalePriceOverrideState(lot = {}, form = {}) {
@@ -2068,7 +2090,17 @@ function LotQualityPanel({ lot, form, onChange, onSave, busy }) {
   );
 }
 
-export default function PostProcessManager({ grows = [] }) {
+export default function PostProcessManager({
+  grows = [],
+  canUsePostProcessing = true,
+  canUseFinishedInventory = true,
+  canCreatePackageRuns = true,
+  canUsePostProcessLabels = true,
+  canRecordSales = true,
+  canUseFefoControls = true,
+  canUseInventoryAuditHistory = true,
+  onSubscriptionFeatureBlocked = () => false,
+}) {
   const location = useLocation();
 
   const focusGrowId = useMemo(() => {
@@ -2089,6 +2121,30 @@ export default function PostProcessManager({ grows = [] }) {
 
   const userId = auth.currentUser?.uid || "";
   const today = useMemo(() => toLocalYYYYMMDD(new Date()), []);
+
+  function requestFeatureAccess({
+    allowed = false,
+    featureKey,
+    actionLabel,
+    supportingText = "",
+  } = {}) {
+    if (allowed) return true;
+    onSubscriptionFeatureBlocked({ featureKey, actionLabel, supportingText });
+    return false;
+  }
+
+  function requestLabOperation(action, allowed) {
+    const requirement = getLabOperationRequirement(action);
+    if (!requirement) return false;
+    return requestFeatureAccess({ allowed, ...requirement });
+  }
+
+  function requestPostProcessLabelAccess() {
+    return requestLabOperation(
+      LAB_OPERATION_ACTIONS.PRINT_POST_PROCESS_LABELS,
+      canUsePostProcessLabels
+    );
+  }
 
   const [activeTab, setActiveTab] = useState(focusFinishedLotId ? "finished" : "dry");
   const [materialLots, setMaterialLots] = useState([]);
@@ -2176,6 +2232,8 @@ export default function PostProcessManager({ grows = [] }) {
   const [reservationForms, setReservationForms] = useState({});
   const [thresholdForms, setThresholdForms] = useState({});
   const [qualityForms, setQualityForms] = useState({});
+  const [finalDispositionForms, setFinalDispositionForms] = useState({});
+  const [finalDispositionBusyId, setFinalDispositionBusyId] = useState("");
 
   useEffect(() => {
     if (focusFinishedLotId) {
@@ -2330,6 +2388,14 @@ export default function PostProcessManager({ grows = [] }) {
     [finishedGoodsLots]
   );
 
+  const finalDispositionRequiredLots = useMemo(
+    () =>
+      materialLots.filter(
+        (lot) => getMaterialLotFinalDispositionState(lot, today).required
+      ),
+    [materialLots, today]
+  );
+
   const selectedDryLot = useMemo(
     () => activeDryLots.find((lot) => lot.id === selectedDryLotId) || null,
     [activeDryLots, selectedDryLotId]
@@ -2354,17 +2420,25 @@ export default function PostProcessManager({ grows = [] }) {
   const packageSourceLots = useMemo(
     () =>
       activeFinishedGoodsLots.filter(
-        (lot) => getLotAvailableQuantity(lot) > 0 && !isPackagedForSale(lot)
+        (lot) =>
+          getLotAvailableQuantity(lot) > 0 &&
+          !isPackagedForSale(lot) &&
+          isMaterialLotUsableForProcessing(lot, today)
       ),
-    [activeFinishedGoodsLots]
+    [activeFinishedGoodsLots, today]
   );
 
   const finishedBatchCards = useMemo(() => {
     return finishedGoodsLots
       .filter((lot) => !isPackagedForSale(lot))
-      .filter((lot) => isActiveMaterialLot(lot) && getLotAvailableQuantity(lot) > 0)
+      .filter(
+        (lot) =>
+          isActiveMaterialLot(lot) &&
+          getLotAvailableQuantity(lot) > 0 &&
+          isMaterialLotUsableForProcessing(lot, today)
+      )
       .sort((a, b) => getInventoryAgeMs(b) - getInventoryAgeMs(a));
-  }, [finishedGoodsLots]);
+  }, [finishedGoodsLots, today]);
 
   const selectedFinishedLot = useMemo(
     () => finishedBatchCards.find((lot) => lot.id === selectedFinishedLotId) || null,
@@ -2440,16 +2514,23 @@ export default function PostProcessManager({ grows = [] }) {
 
 
   const availableDryLots = useMemo(
-    () => activeDryLots.filter((lot) => getLotAvailableQuantity(lot) > 0),
-    [activeDryLots]
+    () =>
+      activeDryLots.filter(
+        (lot) =>
+          getLotAvailableQuantity(lot) > 0 &&
+          isMaterialLotUsableForProcessing(lot, today)
+      ),
+    [activeDryLots, today]
   );
 
   const availableProductionSourceLots = useMemo(
     () =>
       [...activeDryLots, ...activeExtractLots].filter(
-        (lot) => getLotAvailableQuantity(lot) > 0
+        (lot) =>
+          getLotAvailableQuantity(lot) > 0 &&
+          isMaterialLotUsableForProcessing(lot, today)
       ),
-    [activeDryLots, activeExtractLots]
+    [activeDryLots, activeExtractLots, today]
   );
 
   const dryLotByGrowId = useMemo(() => {
@@ -3020,14 +3101,20 @@ export default function PostProcessManager({ grows = [] }) {
 
   async function handleCreateDryLot(grow) {
     if (!userId || !grow?.id) return;
+    if (
+      !requestLabOperation(
+        LAB_OPERATION_ACTIONS.CREATE_DRY_LOT,
+        canUsePostProcessing
+      )
+    ) return;
     try {
       setBusyGrowId(grow.id);
       setMessage("");
       const result = await createDryLotFromGrow({ userId, grow });
       setMessage(
         result?.created
-          ? `Created dry lot for ${getGrowLabel(grow)}.`
-          : `Dry lot already exists for ${getGrowLabel(grow)}.`
+          ? `Created and linked dry lot ${result.lotId} for ${getGrowLabel(grow)}.`
+          : `Dry lot ${result.lotId} already exists and is linked to ${getGrowLabel(grow)}.`
       );
     } catch (error) {
       setMessage(error?.message || "Failed to create dry lot.");
@@ -3107,6 +3194,12 @@ export default function PostProcessManager({ grows = [] }) {
 
   async function handleCreateExtraction() {
     if (!userId) return;
+    if (
+      !requestLabOperation(
+        LAB_OPERATION_ACTIONS.CREATE_EXTRACTION,
+        canUsePostProcessing
+      )
+    ) return;
     try {
       setExtractionBusy(true);
       setMessage("");
@@ -3349,6 +3442,12 @@ export default function PostProcessManager({ grows = [] }) {
 
   async function handleCreateProduction() {
     if (!userId) return;
+    if (
+      !requestLabOperation(
+        LAB_OPERATION_ACTIONS.CREATE_PRODUCTION,
+        canUsePostProcessing
+      )
+    ) return;
     const capsuleRunCounts = [25, 50, 75, 100];
     const requestedCapsules = Math.floor(Number(productionForm.outputCount) || 0);
     if (productionForm.productType === "capsule" && !capsuleRunCounts.includes(requestedCapsules)) {
@@ -3551,6 +3650,12 @@ export default function PostProcessManager({ grows = [] }) {
 
   async function handleCreateRework() {
     if (!userId) return;
+    if (
+      !requestLabOperation(
+        LAB_OPERATION_ACTIONS.CREATE_REWORK,
+        canUsePostProcessing
+      )
+    ) return;
     if (reworkSelectedLots.length === 0) {
       setMessage("Select at least one finished lot and quantity to rework.");
       return;
@@ -3619,6 +3724,12 @@ export default function PostProcessManager({ grows = [] }) {
 
   async function handleCreatePackageRun() {
     if (!userId) return;
+    if (
+      !requestLabOperation(
+        LAB_OPERATION_ACTIONS.CREATE_PACKAGE_RUN,
+        canCreatePackageRuns
+      )
+    ) return;
     const sourceLot = packageSourceLots.find((lot) => lot.id === packageForm.sourceLotId) || packageSourceLot;
     if (!sourceLot?.id) {
       setMessage("Select a finished lot before creating packages.");
@@ -3705,6 +3816,27 @@ export default function PostProcessManager({ grows = [] }) {
   async function handleFinishedMovement(lot) {
     if (!userId || !lot?.id) return;
     const form = movementForms[lot.id] || getDefaultMovementFormForLot(lot, today);
+    const movementRequirement = getInventoryMovementRequirement({
+      movementType: form.movementType,
+      fefoOverride: false,
+    });
+
+    if (movementRequirement) {
+      const movementAllowed =
+        movementRequirement.featureKey === SUBSCRIPTION_FEATURE_KEYS.INVENTORY_AUDIT_HISTORY
+          ? canUseInventoryAuditHistory
+          : canRecordSales;
+      if (!requestFeatureAccess({ allowed: movementAllowed, ...movementRequirement })) return;
+    }
+
+    if (String(form.movementType || "").toLowerCase() === "sell" && form.fefoOverride) {
+      const fefoRequirement = getInventoryMovementRequirement({
+        movementType: "sell",
+        fefoOverride: true,
+      });
+      if (!requestFeatureAccess({ allowed: canUseFefoControls, ...fefoRequirement })) return;
+    }
+
     try {
       setMovementBusyId(lot.id);
       setMessage("");
@@ -3790,6 +3922,66 @@ export default function PostProcessManager({ grows = [] }) {
     }
   }
 
+  async function handleFinalDisposition(lot) {
+    if (!userId || !lot?.id) return;
+
+    const dispositionState = getMaterialLotFinalDispositionState(lot, today);
+    const form = finalDispositionForms[lot.id] || getDefaultFinalDispositionForm(lot, today);
+    const quantity = sanitizeNumber(form.quantity);
+    const available = getLotAvailableQuantity(lot);
+
+    if (!(quantity > 0)) {
+      setMessage("Enter a final-disposition quantity greater than zero.");
+      return;
+    }
+    if (quantity > available) {
+      setMessage(
+        `${lot?.name || lot.id} only has ${formatQty(available, lot?.unit || "units", getQtyDigits(lot?.unit || "units"))} available after reservations.`
+      );
+      return;
+    }
+    if (!String(form.reason || "").trim()) {
+      setMessage("Enter a reason before completing final disposition.");
+      return;
+    }
+
+    const confirmed = window.confirm(
+      `Destroy ${formatQty(quantity, lot?.unit || "units", getQtyDigits(lot?.unit || "units"))} from ${lot?.name || lot.id}? This preserves the history but cannot be undone.`
+    );
+    if (!confirmed) return;
+
+    try {
+      setFinalDispositionBusyId(lot.id);
+      setMessage("");
+      const result = await recordMaterialLotFinalDisposition({
+        userId,
+        lotId: lot.id,
+        quantity,
+        date: form.date || today,
+        reason: form.reason,
+        method: form.method,
+        note: form.note,
+        trigger: dispositionState.reasonCode || "manual_disposition",
+      });
+
+      setFinalDispositionForms((prev) => {
+        const next = { ...prev };
+        delete next[lot.id];
+        return next;
+      });
+      setMessage(
+        result?.archived
+          ? `${lot?.name || lot.id} was fully disposed and moved to history.`
+          : `${formatQty(quantity, lot?.unit || "units", getQtyDigits(lot?.unit || "units"))} was removed from ${lot?.name || lot.id}.`
+      );
+      setActiveTab("history");
+    } catch (error) {
+      setMessage(error?.message || "Failed to complete final disposition.");
+    } finally {
+      setFinalDispositionBusyId("");
+    }
+  }
+
   async function handleReleasePackageForSale(lot) {
     if (!userId || !lot?.id) return;
 
@@ -3845,6 +4037,12 @@ export default function PostProcessManager({ grows = [] }) {
 
   async function handleSaveReservation(lot) {
     if (!userId || !lot?.id) return;
+    if (
+      !requestLabOperation(
+        LAB_OPERATION_ACTIONS.ADD_RESERVATION,
+        canUseFinishedInventory
+      )
+    ) return;
     const draft = reservationForms[lot.id] || normalizeReservationForm(today);
     const quantity = sanitizeNumber(draft.quantity);
     const available = getLotAvailableQuantity(lot);
@@ -3916,6 +4114,12 @@ export default function PostProcessManager({ grows = [] }) {
 
   async function handleSaveThreshold(lot) {
     if (!userId || !lot?.id) return;
+    if (
+      !requestLabOperation(
+        LAB_OPERATION_ACTIONS.SAVE_LOW_STOCK_THRESHOLD,
+        canUseFinishedInventory
+      )
+    ) return;
     const threshold = sanitizeNumber(thresholdForms[lot.id], false);
 
     try {
@@ -3991,6 +4195,12 @@ export default function PostProcessManager({ grows = [] }) {
   }
 
   function applyPackagePreset(sourceLot, preset) {
+    if (
+      !requestLabOperation(
+        LAB_OPERATION_ACTIONS.CREATE_PACKAGE_RUN,
+        canCreatePackageRuns
+      )
+    ) return;
     setPackageCreatorOpenLotId(sourceLot?.id || "");
     setPackageForm({
       ...normalizePackageForm(today, sourceLot?.id || ""),
@@ -4026,6 +4236,12 @@ export default function PostProcessManager({ grows = [] }) {
           <button
             type="button"
             onClick={() => {
+              if (
+                !requestLabOperation(
+                  LAB_OPERATION_ACTIONS.CREATE_PACKAGE_RUN,
+                  canCreatePackageRuns
+                )
+              ) return;
               setPackageForm(normalizePackageForm(today, sourceLot.id));
               setPackageCreatorOpenLotId(sourceLot.id);
             }}
@@ -4968,7 +5184,7 @@ export default function PostProcessManager({ grows = [] }) {
           </p>
         </div>
 
-        <div className="flex flex-wrap gap-2">
+        <div className="flex flex-wrap gap-2" data-tour="postprocess-tabs">
           {tabs.map(({ id, label, icon: Icon }) => (
             <button key={id} onClick={() => setActiveTab(id)} className={chipClass(activeTab === id)}>
               <Icon className="h-4 w-4" />
@@ -4987,6 +5203,44 @@ export default function PostProcessManager({ grows = [] }) {
           }}
         >
           {message}
+        </div>
+      ) : null}
+
+      {!canUsePostProcessing ||
+      !canUseFinishedInventory ||
+      !canCreatePackageRuns ||
+      !canRecordSales ||
+      !canUsePostProcessLabels ? (
+        <div
+          className="rounded-2xl border border-violet-200 bg-violet-50 p-4 text-sm text-violet-950 dark:border-violet-900/60 dark:bg-violet-950/25 dark:text-violet-100"
+          data-testid="postprocess-read-only-notice"
+        >
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div className="max-w-4xl">
+              <div className="font-semibold">Existing operational records remain available</div>
+              <p className="mt-1 leading-6">
+                New Post Processing, package-run, sales, and finished-label actions require Lab
+                access. Existing batches can still be completed, and waste, destruction, recall,
+                reservation release, and final-disposition actions remain available so inventory
+                never becomes stuck.
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={() =>
+                requestFeatureAccess({
+                  allowed: false,
+                  featureKey: SUBSCRIPTION_FEATURE_KEYS.POST_PROCESSING,
+                  actionLabel: "Start a new Lab operation",
+                  supportingText:
+                    "Existing operational history stays visible and safety actions remain available after a downgrade.",
+                })
+              }
+              className="rounded-full accent-bg px-4 py-2 text-sm font-semibold text-white"
+            >
+              View Lab access
+            </button>
+          </div>
         </div>
       ) : null}
 
@@ -5273,7 +5527,7 @@ export default function PostProcessManager({ grows = [] }) {
           <SectionCard
             title="Ready for intake"
             defaultOpen={true}
-            subtitle="Harvested grows with dry weight and no dry-material lot yet."
+            subtitle="Harvested grows with dry weight that do not yet have a linked dry-material lot."
           >
             {harvestedEligibleGrows.length === 0 ? (
               <EmptyState
@@ -5405,7 +5659,16 @@ export default function PostProcessManager({ grows = [] }) {
           <div className="flex flex-wrap justify-end gap-2">
             <button
               type="button"
-              onClick={() => setCreateExtractionModalOpen(true)}
+              onClick={() => {
+                if (
+                  requestLabOperation(
+                    LAB_OPERATION_ACTIONS.CREATE_EXTRACTION,
+                    canUsePostProcessing
+                  )
+                ) {
+                  setCreateExtractionModalOpen(true);
+                }
+              }}
               className="btn btn-accent text-sm"
             >
               Create Extraction Batch
@@ -5822,13 +6085,25 @@ export default function PostProcessManager({ grows = [] }) {
           <div className="flex flex-wrap justify-end gap-2">
             <Link
               to="/?tab=labels&labelSource=finished_goods"
+              onClick={(event) => {
+                if (!requestPostProcessLabelAccess()) event.preventDefault();
+              }}
               className="rounded-lg border border-zinc-300 dark:border-zinc-700 px-3 py-2 text-sm hover:bg-zinc-100 dark:hover:bg-zinc-800"
             >
               Labels Tab
             </Link>
             <button
               type="button"
-              onClick={() => setCreateProductionModalOpen(true)}
+              onClick={() => {
+                if (
+                  requestLabOperation(
+                    LAB_OPERATION_ACTIONS.CREATE_PRODUCTION,
+                    canUsePostProcessing
+                  )
+                ) {
+                  setCreateProductionModalOpen(true);
+                }
+              }}
               className="btn btn-accent text-sm"
             >
               Start Production Batch
@@ -6549,6 +6824,9 @@ export default function PostProcessManager({ grows = [] }) {
               <div className="flex flex-wrap gap-2">
                 <Link
                   to="/?tab=labels&labelSource=finished_goods"
+                  onClick={(event) => {
+                    if (!requestPostProcessLabelAccess()) event.preventDefault();
+                  }}
                   className="rounded-lg border border-zinc-300 dark:border-zinc-700 px-3 py-2 text-sm hover:bg-zinc-100 dark:hover:bg-zinc-800"
                 >
                   Open Label Print
@@ -6969,6 +7247,167 @@ export default function PostProcessManager({ grows = [] }) {
 
       {activeTab === "history" && (
         <>
+          <SectionCard
+            title="Final disposition required"
+            defaultOpen={true}
+            subtitle="Expired, recalled, failed-QC, rejected, or inconsistent lots stay visible here until their remaining quantity is formally removed. Each action writes an inventory movement and preserves the lot history."
+          >
+            {finalDispositionRequiredLots.length === 0 ? (
+              <EmptyState
+                title="No lots awaiting final disposition"
+                body="Blocked inventory will appear here when it needs a recorded destruction or other final removal."
+              />
+            ) : (
+              <div className="space-y-4">
+                {sortByNewest(finalDispositionRequiredLots).map((lot) => {
+                  const dispositionState = getMaterialLotFinalDispositionState(lot, today);
+                  const form = finalDispositionForms[lot.id] || getDefaultFinalDispositionForm(lot, today);
+                  const available = getLotAvailableQuantity(lot);
+                  const remaining = Number(lot?.remainingQuantity || 0);
+                  const reserved = getLotReservedQuantity(lot);
+                  const digits = getQtyDigits(lot?.unit || "units");
+                  const busy = finalDispositionBusyId === lot.id;
+
+                  return (
+                    <div
+                      key={lot.id}
+                      className="rounded-2xl border border-rose-300/70 dark:border-rose-900/70 bg-rose-50/50 dark:bg-rose-950/10 p-4 space-y-4"
+                    >
+                      <div className="flex flex-wrap items-start justify-between gap-3">
+                        <div>
+                          <div className="font-semibold">{lot?.name || lot.id}</div>
+                          <div className="text-sm text-rose-700 dark:text-rose-200">
+                            {dispositionState.reasonLabel || "Final disposition required"}
+                          </div>
+                          <div className="mt-1 text-xs text-zinc-600 dark:text-zinc-400">
+                            {lot?.lotType || lot?.inventoryCategory || "material lot"} · {lot?.strain || lot?.variant || lot?.sourceGrowId || "No source label"}
+                          </div>
+                        </div>
+                        <div className="text-right text-sm">
+                          <div className="font-semibold">
+                            {formatQty(available, lot?.unit || "units", digits)} available
+                          </div>
+                          <div className="text-zinc-500 dark:text-zinc-400">
+                            {formatQty(remaining, lot?.unit || "units", digits)} remaining
+                          </div>
+                          {reserved > 0 ? (
+                            <div className="text-amber-700 dark:text-amber-300">
+                              {formatQty(reserved, lot?.unit || "units", digits)} reserved
+                            </div>
+                          ) : null}
+                        </div>
+                      </div>
+
+                      <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-5 gap-3">
+                        <label className="space-y-1 text-sm">
+                          <span className="text-zinc-600 dark:text-zinc-400">Quantity</span>
+                          <input
+                            type="number"
+                            min="0"
+                            step={digits === 0 ? "1" : "0.01"}
+                            max={available || undefined}
+                            value={form.quantity}
+                            onChange={(e) =>
+                              setFinalDispositionForms((prev) => ({
+                                ...prev,
+                                [lot.id]: { ...form, quantity: e.target.value },
+                              }))
+                            }
+                            className="w-full rounded-xl border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-950 px-3 py-2"
+                          />
+                        </label>
+
+                        <label className="space-y-1 text-sm">
+                          <span className="text-zinc-600 dark:text-zinc-400">Date</span>
+                          <input
+                            type="date"
+                            value={form.date}
+                            onChange={(e) =>
+                              setFinalDispositionForms((prev) => ({
+                                ...prev,
+                                [lot.id]: { ...form, date: e.target.value },
+                              }))
+                            }
+                            className="w-full rounded-xl border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-950 px-3 py-2"
+                          />
+                        </label>
+
+                        <label className="space-y-1 text-sm">
+                          <span className="text-zinc-600 dark:text-zinc-400">Method</span>
+                          <select
+                            value={form.method}
+                            onChange={(e) =>
+                              setFinalDispositionForms((prev) => ({
+                                ...prev,
+                                [lot.id]: { ...form, method: e.target.value },
+                              }))
+                            }
+                            className="w-full rounded-xl border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-950 px-3 py-2"
+                          >
+                            <option value="discarded">Discarded</option>
+                            <option value="expired">Expired inventory</option>
+                            <option value="failed_qc">Failed QC / potency</option>
+                            <option value="recall">Recall / removal</option>
+                            <option value="compromised">Compromised material</option>
+                            <option value="other">Other</option>
+                          </select>
+                        </label>
+
+                        <label className="space-y-1 text-sm md:col-span-2 xl:col-span-2">
+                          <span className="text-zinc-600 dark:text-zinc-400">Reason *</span>
+                          <input
+                            type="text"
+                            value={form.reason}
+                            onChange={(e) =>
+                              setFinalDispositionForms((prev) => ({
+                                ...prev,
+                                [lot.id]: { ...form, reason: e.target.value },
+                              }))
+                            }
+                            placeholder="Required final-disposition reason"
+                            className="w-full rounded-xl border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-950 px-3 py-2"
+                          />
+                        </label>
+                      </div>
+
+                      <div className="grid grid-cols-1 lg:grid-cols-[1fr_auto] gap-3 items-end">
+                        <label className="space-y-1 text-sm">
+                          <span className="text-zinc-600 dark:text-zinc-400">Notes</span>
+                          <input
+                            type="text"
+                            value={form.note}
+                            onChange={(e) =>
+                              setFinalDispositionForms((prev) => ({
+                                ...prev,
+                                [lot.id]: { ...form, note: e.target.value },
+                              }))
+                            }
+                            placeholder="Optional handling, witness, or disposal notes"
+                            className="w-full rounded-xl border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-950 px-3 py-2"
+                          />
+                        </label>
+                        <button
+                          type="button"
+                          onClick={() => handleFinalDisposition(lot)}
+                          disabled={busy || available <= 0}
+                          className="rounded-xl border border-rose-500/70 bg-rose-950 px-4 py-2 text-sm font-semibold text-rose-100 hover:bg-rose-900 disabled:opacity-50"
+                        >
+                          {busy ? "Recording..." : "Destroy selected quantity"}
+                        </button>
+                      </div>
+
+                      {reserved > 0 ? (
+                        <div className="rounded-xl border border-amber-300/70 dark:border-amber-900/70 bg-amber-50 dark:bg-amber-950/20 px-3 py-2 text-xs text-amber-800 dark:text-amber-200">
+                          Reserved quantity is protected. Release the reservation before disposing more than the currently available amount.
+                        </div>
+                      ) : null}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </SectionCard>
+
           <SectionCard
             title="Depleted / archived lots"
             defaultOpen={false}

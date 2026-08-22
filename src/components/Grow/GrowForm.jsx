@@ -48,6 +48,7 @@ import {
 } from "../../lib/consume-supplies";
 import RecipeConsumptionPreview from "./RecipeConsumptionPreview";
 import { useConfirm } from "../ui/ConfirmDialog";
+import { SUBSCRIPTION_FEATURE_KEYS } from "../../lib/subscriptionPlans.js";
 
 /* ---------- Constants ---------- */
 const GROW_TYPES = ["Agar", "LC", "Grain Jar", "Bulk", "Other"];
@@ -343,7 +344,12 @@ export default function GrowForm(props) {
     recipes,
     supplies,
     onCreateGrow,
+    onCreateGrowBatch,
+    onValidateCreateBatch,
     onUpdateGrow,
+    canUseSopWorkflows = true,
+    canGenerateSopTasks = true,
+    onSubscriptionFeatureBlocked = () => false,
   } = props;
 
   const confirm = useConfirm();
@@ -411,7 +417,13 @@ export default function GrowForm(props) {
   const [status, setStatus] = useState(
     editingGrow?.status || sopDefaults?.status || DEFAULT_STATUS
   );
-  const [generateSopTasks, setGenerateSopTasks] = useState(isSopStart);
+  const [generateSopTasks, setGenerateSopTasks] = useState(
+    isSopStart && canGenerateSopTasks
+  );
+
+  useEffect(() => {
+    if (!canGenerateSopTasks) setGenerateSopTasks(false);
+  }, [canGenerateSopTasks]);
 
   const [created, setCreated] = useState(() => {
     const d = toDateAny(editingGrow?.createdAt) || new Date();
@@ -819,6 +831,20 @@ export default function GrowForm(props) {
     setIsSubmitting(true);
     try {
       setFormNotice(null);
+
+      if (isSopStart && !canUseSopWorkflows) {
+        const actionLabel = "Start a new grow from an SOP template";
+        onSubscriptionFeatureBlocked?.({
+          featureKey: SUBSCRIPTION_FEATURE_KEYS.SOP_WORKFLOWS,
+          actionLabel,
+        });
+        setFormNotice({
+          tone: "error",
+          message: `${actionLabel} requires Cultivator or Lab.`,
+        });
+        return;
+      }
+
       if (!growType) throw new Error("Please choose a grow type.");
       if (!strain) throw new Error("Please choose a strain.");
       if (!stage) throw new Error("Please choose a stage.");
@@ -1125,11 +1151,23 @@ export default function GrowForm(props) {
               : `${prefix}-${existingMax + i + 1}`;
           createPayloads.push(payload);
         }
-        const createdGrowIds = await Promise.all(
-          createPayloads.map((payload) => createGrow(payload))
-        );
+        if (typeof onValidateCreateBatch === "function") {
+          await onValidateCreateBatch(createPayloads);
+        }
 
-        if (isSopStart && generateSopTasks && sopTaskTemplates.length > 0) {
+        const createdGrowIds =
+          typeof onCreateGrowBatch === "function"
+            ? await onCreateGrowBatch(createPayloads)
+            : await Promise.all(
+                createPayloads.map((payload) => createGrow(payload))
+              );
+
+        if (
+          isSopStart &&
+          canGenerateSopTasks &&
+          generateSopTasks &&
+          sopTaskTemplates.length > 0
+        ) {
           const user = auth.currentUser;
           if (user) {
             const taskWrites = [];
@@ -1641,16 +1679,34 @@ export default function GrowForm(props) {
                 type="checkbox"
                 data-testid="grow-form-generate-sop-tasks"
                 checked={generateSopTasks}
+                disabled={!canGenerateSopTasks}
                 onChange={(event) => setGenerateSopTasks(event.target.checked)}
-                className="mt-0.5"
+                className="mt-0.5 disabled:cursor-not-allowed disabled:opacity-50"
               />
               <span>
                 <span className="font-medium">Create suggested SOP tasks</span>
                 <span className="block text-xs text-zinc-500 dark:text-zinc-400">
-                  Adds the template inspection and quality-gate tasks to this grow.
+                  {canGenerateSopTasks
+                    ? "Adds the template inspection and quality-gate tasks to this grow."
+                    : "Suggested SOP task generation requires Cultivator or Lab."}
                 </span>
               </span>
             </label>
+            {!canGenerateSopTasks ? (
+              <button
+                type="button"
+                data-testid="grow-form-sop-tasks-upgrade"
+                className="mt-2 text-xs font-semibold accent-text hover:underline"
+                onClick={() =>
+                  onSubscriptionFeatureBlocked?.({
+                    featureKey: SUBSCRIPTION_FEATURE_KEYS.SOP_GENERATED_TASKS,
+                    actionLabel: "Generate suggested SOP tasks",
+                  })
+                }
+              >
+                View plans for SOP-generated tasks
+              </button>
+            ) : null}
           </section>
         ) : null}
 

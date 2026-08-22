@@ -8,6 +8,7 @@ import {
   ClipboardCheck,
   Download,
   FileText,
+  LockKeyhole,
   PlayCircle,
   PlusCircle,
   Printer,
@@ -24,6 +25,7 @@ import {
 import { CLEAN_WORK_CHECKLISTS, WORKFLOW_TEMPLATES } from "../../lib/sopTemplates";
 import { formatAmount } from "../../lib/units";
 import { printElementBySelector } from "../../lib/sopPrint";
+import { SUBSCRIPTION_FEATURE_KEYS } from "../../lib/subscriptionPlans.js";
 
 const CALCULATOR_OPTIONS = [
   {
@@ -346,7 +348,13 @@ function SopPrintDocument({ template, checklists, calculatorMeta, calculatorRows
   );
 }
 
-export default function SopWorkflowToolkit({ onUseTemplate, onStartGrowFromTemplate }) {
+export default function SopWorkflowToolkit({
+  onUseTemplate,
+  onStartGrowFromTemplate,
+  canUseSopWorkflows = true,
+  canGenerateSopTasks = true,
+  onSubscriptionFeatureBlocked = () => false,
+}) {
   const [showSopToolkit, setShowSopToolkit] = useState(true);
   const [selectedWorkflowId, setSelectedWorkflowId] = useState(
     WORKFLOW_TEMPLATES[0]?.id || ""
@@ -452,8 +460,25 @@ export default function SopWorkflowToolkit({ onUseTemplate, onStartGrowFromTempl
     );
   };
 
+  const requestWorkflowAccess = (actionLabel) => {
+    if (canUseSopWorkflows) return true;
+
+    onSubscriptionFeatureBlocked?.({
+      featureKey: SUBSCRIPTION_FEATURE_KEYS.SOP_WORKFLOWS,
+      actionLabel,
+    });
+    return false;
+  };
+
+  const useSelectedWorkflowInRecipe = () => {
+    if (!selectedWorkflowTemplate) return;
+    if (!requestWorkflowAccess("Create a recipe from an SOP template")) return;
+    onUseTemplate?.(selectedWorkflowTemplate);
+  };
+
   const startGrowFromSelectedWorkflow = () => {
     if (!selectedWorkflowTemplate) return;
+    if (!requestWorkflowAccess("Start a new grow from an SOP template")) return;
     onStartGrowFromTemplate?.(selectedWorkflowTemplate);
   };
 
@@ -637,14 +662,48 @@ export default function SopWorkflowToolkit({ onUseTemplate, onStartGrowFromTempl
                     </div>
                   </div>
 
+                  {!canUseSopWorkflows ? (
+                    <div
+                      data-testid="sop-workflow-upgrade-hint"
+                      className="flex flex-col gap-2 rounded-xl border border-violet-200 bg-violet-50 p-3 text-sm text-violet-950 dark:border-violet-900/60 dark:bg-violet-950/30 dark:text-violet-100 sm:flex-row sm:items-center sm:justify-between"
+                    >
+                      <div className="flex items-start gap-2">
+                        <LockKeyhole size={17} className="mt-0.5 shrink-0" />
+                        <span>
+                          Starting new SOP recipes and grows requires Cultivator or Lab.
+                          You can still review, print, and export the templates.
+                        </span>
+                      </div>
+                      <button
+                        type="button"
+                        className="btn shrink-0"
+                        onClick={() =>
+                          onSubscriptionFeatureBlocked?.({
+                            featureKey: SUBSCRIPTION_FEATURE_KEYS.SOP_WORKFLOWS,
+                            actionLabel: "Start a new SOP workflow",
+                          })
+                        }
+                      >
+                        View plans
+                      </button>
+                    </div>
+                  ) : !canGenerateSopTasks ? (
+                    <div
+                      data-testid="sop-task-access-hint"
+                      className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs text-amber-900 dark:border-amber-900/60 dark:bg-amber-950/30 dark:text-amber-100"
+                    >
+                      SOP grows can be started, but suggested task generation is not included in the current entitlement.
+                    </div>
+                  ) : null}
+
                   <div className="flex flex-wrap gap-2">
                     <button
                       type="button"
-                      onClick={() => onUseTemplate?.(selectedWorkflowTemplate)}
+                      onClick={useSelectedWorkflowInRecipe}
                       data-testid="sop-use-template-button"
                       className="btn btn-accent"
                     >
-                      <PlusCircle size={16} />
+                      {canUseSopWorkflows ? <PlusCircle size={16} /> : <LockKeyhole size={16} />}
                       Use Template in New Recipe
                     </button>
                     <button
@@ -653,7 +712,7 @@ export default function SopWorkflowToolkit({ onUseTemplate, onStartGrowFromTempl
                       data-testid="sop-start-grow-button"
                       className="btn"
                     >
-                      <PlayCircle size={16} />
+                      {canUseSopWorkflows ? <PlayCircle size={16} /> : <LockKeyhole size={16} />}
                       Start Grow from SOP
                     </button>
                     <button type="button" onClick={printSelectedWorkflow} data-testid="sop-print-button" className="btn">

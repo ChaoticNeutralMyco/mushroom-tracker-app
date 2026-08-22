@@ -278,3 +278,81 @@ body.modal-open,
   max-height: none !important;   /* let content grow; overlay handles scroll */
   overflow: visible !important;  /* avoid an inner scrollbar */
 }
+
+/* ============================================================
+   User-controlled accessibility and layout preferences
+   Scoped to app UI so label artwork and printed label sizing remain unchanged.
+   ============================================================ */
+html.font-scale-medium #app-shell :where(.text-xs):not(.label *):not(.cnm-packaging-label *) { font-size: 0.8125rem !important; }
+html.font-scale-medium #app-shell :where(.text-sm):not(.label *):not(.cnm-packaging-label *) { font-size: 0.9375rem !important; }
+html.font-scale-medium #app-shell :where(.text-base):not(.label *):not(.cnm-packaging-label *) { font-size: 1.0625rem !important; }
+html.font-scale-medium #app-shell :where(.text-lg):not(.label *):not(.cnm-packaging-label *) { font-size: 1.1875rem !important; }
+html.font-scale-medium #app-shell :where(.text-xl):not(.label *):not(.cnm-packaging-label *) { font-size: 1.375rem !important; }
+html.font-scale-medium #app-shell :where(.text-2xl):not(.label *):not(.cnm-packaging-label *) { font-size: 1.625rem !important; }
+
+html.font-scale-large #app-shell :where(.text-xs):not(.label *):not(.cnm-packaging-label *) { font-size: 0.875rem !important; }
+html.font-scale-large #app-shell :where(.text-sm):not(.label *):not(.cnm-packaging-label *) { font-size: 1rem !important; }
+html.font-scale-large #app-shell :where(.text-base):not(.label *):not(.cnm-packaging-label *) { font-size: 1.125rem !important; }
+html.font-scale-large #app-shell :where(.text-lg):not(.label *):not(.cnm-packaging-label *) { font-size: 1.25rem !important; }
+html.font-scale-large #app-shell :where(.text-xl):not(.label *):not(.cnm-packaging-label *) { font-size: 1.5rem !important; }
+html.font-scale-large #app-shell :where(.text-2xl):not(.label *):not(.cnm-packaging-label *) { font-size: 1.75rem !important; }
+
+html.font-dyslexia #app-shell :where(
+  p,
+  button,
+  label,
+  input,
+  select,
+  textarea,
+  dt,
+  dd,
+  h1,
+  h2,
+  h3,
+  .text-xs,
+  .text-sm,
+  .text-base,
+  .text-lg,
+  .text-xl,
+  .text-2xl
+):not(.label *):not(.cnm-packaging-label *) {
+  font-family: Verdana, Arial, sans-serif !important;
+  letter-spacing: 0.018em;
+  line-height: 1.55;
+}
+
+html.reduce-motion *,
+html.reduce-motion *::before,
+html.reduce-motion *::after {
+  animation-duration: 0.01ms !important;
+  animation-iteration-count: 1 !important;
+  scroll-behavior: auto !important;
+  transition-duration: 0.01ms !important;
+}
+
+html.compact #app-shell .btn,
+html.compact #app-shell .chip {
+  padding-top: 0.35rem;
+  padding-bottom: 0.35rem;
+}
+html.compact #app-shell :where(input, select, textarea):not(.label *):not(.cnm-packaging-label *) {
+  padding-top: 0.4rem !important;
+  padding-bottom: 0.4rem !important;
+}
+
+html.high-contrast #app-shell :where(.btn, .chip, input, select, textarea) {
+  border-width: 2px !important;
+}
+html.high-contrast:not(.dark) #app-shell :where(.bg-white, .bg-zinc-50, .bg-zinc-100) {
+  background-color: rgba(255,255,255,0.92) !important;
+}
+html.high-contrast.dark #app-shell :where(.bg-zinc-900, .bg-zinc-950) {
+  background-color: rgba(9,9,11,0.92) !important;
+}
+
+html.large-taps #app-shell :where(button, .btn, .chip, input, select):not(.label *):not(.cnm-packaging-label *) {
+  min-height: 44px;
+}
+html.large-taps #app-shell :where(textarea):not(.label *):not(.cnm-packaging-label *) {
+  min-height: 88px;
+}

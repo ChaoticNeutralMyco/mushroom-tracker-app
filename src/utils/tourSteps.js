@@ -1,76 +1,173 @@
+// src/utils/tourSteps.js
 /**
- * Steps map: routeKey -> array of steps
+ * Steps map: routeKey -> array of steps.
  * If selector is present and found, it gets a spotlight; otherwise the tooltip centers.
- * Bump TOUR_VERSION whenever steps change to auto-reset seen flags.
+ * Bump TOUR_VERSION whenever steps change to reset stale seen flags.
  */
-export const TOUR_VERSION = 2;
+export const TOUR_VERSION = 3;
+export const TOUR_CONTROL_EVENT = "cnm:tour-control";
 
 const steps = {
   dashboard: [
     {
-      title: "Welcome to your Dashboard",
-      body: "This is your mission control. Track active grows, cost, and quick actions at a glance.",
+      title: "Dashboard overview",
+      body: "See active cultivation records, current type and stage counts, cost summaries, and the records that need attention.",
     },
     {
-      title: "Create your first grow",
-      body: "Click the “New Grow” button to start a batch. You can choose Agar, LC, Grain Jar, or Bulk.",
-      selector: '[data-tour="new-grow"]'
+      title: "Create a cultivation record",
+      body: "Start an Agar, LC, Grain Jar, Bulk, or Other record with the current grow form.",
+      selector: '[data-tour="new-grow"]',
     },
     {
-      title: "Filters & stages",
-      body: "Use these chips to quickly narrow grows by status (Inoculated, Colonizing, Fruiting, etc.).",
-      selector: '[data-tour="stage-filters"]'
-    }
+      title: "Stage overview",
+      body: "These chips summarize how many active records are in each stage. They are counts, not filters.",
+      selector: '[data-tour="stage-filters"]',
+    },
+    {
+      title: "Quick actions",
+      body: "Use the floating action button to start a grow, open a status logger, or prepare a photo upload.",
+      selector: '[data-tour="quick-actions"]',
+    },
+    {
+      title: "Scan a record",
+      body: "Use Scan to open a supported barcode or QR-linked record.",
+      selector: '[data-tour="scan"]',
+    },
   ],
 
-  settings: [
-    { title: "Theme & style", body: "Pick Light or Dark and switch the Theme Style to “Chaotic”.", selector: '[data-tour="theme-style"]' },
-    { title: "Accent color", body: "Choose an accent color. It won’t change the Chaotic background.", selector: '[data-tour="accent-color"]' },
-    { title: "Units & Reminders", body: "Configure units and enable local reminders to stay on top of tasks.", selector: '[data-tour="units-block"]' }
+  tasks: [
+    {
+      title: "Tasks and SOP follow-ups",
+      body: "Manage manual tasks and tasks generated from SOP workflows. Due dates, completion, recurrence, and grow links stay attached to each task.",
+      selector: '[data-tour="tasks-root"]',
+    },
+    {
+      title: "Filter the task list",
+      body: "Show all tasks, general tasks, grow-linked tasks, completed work, or selected tags.",
+      selector: '[data-tour="task-filters"]',
+    },
+    {
+      title: "Quick add",
+      body: "Create a task from one line, including natural-language timing, priority, tags, recurrence, and reminder lead time.",
+      selector: '[data-tour="task-quick-add"]',
+    },
   ],
 
   analytics: [
-    { title: "Visualize your data", body: "Charts summarize yields, costs, contamination rates, and more." },
-    { title: "Change the chart", body: "Use this dropdown to switch datasets like burn rate, throughput, or recipe usage.", selector: '[data-tour="analytics-dataset"]' },
-    { title: "Export", body: "Export CSV or JSON snapshots for backups or analysis.", selector: '[data-tour="analytics-export"]' }
+    {
+      title: "Analytics Command Center",
+      body: "Review cultivation, production, inventory, sales, quality, and supply reports without losing historical records.",
+    },
+    {
+      title: "Choose a workspace",
+      body: "Switch between focused analytics workspaces. Each workspace contains the reports relevant to that part of the operation.",
+      selector: '[data-tour="analytics-workspaces"]',
+    },
+    {
+      title: "Filter the report data",
+      body: "Use date, strain, active-versus-history, grouping, and chart-value controls when they apply to the selected workspace.",
+      selector: '[data-tour="analytics-filters"]',
+    },
+    {
+      title: "Export analytics",
+      body: "Export the current analytics data as CSV or JSON. Full account backups remain under Settings → Data.",
+      selector: '[data-tour="analytics-export"]',
+    },
   ],
 
   calendar: [
-    { title: "Calendar view", body: "Plan tasks around inoculation and harvest windows." },
-    { title: "Create item", body: "Click a day to add a reminder or note." }
+    {
+      title: "Calendar",
+      body: "The calendar combines grow milestones with real task due dates. Tasks without due dates remain in Tasks instead of being placed on an unrelated date.",
+    },
+    {
+      title: "Filter the calendar",
+      body: "Show or hide grow milestones, open tasks, completed tasks, manual tasks, and tasks generated by SOP workflows.",
+      selector: '[data-tour="calendar-filters"]',
+    },
+    {
+      title: "Open the source record",
+      body: "Select a task to open it in Tasks, or select a grow milestone to open that grow record.",
+    },
   ],
 
   timeline: [
-    { title: "Timeline", body: "See historical events like inoculations and harvests in order." }
+    {
+      title: "Grow timeline",
+      body: "Review stage changes, notes, and stage photos across cultivation records in chronological context.",
+    },
   ],
 
-  recipes: [
-    { title: "Recipes", body: "Manage inputs and quantities used for a grow. These power analytics like burn rate." }
-  ],
-
-  strains: [
-    { title: "Strains", body: "Add strains, aliases, and notes. These labels show up in your grows and analytics." }
-  ],
-
-  labels: [
-    { title: "Labels", body: "Print or view labels, and manage label presets for jars and tubs." }
-  ],
-
-  archive: [
-    { title: "Archive", body: "Completed or contaminated grows live here, keeping your dashboard clean." }
+  postprocess: [
+    {
+      title: "Post Processing",
+      body: "Follow material from harvested grows through dry lots, extraction, manufacturing, finished inventory, sales, and retained history.",
+    },
+    {
+      title: "Workflow sections",
+      body: "Use these sections to move between active material, production work, finished inventory, outbound sales, and historical records.",
+      selector: '[data-tour="postprocess-tabs"]',
+    },
   ],
 
   cog: [
     {
-      title: "Cost of Goods (COG)",
-      body: "Track supplies and costs that feed into recipes and analytics.",
-      selector: '[data-tour="cog-root"]'
+      title: "Cost of Goods",
+      body: "Track supplies and costs that feed recipes, SOP runs, grow estimates, and analytics.",
+      selector: '[data-tour="cog-root"]',
+    },
+  ],
+
+  recipes: [
+    {
+      title: "Recipes and SOP workflows",
+      body: "Manage recipe versions and SOP workflows, then start traceable grows and generated tasks from approved templates.",
+    },
+  ],
+
+  strains: [
+    {
+      title: "Strains and culture library",
+      body: "Manage strain identity, aliases, images, notes, stored culture records, and linked grow history.",
+    },
+  ],
+
+  labels: [
+    {
+      title: "Packaging labels",
+      body: "Preview and print labels from current product, package/SKU, strain, and batch data. Label design settings remain under Settings.",
+    },
+  ],
+
+  archive: [
+    {
+      title: "Archive and history",
+      body: "Review contaminated or consumed grows, depleted or archived material lots, completed process batches, and finished inventory history without deleting traceability.",
+    },
+  ],
+
+  settings: [
+    {
+      title: "Appearance",
+      body: "Choose the display mode, theme style, and accent used by the application.",
+      selector: '[data-tour="theme-style"]',
     },
     {
-      title: "Tips",
-      body: "Add supplies, organize into recipes, then apply recipes to grows for automatic cost estimates."
-    }
-  ]
+      title: "Accent color",
+      body: "Change the interface accent without changing the Chaotic background artwork.",
+      selector: '[data-tour="accent-color"]',
+    },
+    {
+      title: "Guided tours",
+      body: "Turn page guides on or off, replay this page, or reset all page tours from this control.",
+      selector: '[data-tour="guide-controls"]',
+    },
+    {
+      title: "Reminders",
+      body: "Configure task reminders, grow-stage reminders, browser permission, reminder time, and stage windows.",
+      selector: '[data-tour="reminders-block"]',
+    },
+  ],
 };
 
 export default steps;

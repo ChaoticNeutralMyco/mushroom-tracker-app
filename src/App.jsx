@@ -2,8 +2,14 @@
 // release-v57-hardening
 import React, { useEffect, useMemo, useRef, useState, Suspense } from "react";
 import { Routes, Route, useLocation } from "react-router-dom";
-import { auth, db, storage } from "./firebase-config";
+import {
+  auth,
+  db,
+  functions as subscriptionFunctions,
+  storage,
+} from "./firebase-config";
 import { onAuthStateChanged, signOut } from "firebase/auth";
+import { httpsCallable } from "firebase/functions";
 import {
   collection,
   doc,
@@ -14,7 +20,14 @@ import {
   setDoc,
   getDoc,
 } from "firebase/firestore";
-import { ref as storageRef, uploadBytes, getDownloadURL } from "firebase/storage";
+import { uploadStrainImageAsset } from "./lib/strain-image-storage";
+import {
+  deleteGrowPhoto,
+  getPhotoTimeMs,
+  normalizePhotoRecord,
+  setGrowCoverPhoto,
+  uploadGrowPhoto,
+} from "./lib/photo-storage";
 import {
   FlaskConical,
   TestTube,
@@ -36,14 +49,43 @@ import GrowList from "./components/Grow/GrowList";
 import GrowDetail from "./components/Grow/GrowDetail";
 import EditStageStatusModal from "./components/Grow/EditStageStatusModal";
 import DashboardStats from "./components/ui/DashboardStats";
-import OnboardingModal from "./components/ui/OnboardingModal";
 import SplashScreen from "./components/ui/SplashScreen";
 import { isActiveGrow, isArchivedish } from "./lib/growFilters";
+import {
+  SUBSCRIPTION_FEATURE_KEYS,
+  SUBSCRIPTION_LIMIT_KEYS,
+} from "./lib/subscriptionPlans.js";
+import {
+  ACTIVE_GROW_LIMIT_ERROR_CODE,
+  ActiveGrowLimitError,
+  assertActiveGrowCapacity,
+  countRequestedActiveGrows,
+  encodeGrowPatchForCallable,
+  encodeGrowPayloadForCallable,
+  getActiveGrowLimitState,
+  getGrowActivityTransition,
+} from "./lib/subscriptionGrowLimits.js";
 import FabQuickActions from "./components/ui/FabQuickActions";
 import LocalReminders from "./components/ui/LocalReminders";
+import useTaskReminders from "./hooks/useTaskReminders";
 import OnboardingCoach from "./utils/OnboardingCoach";
+import TrialExpirationNotice from "./components/ui/TrialExpirationNotice.jsx";
+import ActiveGrowLimitNotice from "./components/ui/ActiveGrowLimitNotice.jsx";
+import SubscriptionFeatureNotice from "./components/ui/SubscriptionFeatureNotice.jsx";
+import { useSubscription } from "./providers/SubscriptionProvider.jsx";
+import {
+  getSubscriptionFeatureGateState,
+} from "./lib/subscriptionFeatureGates.js";
 import { ConfirmProvider } from "./components/ui/ConfirmDialog";
-import { normalizeEnvironmentTargets } from "./lib/environmentTargets";
+import {
+  DEFAULT_ACCENT,
+  DEFAULT_APP_PREFERENCES,
+  SUPPORTED_ACCENTS,
+  buildPersistedAppPreferences,
+  getPreferenceDomClasses,
+  normalizeAppPreferences,
+  persistedAppPreferencesChanged,
+} from "./lib/app-preferences";
 
 import Modal from "./components/ui/Modal";
 import GrowForm from "./components/Grow/GrowForm";
@@ -76,173 +118,92 @@ const prefetchers = {
   tasks: () => import("./components/Tasks/TaskManager"),
 };
 
+const useFunctionsEmulator =
+  import.meta.env.DEV &&
+  ["1", "true", "yes"].includes(
+    String(import.meta.env.VITE_USE_FUNCTIONS_EMULATOR || "").toLowerCase()
+  );
+
+const createGrowBatchFunction = httpsCallable(
+  subscriptionFunctions,
+  "createGrowBatch"
+);
+const reactivateGrowBatchFunction = httpsCallable(
+  subscriptionFunctions,
+  "reactivateGrowBatch"
+);
+
+function isCallableUnavailableInDevelopment(error) {
+  if (!import.meta.env.DEV || useFunctionsEmulator) return false;
+  const code = String(error?.code || "").toLowerCase();
+  return (
+    code === "functions/not-found" ||
+    code === "functions/unavailable" ||
+    code === "not-found" ||
+    code === "unavailable"
+  );
+}
+
 const systemPrefersDark =
   () => window.matchMedia?.("(prefers-color-scheme: dark)")?.matches || false;
 
-const DEFAULT_ACCENT = "emerald";
-const DEFAULT_THEME_STYLE = "chaotic";
-
-function normalizePrefs(input = {}) {
-  let accent = input.accent ?? input.theme;
-  if (!accent) {
-    try {
-      accent = localStorage.getItem("cn_last_accent") || DEFAULT_ACCENT;
-    } catch {
-      accent = DEFAULT_ACCENT;
-    }
-  }
-
-  const mode =
-    input.mode ??
-    (typeof input.darkMode === "boolean"
-      ? input.darkMode
-        ? "dark"
-        : "light"
-      : "system");
-  const darkMode = mode === "dark" ? true : mode === "light" ? false : systemPrefersDark();
-  const themeStyle = input.themeStyle === "default" ? "default" : DEFAULT_THEME_STYLE;
-  return { accent, mode, theme: accent, darkMode, themeStyle };
-}
-
-function applyThemeToDOM(prefsLike) {
-  const p = normalizePrefs(prefsLike);
+function applyThemeToDOM(prefsLike = {}) {
+  const p = normalizeAppPreferences(prefsLike, {
+    systemDark: systemPrefersDark(),
+  });
+  const classes = getPreferenceDomClasses(p, {
+    systemDark: systemPrefersDark(),
+  });
   const root = document.documentElement;
-  ["emerald", "violet", "amber", "rose", "slate", "teal", "indigo", "sky"].forEach(
-    (t) => root.classList.remove(`theme-${t}`)
-  );
+
+  SUPPORTED_ACCENTS.forEach((accent) => root.classList.remove(`theme-${accent}`));
   root.classList.add(`theme-${p.accent || DEFAULT_ACCENT}`);
-  root.classList.toggle("dark", !!p.darkMode);
+  root.classList.toggle("dark", classes.dark);
+  root.classList.toggle("bg-chaotic", classes.chaotic);
+  root.classList.toggle("compact", classes.compact);
+  root.classList.toggle("reduce-motion", classes.reduceMotion);
+  root.classList.toggle("font-dyslexia", classes.dyslexiaFont);
+  root.classList.toggle("high-contrast", classes.highContrast);
+  root.classList.toggle("large-taps", classes.largeTaps);
 
-  try {
-    const style =
-      (prefsLike && prefsLike.themeStyle) || localStorage.getItem("cn_theme_style") || "default";
-    root.classList.toggle("bg-chaotic", style === "chaotic");
-  } catch {}
-
-  root.classList.toggle("compact", !!prefsLike.compactUI);
-  root.classList.toggle("reduce-motion", !!prefsLike.reduceMotion);
-  root.classList.toggle("font-dyslexia", !!prefsLike.dyslexiaFont);
-  root.classList.toggle("high-contrast", !!prefsLike.highContrast);
-  root.classList.toggle("large-taps", !!prefsLike.largeTaps);
+  ["small", "medium", "large"].forEach((scale) =>
+    root.classList.remove(`font-scale-${scale}`)
+  );
+  root.classList.add(`font-scale-${classes.fontScale}`);
 
   try {
     localStorage.setItem("theme", p.darkMode ? "dark" : "light");
-    localStorage.setItem("__prefs__", JSON.stringify({ theme: p.accent, darkMode: p.darkMode }));
+    localStorage.setItem("__prefs__", JSON.stringify({
+      theme: p.accent,
+      darkMode: p.darkMode,
+    }));
+    localStorage.setItem("cn_theme_style", p.themeStyle);
   } catch {}
-}
 
-const PERSISTED_PREF_KEYS = [
-  "accent",
-  "mode",
-  "theme",
-  "darkMode",
-  "fontScale",
-  "dyslexiaFont",
-  "reduceMotion",
-  "compactUI",
-  "highContrast",
-  "largeTaps",
-  "showSplashOnLoad",
-  "splashMinMs",
-  "guideEnabled",
-  "temperatureUnit",
-  "autoConvertEnvNotes",
-  "environmentTargets",
-];
-
-function buildPersistedPrefs(input = {}) {
-  return {
-    accent: input.accent,
-    mode: input.mode,
-    theme: input.accent,
-    darkMode: input.darkMode,
-    fontScale: input.fontScale,
-    dyslexiaFont: input.dyslexiaFont,
-    reduceMotion: input.reduceMotion,
-    compactUI: input.compactUI,
-    highContrast: input.highContrast,
-    largeTaps: input.largeTaps,
-    showSplashOnLoad: input.showSplashOnLoad,
-    splashMinMs: input.splashMinMs,
-    guideEnabled: input.guideEnabled,
-    temperatureUnit: input.temperatureUnit,
-    autoConvertEnvNotes: input.autoConvertEnvNotes,
-    environmentTargets: normalizeEnvironmentTargets(input.environmentTargets || {}),
-  };
-}
-
-function persistedPrefsChanged(cloud = {}, next = {}) {
-  return PERSISTED_PREF_KEYS.some(
-    (key) => JSON.stringify(cloud?.[key]) !== JSON.stringify(next?.[key])
-  );
+  return p;
 }
 
 (function applyInitialTheme() {
   try {
-    const lsNew = JSON.parse(localStorage.getItem("preferences") || "null");
-    if (lsNew && (lsNew.mode || lsNew.accent)) {
-      applyThemeToDOM(lsNew);
-    } else {
-      const legacy = JSON.parse(localStorage.getItem("__prefs__") || "{}");
-      if (legacy && (legacy.theme || typeof legacy.darkMode === "boolean")) {
-        applyThemeToDOM(legacy);
-      } else {
-        applyThemeToDOM({ accent: DEFAULT_ACCENT, mode: "system", themeStyle: DEFAULT_THEME_STYLE });
-      }
-    }
-    try {
-      const sty = localStorage.getItem("cn_theme_style");
-      document.documentElement.classList.toggle("bg-chaotic", sty === "chaotic");
-    } catch {}
+    const localPrefs = JSON.parse(localStorage.getItem("preferences") || "{}");
+    const legacy = JSON.parse(localStorage.getItem("__prefs__") || "{}");
+    const localThemeStyle = localStorage.getItem("cn_theme_style");
+    applyThemeToDOM({
+      ...legacy,
+      ...localPrefs,
+      themeStyle:
+        localPrefs.themeStyle ||
+        localThemeStyle ||
+        DEFAULT_APP_PREFERENCES.themeStyle,
+    });
   } catch {
-    document.documentElement.classList.add("theme-chaotic");
+    applyThemeToDOM(DEFAULT_APP_PREFERENCES);
   }
 })();
 
-const DEFAULT_PREFS = {
-  mode: "system",
-  accent: DEFAULT_ACCENT,
-  theme: DEFAULT_ACCENT,
-  themeStyle: DEFAULT_THEME_STYLE,
-  darkMode: systemPrefersDark(),
-  fontScale: "small",
-  dyslexiaFont: false,
-  reduceMotion: false,
-  compactUI: false,
-  labelTemplate: "3x2",
-  labelQR: true,
-  labelFields: { abbr: true, type: true, inocDate: true, parent: true },
-  qrMode: "quickEditUrl",
-  scanAction: "openQuickEdit",
-  barcodeType: "qr",
-  autoStampStageDates: true,
-  confirmStageRegression: true,
-  defaultStatus: "Active",
-  quickNoteStage: "current",
-  photoQuality: "medium",
-  autoCaptionPhotos: true,
-  taskDigestTime: "09:00",
-  taskOverdueHighlight: true,
-  stageReminders: false,
-  stageMaxDays: {},
-  backup: { enabled: false, frequency: "weekly", destination: "local" },
-  exportFormat: "csv",
-  confirmDeletes: "bulkOnly",
-  analytics: false,
-  liveSnapshots: true,
-  preloadPhotos: false,
-  offlineCache: false,
-  highContrast: false,
-  largeTaps: false,
-  showSplashOnLoad: true,
-  splashMinMs: 1200,
-  hasSeenOnboarding: true,
-  devMode: false,
-  temperatureUnit: "F",
-  autoConvertEnvNotes: true,
-  environmentTargets: normalizeEnvironmentTargets(),
-  guideEnabled: true,
-};
+const DEFAULT_PREFS = normalizeAppPreferences(DEFAULT_APP_PREFERENCES, {
+  systemDark: systemPrefersDark(),
+});
 
 const Skel = ({ className = "" }) => (
   <div className={`animate-pulse rounded-md bg-zinc-200/80 dark:bg-zinc-800 ${className}`} />
@@ -308,6 +269,7 @@ const SettingsSkeleton = () => (
 );
 
 export default function App() {
+  const subscription = useSubscription();
   const [user, setUser] = useState(null);
 
   const [rawGrows, setRawGrows] = useState(undefined);
@@ -321,8 +283,12 @@ export default function App() {
   const [prefs, setPrefs] = useState(DEFAULT_PREFS);
 
   const [activeTab, setActiveTab] = useState("dashboard");
+  const [selectedCalendarTaskId, setSelectedCalendarTaskId] = useState("");
   const [editingGrow, setEditingGrow] = useState(null);
-  const [showOnboarding, setShowOnboarding] = useState(false);
+  const [growLimitNotice, setGrowLimitNotice] = useState(null);
+  const [featureAccessNotice, setFeatureAccessNotice] = useState(null);
+  const activeGrowUsageRef = useRef(0);
+  const pendingActiveGrowCreatesRef = useRef(0);
   const [showScanner, setShowScanner] = useState(false);
   const location = useLocation();
   const scanParamRef = useRef({ tab: null, libKey: null });
@@ -379,16 +345,14 @@ export default function App() {
     return () => clearTimeout(id);
   }, []);
 
-  const applyAppearance = (p) => {
-    const n = normalizePrefs(p);
-    const merged = { ...p, ...n };
-    applyThemeToDOM(merged);
+  const applyAppearance = (nextPrefs) => {
+    const merged = applyThemeToDOM(nextPrefs);
     try {
       localStorage.setItem("preferences", JSON.stringify(merged));
       localStorage.setItem("cn_last_accent", merged.accent || DEFAULT_ACCENT);
-      localStorage.setItem("cn_theme_style", merged.themeStyle === "default" ? "default" : DEFAULT_THEME_STYLE);
+      localStorage.setItem("cn_theme_style", merged.themeStyle);
     } catch {}
-    document.documentElement.style.setProperty("--font-scale", merged.fontScale || "small");
+    return merged;
   };
 
   const suppliesMap = useMemo(() => {
@@ -426,6 +390,25 @@ export default function App() {
 
   const activeGrowsBase = useMemo(() => grows.filter(isActiveGrow), [grows]);
   const archivedGrowsBase = useMemo(() => grows.filter(isArchivedish), [grows]);
+  const activeGrowLimit = subscription.getLimit(SUBSCRIPTION_LIMIT_KEYS.ACTIVE_GROWS);
+  const canUseSopWorkflows = subscription.hasFeature(
+    SUBSCRIPTION_FEATURE_KEYS.SOP_WORKFLOWS
+  );
+  const canGenerateSopTasks = subscription.hasFeature(
+    SUBSCRIPTION_FEATURE_KEYS.SOP_GENERATED_TASKS
+  );
+  const activeGrowLimitState = useMemo(
+    () =>
+      getActiveGrowLimitState({
+        activeGrowCount: activeGrowsBase.length,
+        activeGrowLimit,
+      }),
+    [activeGrowsBase.length, activeGrowLimit]
+  );
+
+  useEffect(() => {
+    activeGrowUsageRef.current = activeGrowsBase.length;
+  }, [activeGrowsBase.length]);
 
   const TYPE_META = [
     { id: "Agar", icon: FlaskConical },
@@ -577,7 +560,6 @@ export default function App() {
         setPhotos(undefined);
         setNotes(undefined);
         setStrains(undefined);
-        setShowOnboarding(false);
         endSplashAfter(400);
         return;
       }
@@ -598,27 +580,33 @@ export default function App() {
           legacy = JSON.parse(localStorage.getItem("__prefs__") || "{}");
         } catch {}
 
-        const mergedBase = {
-          ...DEFAULT_PREFS,
-          ...legacy,
-          ...normalizePrefs(legacy),
-          ...localNew,
-          ...normalizePrefs(localNew),
-          ...cloud,
-          ...normalizePrefs(cloud),
-        };
-        const merged = {
-          ...mergedBase,
-          environmentTargets: normalizeEnvironmentTargets(
-            mergedBase.environmentTargets || {}
-          ),
-        };
+        let localThemeStyle = "";
+        try {
+          localThemeStyle = localStorage.getItem("cn_theme_style") || "";
+        } catch {}
+
+        const merged = normalizeAppPreferences(
+          {
+            ...DEFAULT_PREFS,
+            ...legacy,
+            ...localNew,
+            ...cloud,
+            themeStyle:
+              cloud.themeStyle ||
+              localNew.themeStyle ||
+              localThemeStyle ||
+              DEFAULT_APP_PREFERENCES.themeStyle,
+          },
+          { systemDark: systemPrefersDark() }
+        );
 
         setPrefs(merged);
         applyAppearance(merged);
 
-        const persistedPrefs = buildPersistedPrefs(merged);
-        if (!snap.exists() || persistedPrefsChanged(cloud, persistedPrefs)) {
+        const persistedPrefs = buildPersistedAppPreferences(merged, {
+          systemDark: systemPrefersDark(),
+        });
+        if (!snap.exists() || persistedAppPreferencesChanged(cloud, persistedPrefs)) {
           await setDoc(prefRef, persistedPrefs, { merge: true });
         }
 
@@ -628,17 +616,21 @@ export default function App() {
         try {
           localNew = JSON.parse(localStorage.getItem("preferences") || "{}");
         } catch {}
-        const fallbackBase = {
-          ...DEFAULT_PREFS,
-          ...localNew,
-          ...normalizePrefs(localNew),
-        };
-        const fallback = {
-          ...fallbackBase,
-          environmentTargets: normalizeEnvironmentTargets(
-            fallbackBase.environmentTargets || {}
-          ),
-        };
+        let localThemeStyle = "";
+        try {
+          localThemeStyle = localStorage.getItem("cn_theme_style") || "";
+        } catch {}
+        const fallback = normalizeAppPreferences(
+          {
+            ...DEFAULT_PREFS,
+            ...localNew,
+            themeStyle:
+              localNew.themeStyle ||
+              localThemeStyle ||
+              DEFAULT_APP_PREFERENCES.themeStyle,
+          },
+          { systemDark: systemPrefersDark() }
+        );
         setPrefs(fallback);
         applyAppearance(fallback);
         minPref = fallback.showSplashOnLoad ? Number(fallback.splashMinMs || 1200) : 0;
@@ -660,9 +652,13 @@ export default function App() {
         onSnapshot(col("tasks"), (s) =>
           setTasks(s.docs.map((d) => ({ id: d.id, ...d.data() })))
         ),
-        onSnapshot(col("photos"), (s) =>
-          setPhotos(s.docs.map((d) => ({ id: d.id, ...d.data() })))
-        ),
+        onSnapshot(col("photos"), (s) => {
+          const rows = s.docs.map((d) =>
+            normalizePhotoRecord({ id: d.id, ...d.data() })
+          );
+          rows.sort((a, b) => getPhotoTimeMs(b) - getPhotoTimeMs(a));
+          setPhotos(rows);
+        }),
         onSnapshot(col("notes"), (s) =>
           setNotes(s.docs.map((d) => ({ id: d.id, ...d.data() })))
         ),
@@ -682,9 +678,267 @@ export default function App() {
     await signOut(auth);
   };
 
+  const showActiveGrowLimitNotice = (errorOrDetails = {}) => {
+    const details = errorOrDetails?.details || errorOrDetails || {};
+    const usage = Number.isFinite(Number(details.usage))
+      ? Number(details.usage)
+      : activeGrowUsageRef.current;
+    const limit = details.limit === null
+      ? null
+      : Number.isFinite(Number(details.limit))
+        ? Number(details.limit)
+        : activeGrowLimit;
+    const requested = Number.isFinite(Number(details.requested))
+      ? Number(details.requested)
+      : 1;
+    const action = details.action || "create";
+
+    if (limit === null) return;
+
+    let message = errorOrDetails?.message || "";
+    if (!message) {
+      try {
+        assertActiveGrowCapacity({
+          activeGrowCount: usage,
+          activeGrowLimit: limit,
+          requestedCount: requested,
+          action,
+        });
+      } catch (error) {
+        message = error.message;
+      }
+    }
+
+    setGrowLimitNotice({ usage, limit, requested, action, message });
+  };
+
+  const requestSubscriptionFeature = ({ featureKey, actionLabel, supportingText = "" }) => {
+    const gate = getSubscriptionFeatureGateState({
+      allowed: subscription.hasFeature(featureKey),
+      featureKey,
+      actionLabel,
+      supportingText,
+    });
+
+    if (gate.allowed) return true;
+
+    setFeatureAccessNotice(gate);
+    return false;
+  };
+
+  const assertGrowCapacity = ({ requestedCount = 1, action = "create" } = {}) => {
+    try {
+      return assertActiveGrowCapacity({
+        activeGrowCount:
+          activeGrowUsageRef.current + pendingActiveGrowCreatesRef.current,
+        activeGrowLimit,
+        requestedCount,
+        action,
+      });
+    } catch (error) {
+      if (error?.code === ACTIVE_GROW_LIMIT_ERROR_CODE) {
+        showActiveGrowLimitNotice(error);
+      }
+      throw error;
+    }
+  };
+
+  const raiseTrustedGrowMutationError = (error) => {
+    const details =
+      error?.details && typeof error.details === "object"
+        ? error.details
+        : {};
+    const errorCode = String(error?.code || "");
+    const isCapacityError =
+      details.code === ACTIVE_GROW_LIMIT_ERROR_CODE ||
+      errorCode.endsWith("/resource-exhausted");
+
+    if (isCapacityError) {
+      const typedError = new ActiveGrowLimitError(
+        error?.message || "Your active-grow limit has been reached.",
+        {
+          ...details,
+          action: details.action || "create",
+        }
+      );
+      showActiveGrowLimitNotice(typedError);
+      throw typedError;
+    }
+
+    throw error;
+  };
+
+  const invokeTrustedGrowCreateBatch = async (payloads = []) => {
+    try {
+      const response = await createGrowBatchFunction({
+        grows: payloads.map((payload) =>
+          encodeGrowPayloadForCallable(payload || {})
+        ),
+      });
+      const growIds = Array.isArray(response?.data?.growIds)
+        ? response.data.growIds.map(String)
+        : [];
+
+      if (growIds.length !== payloads.length) {
+        throw new Error("Trusted grow creation returned an incomplete result.");
+      }
+
+      return growIds;
+    } catch (error) {
+      if (isCallableUnavailableInDevelopment(error)) {
+        console.warn(
+          "[grow-security] Trusted create callable unavailable in development; using the legacy direct write until Functions are deployed."
+        );
+        return Promise.all(
+          payloads.map(async (payload) => {
+            const ref = await addDoc(
+              collection(db, "users", user.uid, "grows"),
+              payload
+            );
+            return ref.id;
+          })
+        );
+      }
+
+      return raiseTrustedGrowMutationError(error);
+    }
+  };
+
+  const invokeTrustedGrowReactivationBatch = async (updates = []) => {
+    try {
+      const response = await reactivateGrowBatchFunction({
+        updates: updates.map((update) => ({
+          growId: update?.growId || update?.id,
+          patch: encodeGrowPatchForCallable(update?.patch || {}),
+        })),
+      });
+
+      return response?.data || {};
+    } catch (error) {
+      if (isCallableUnavailableInDevelopment(error)) {
+        console.warn(
+          "[grow-security] Trusted reactivation callable unavailable in development; using the legacy direct write until Functions are deployed."
+        );
+        await Promise.all(
+          updates.map((update) =>
+            updateDoc(
+              doc(
+                db,
+                "users",
+                user.uid,
+                "grows",
+                update?.growId || update?.id
+              ),
+              update?.patch || {}
+            )
+          )
+        );
+        return {
+          growIds: updates.map((update) => update?.growId || update?.id),
+        };
+      }
+
+      return raiseTrustedGrowMutationError(error);
+    }
+  };
+
+  const assertGrowReactivationAllowed = (currentGrow, patch) => {
+    const transition = getGrowActivityTransition(currentGrow || {}, patch || {});
+    if (transition.reactivating) {
+      assertGrowCapacity({ requestedCount: 1, action: "reactivate" });
+    }
+    return transition;
+  };
+
+  const getGrowReactivationTransitions = (updates = []) => {
+    const currentGrows = Array.isArray(rawGrows) ? rawGrows : [];
+
+    return (Array.isArray(updates) ? updates : []).map((update) => {
+      const growId = update?.growId || update?.id;
+      const currentGrow = currentGrows.find((grow) => grow.id === growId);
+      const transition = getGrowActivityTransition(
+        currentGrow || {},
+        update?.patch || {}
+      );
+
+      return {
+        growId,
+        patch: update?.patch || {},
+        transition,
+      };
+    });
+  };
+
+  const validateGrowReactivationBatch = (updates = []) => {
+    const requestedCount = getGrowReactivationTransitions(updates).filter(
+      ({ transition }) => transition.reactivating
+    ).length;
+
+    if (requestedCount > 0) {
+      assertGrowCapacity({ requestedCount, action: "reactivate" });
+    }
+
+    return true;
+  };
+
+  const onReactivateGrowBatch = async (updates = []) => {
+    if (!user) return null;
+
+    const transitions = getGrowReactivationTransitions(updates);
+    const requestedCount = transitions.filter(
+      ({ transition }) => transition.reactivating
+    ).length;
+
+    if (requestedCount > 0) {
+      assertGrowCapacity({ requestedCount, action: "reactivate" });
+    }
+
+    const result = await invokeTrustedGrowReactivationBatch(
+      transitions.map(({ growId, patch }) => ({ growId, patch }))
+    );
+
+    const reactivated = transitions.filter(
+      ({ transition }) => transition.reactivating
+    ).length;
+    const deactivated = transitions.filter(
+      ({ transition }) => transition.deactivating
+    ).length;
+
+    activeGrowUsageRef.current = Math.max(
+      0,
+      activeGrowUsageRef.current + reactivated - deactivated
+    );
+
+    const nextById = new Map(
+      transitions.map(({ growId, transition }) => [
+        growId,
+        transition.nextGrow,
+      ])
+    );
+
+    setRawGrows((prev) =>
+      (Array.isArray(prev) ? prev : []).map((grow) => {
+        const nextGrow = nextById.get(grow.id);
+        return nextGrow ? { ...nextGrow, id: grow.id } : grow;
+      })
+    );
+
+    return result;
+  };
+
+  const writeGrowPatch = async (growId, patch, transition) => {
+    if (transition?.reactivating) {
+      return invokeTrustedGrowReactivationBatch([{ growId, patch }]);
+    }
+
+    return updateDoc(
+      doc(db, "users", user.uid, "grows", growId),
+      patch
+    );
+  };
+
   const onUpdateStage = async (growId, nextStage) => {
     if (!user) return;
-    const ref = doc(db, "users", user.uid, "grows", growId);
 
     let currentGrow = undefined;
     try {
@@ -714,7 +968,13 @@ export default function App() {
       patch[`stageDates.${nextStage}`] = today;
     }
 
-    await updateDoc(ref, patch);
+    const transition = assertGrowReactivationAllowed(currentGrow, patch);
+    await writeGrowPatch(growId, patch, transition);
+
+    if (transition.reactivating) activeGrowUsageRef.current += 1;
+    if (transition.deactivating) {
+      activeGrowUsageRef.current = Math.max(0, activeGrowUsageRef.current - 1);
+    }
 
     setRawGrows((prev) =>
       (Array.isArray(prev) ? prev : []).map((g) => {
@@ -748,7 +1008,19 @@ export default function App() {
 
   const onUpdateStatus = async (growId, status) => {
     if (!user) return;
-    await updateDoc(doc(db, "users", user.uid, "grows", growId), { status });
+    const currentGrow = (Array.isArray(rawGrows) ? rawGrows : []).find(
+      (grow) => grow.id === growId
+    );
+    const patch = { status };
+    const transition = assertGrowReactivationAllowed(currentGrow, patch);
+
+    await writeGrowPatch(growId, patch, transition);
+
+    if (transition.reactivating) activeGrowUsageRef.current += 1;
+    if (transition.deactivating) {
+      activeGrowUsageRef.current = Math.max(0, activeGrowUsageRef.current - 1);
+    }
+
     setRawGrows((prev) =>
       (Array.isArray(prev) ? prev : []).map((g) => (g.id === growId ? { ...g, status } : g))
     );
@@ -756,24 +1028,99 @@ export default function App() {
 
   const onUpdateGrow = async (growId, patch) => {
     if (!user || !growId || !patch) return;
-    await updateDoc(doc(db, "users", user.uid, "grows", growId), patch);
+    const currentGrow = (Array.isArray(rawGrows) ? rawGrows : []).find(
+      (grow) => grow.id === growId
+    );
+    const transition = assertGrowReactivationAllowed(currentGrow, patch);
+
+    await writeGrowPatch(growId, patch, transition);
+
+    if (transition.reactivating) activeGrowUsageRef.current += 1;
+    if (transition.deactivating) {
+      activeGrowUsageRef.current = Math.max(0, activeGrowUsageRef.current - 1);
+    }
+
     setRawGrows((prev) =>
-      (Array.isArray(prev) ? prev : []).map((g) => (g.id === growId ? { ...g, ...patch } : g))
+      (Array.isArray(prev) ? prev : []).map((g) =>
+        g.id === growId
+          ? { ...g, ...transition.nextGrow, id: g.id }
+          : g
+      )
     );
   };
 
+  const validateCreateGrowBatch = (payloads = []) => {
+    const requestedCount = countRequestedActiveGrows(payloads);
+    if (requestedCount <= 0) return true;
+    assertGrowCapacity({ requestedCount, action: "create" });
+    return true;
+  };
+
+  const onCreateGrowBatch = async (payloads = []) => {
+    if (!user) return [];
+
+    const list = Array.isArray(payloads) ? payloads : [payloads];
+    const requestedCount = countRequestedActiveGrows(list);
+
+    if (requestedCount > 0) {
+      assertGrowCapacity({ requestedCount, action: "create" });
+      pendingActiveGrowCreatesRef.current += requestedCount;
+    }
+
+    try {
+      const growIds = await invokeTrustedGrowCreateBatch(list);
+
+      if (requestedCount > 0) {
+        activeGrowUsageRef.current += requestedCount;
+      }
+
+      setRawGrows((prev) => {
+        const existing = Array.isArray(prev) ? prev : [];
+        const next = [...existing];
+
+        growIds.forEach((growId, index) => {
+          if (!growId || next.some((grow) => grow.id === growId)) return;
+          next.push({ id: growId, ...(list[index] || {}) });
+        });
+
+        return next;
+      });
+
+      return growIds;
+    } finally {
+      if (requestedCount > 0) {
+        pendingActiveGrowCreatesRef.current = Math.max(
+          0,
+          pendingActiveGrowCreatesRef.current - requestedCount
+        );
+      }
+    }
+  };
+
   const onCreateGrow = async (payload) => {
-    if (!user) return null;
-    const ref = await addDoc(collection(db, "users", user.uid, "grows"), payload);
-    return ref.id;
+    const growIds = await onCreateGrowBatch([payload]);
+    return growIds[0] || null;
+  };
+
+  const requestNewGrow = (initialGrow = {}) => {
+    setEditingGrow(initialGrow || {});
   };
 
   const onStartGrowFromSop = (template) => {
-    if (!template) return;
+    if (!template) return false;
+    if (
+      !requestSubscriptionFeature({
+        featureKey: SUBSCRIPTION_FEATURE_KEYS.SOP_WORKFLOWS,
+        actionLabel: "Start a new grow from an SOP template",
+      })
+    ) {
+      return false;
+    }
+
     const defaults = template.growDefaults || {};
     const type = defaults.type || template.category || "Agar";
 
-    setEditingGrow({
+    requestNewGrow({
       ...defaults,
       type,
       growType: type,
@@ -793,6 +1140,12 @@ export default function App() {
   const onUpdateTask = async (id, patch) => {
     if (user) await updateDoc(doc(db, "users", user.uid, "tasks", id), patch);
   };
+
+  useTaskReminders({
+    tasks: Array.isArray(tasks) ? tasks : [],
+    onUpdate: onUpdateTask,
+    enabled: prefs.taskReminders !== false,
+  });
 
   const onDeleteTask = async (id) => {
     if (user) await deleteDoc(doc(db, "users", user.uid, "tasks", id));
@@ -840,32 +1193,48 @@ export default function App() {
 
   const onUploadPhoto = async (growId, file, caption) => {
     if (!user || !file) return;
-    const path = `users/${user.uid}/photos/${growId}/${Date.now()}_${file.name}`;
-    const r = storageRef(storage, path);
-    await uploadBytes(r, file);
-    const url = await getDownloadURL(r);
-    await addDoc(collection(db, "users", user.uid, "photos"), {
+    await uploadGrowPhoto({
+      db,
+      storage,
+      uid: user.uid,
       growId,
-      url,
-      caption: caption || "",
+      file,
+      caption,
       stage: null,
-      timestamp: new Date().toISOString(),
     });
   };
 
   const onUploadStagePhoto = async (growId, stage, file, caption) => {
     if (!user || !file) return;
-    const safeStage = stage || "General";
-    const path = `users/${user.uid}/photos/${growId}/${safeStage}/${Date.now()}_${file.name}`;
-    const r = storageRef(storage, path);
-    await uploadBytes(r, file);
-    const url = await getDownloadURL(r);
-    await addDoc(collection(db, "users", user.uid, "photos"), {
+    await uploadGrowPhoto({
+      db,
+      storage,
+      uid: user.uid,
       growId,
-      url,
-      caption: caption || "",
-      stage: safeStage,
-      timestamp: new Date().toISOString(),
+      file,
+      caption,
+      stage: stage || "General",
+    });
+  };
+
+  const onDeletePhoto = async (growId, photo) => {
+    if (!user || !photo?.id) return null;
+    return deleteGrowPhoto({
+      db,
+      storage,
+      uid: user.uid,
+      growId: growId || photo.growId || "",
+      photo,
+    });
+  };
+
+  const onSetCoverPhoto = async (growId, photo) => {
+    if (!user || !growId || !photo?.id) return null;
+    return setGrowCoverPhoto({
+      db,
+      uid: user.uid,
+      growId,
+      photo,
     });
   };
 
@@ -886,46 +1255,33 @@ export default function App() {
     if (user) await deleteDoc(doc(db, "users", user.uid, "strains", id));
   };
 
-  const onUploadStrainImage = async (file) => {
-    if (!user || !file) return "";
-    const path = `users/${user.uid}/strains/${Date.now()}_${file.name}`;
-    const r = storageRef(storage, path);
-    await uploadBytes(r, file);
-    return await getDownloadURL(r);
+  const onUploadStrainImage = async (file, kind = "profile") => {
+    if (!user || !file) return null;
+    return await uploadStrainImageAsset({
+      storage,
+      uid: user.uid,
+      file,
+      kind,
+    });
   };
 
   const savePrefs = async (next) => {
-    const mergedBase = { ...prefs, ...next, ...normalizePrefs(next) };
-    const merged = {
-      ...mergedBase,
-      environmentTargets: normalizeEnvironmentTargets(
-        mergedBase.environmentTargets || {}
-      ),
-    };
+    const merged = normalizeAppPreferences(
+      { ...prefs, ...next },
+      { systemDark: systemPrefersDark() }
+    );
     setPrefs(merged);
     applyAppearance(merged);
 
-    try {
-      const style = merged.themeStyle === "chaotic" ? "chaotic" : "default";
-      localStorage.setItem("cn_theme_style", style);
-      document.documentElement.classList.toggle("bg-chaotic", style === "chaotic");
-    } catch {}
-
-    try {
-      localStorage.setItem("preferences", JSON.stringify(merged));
-      localStorage.setItem("cn_last_accent", merged.accent || DEFAULT_ACCENT);
-      localStorage.setItem(
-        "__prefs__",
-        JSON.stringify({ theme: merged.accent, darkMode: merged.darkMode })
-      );
-    } catch {}
-
-    if (!user) return;
+    if (!user) return merged;
     await setDoc(
       doc(db, "users", user.uid, "settings", "preferences"),
-      buildPersistedPrefs(merged),
+      buildPersistedAppPreferences(merged, {
+        systemDark: systemPrefersDark(),
+      }),
       { merge: true }
     );
+    return merged;
   };
 
   const tabFallback = useMemo(() => {
@@ -973,7 +1329,12 @@ export default function App() {
             recipes={Array.isArray(recipes) ? recipes : []}
             supplies={Array.isArray(supplies) ? supplies : []}
             onCreateGrow={onCreateGrow}
+            onCreateGrowBatch={onCreateGrowBatch}
+            onValidateCreateBatch={validateCreateGrowBatch}
             onUpdateGrow={onUpdateGrow}
+            canUseSopWorkflows={canUseSopWorkflows}
+            canGenerateSopTasks={canGenerateSopTasks}
+            onSubscriptionFeatureBlocked={requestSubscriptionFeature}
             onClose={() => setEditingGrow(null)}
           />
         </Modal>
@@ -1001,6 +1362,7 @@ export default function App() {
                 onUpdateStatus={onUpdateStatus}
                 onAddNote={onAddNote}
                 onUploadStagePhoto={onUploadStagePhoto}
+                onDeletePhoto={onDeletePhoto}
               />
             </Suspense>
           }
@@ -1017,6 +1379,12 @@ export default function App() {
               photosByGrow={photosByGrow}
               onUploadPhoto={onUploadPhoto}
               onUploadStagePhoto={onUploadStagePhoto}
+              onDeletePhoto={onDeletePhoto}
+              onSetCoverPhoto={onSetCoverPhoto}
+              canUsePostProcessing={subscription.hasFeature(
+                SUBSCRIPTION_FEATURE_KEYS.POST_PROCESSING
+              )}
+              onSubscriptionFeatureBlocked={requestSubscriptionFeature}
             />
           }
         />
@@ -1069,7 +1437,10 @@ export default function App() {
                     return (
                       <button
                         key={key}
-                        onClick={() => setActiveTab(key)}
+                        onClick={() => {
+                          if (key === "tasks") setSelectedCalendarTaskId("");
+                          setActiveTab(key);
+                        }}
                         onMouseEnter={() => prefetchers[key]?.()}
                         onFocus={() => prefetchers[key]?.()}
                         role="tab"
@@ -1132,14 +1503,26 @@ export default function App() {
                           }
                         />
 
-                        <div className="flex">
+                        <div className="flex flex-wrap items-center gap-3">
                           <button
                             data-tour="new-grow"
                             className="chip chip--active text-sm"
-                            onClick={() => setEditingGrow({})}
+                            onClick={() => requestNewGrow({})}
                           >
                             + New Grow
                           </button>
+                          <span
+                            className={`text-xs ${
+                              activeGrowLimitState.reached
+                                ? "font-semibold text-amber-700 dark:text-amber-300"
+                                : "text-slate-500 dark:text-slate-400"
+                            }`}
+                            data-testid="active-grow-usage"
+                          >
+                            {activeGrowLimitState.usage} active grows · {activeGrowLimitState.unlimited
+                              ? "Unlimited"
+                              : `${activeGrowLimitState.limit} allowed`}
+                          </span>
                         </div>
 
                         <div className="bg-white dark:bg-zinc-900 rounded-2xl shadow p-4">
@@ -1148,9 +1531,14 @@ export default function App() {
                             archivedGrows={archivedGrowsBase}
                             recipes={Array.isArray(recipes) ? recipes : []}
                             supplies={Array.isArray(supplies) ? supplies : []}
-                            setEditingGrow={setEditingGrow}
+                            setEditingGrow={(grow) =>
+                              grow?.id ? setEditingGrow(grow) : requestNewGrow(grow || {})
+                            }
                             showAddButton={false}
                             onUpdateStatus={onUpdateStatus}
+                            onUpdateGrow={onUpdateGrow}
+                            onValidateReactivationBatch={validateGrowReactivationBatch}
+                            onReactivateGrowBatch={onReactivateGrowBatch}
                           />
                         </div>
                       </div>
@@ -1162,6 +1550,7 @@ export default function App() {
                       <TaskManager
                         tasks={Array.isArray(tasks) ? tasks : []}
                         grows={grows}
+                        selectedTaskId={selectedCalendarTaskId}
                         onCreate={onCreateTask}
                         onUpdate={onUpdateTask}
                         onDelete={onDeleteTask}
@@ -1177,11 +1566,34 @@ export default function App() {
                       recipes={Array.isArray(recipes) ? recipes : []}
                       supplies={Array.isArray(supplies) ? supplies : []}
                       tasks={Array.isArray(tasks) ? tasks : []}
+                      canUseBasicAnalytics={subscription.hasFeature(
+                        SUBSCRIPTION_FEATURE_KEYS.BASIC_ANALYTICS
+                      )}
+                      canUseAdvancedAnalytics={subscription.hasFeature(
+                        SUBSCRIPTION_FEATURE_KEYS.ADVANCED_ANALYTICS
+                      )}
+                      canUseAdvancedCostAnalytics={subscription.hasFeature(
+                        SUBSCRIPTION_FEATURE_KEYS.ADVANCED_COST_ANALYTICS
+                      )}
+                      canExportAnalytics={subscription.hasFeature(
+                        SUBSCRIPTION_FEATURE_KEYS.ANALYTICS_EXPORTS
+                      )}
+                      canUseLabAnalytics={subscription.hasFeature(
+                        SUBSCRIPTION_FEATURE_KEYS.LAB_ANALYTICS
+                      )}
+                      onSubscriptionFeatureBlocked={requestSubscriptionFeature}
                     />
                   )}
 
                   {activeTab === "calendar" && (
-                    <CalendarView grows={grows} tasks={Array.isArray(tasks) ? tasks : []} />
+                    <CalendarView
+                      grows={grows}
+                      tasks={Array.isArray(tasks) ? tasks : []}
+                      onOpenTask={(task) => {
+                        setSelectedCalendarTaskId(task?.id || "");
+                        setActiveTab("tasks");
+                      }}
+                    />
                   )}
 
                   {activeTab === "timeline" && (
@@ -1190,17 +1602,37 @@ export default function App() {
                         grows={grows}
                         onUpdateStage={onUpdateStage}
                         onUpdateStageDate={onUpdateStageDate}
-                        notesByGrowStage={notesByGrowStage}
-                        photosByGrowStage={photosByGrowStage}
-                        onAddNote={onAddNote}
-                        onUploadStagePhoto={onUploadStagePhoto}
                       />
                     </div>
                   )}
 
                   {activeTab === "postprocess" && (
                     <div className="bg-white dark:bg-zinc-900 rounded-2xl shadow p-4">
-                      <PostProcessManager grows={Array.isArray(grows) ? grows : []} />
+                      <PostProcessManager
+                        grows={Array.isArray(grows) ? grows : []}
+                        canUsePostProcessing={subscription.hasFeature(
+                          SUBSCRIPTION_FEATURE_KEYS.POST_PROCESSING
+                        )}
+                        canUseFinishedInventory={subscription.hasFeature(
+                          SUBSCRIPTION_FEATURE_KEYS.FINISHED_INVENTORY
+                        )}
+                        canCreatePackageRuns={subscription.hasFeature(
+                          SUBSCRIPTION_FEATURE_KEYS.PACKAGE_RUNS
+                        )}
+                        canUsePostProcessLabels={subscription.hasFeature(
+                          SUBSCRIPTION_FEATURE_KEYS.POST_PROCESS_LABELS
+                        )}
+                        canRecordSales={subscription.hasFeature(
+                          SUBSCRIPTION_FEATURE_KEYS.SALES_TRACKING
+                        )}
+                        canUseFefoControls={subscription.hasFeature(
+                          SUBSCRIPTION_FEATURE_KEYS.FEFO_CONTROLS
+                        )}
+                        canUseInventoryAuditHistory={subscription.hasFeature(
+                          SUBSCRIPTION_FEATURE_KEYS.INVENTORY_AUDIT_HISTORY
+                        )}
+                        onSubscriptionFeatureBlocked={requestSubscriptionFeature}
+                      />
                     </div>
                   )}
 
@@ -1215,7 +1647,12 @@ export default function App() {
 
                   {activeTab === "recipes" && (
                     <div className="bg-white dark:bg-zinc-900 rounded-2xl shadow p-4">
-                      <RecipeManager onStartGrowFromTemplate={onStartGrowFromSop} />
+                      <RecipeManager
+                        onStartGrowFromTemplate={onStartGrowFromSop}
+                        canUseSopWorkflows={canUseSopWorkflows}
+                        canGenerateSopTasks={canGenerateSopTasks}
+                        onSubscriptionFeatureBlocked={requestSubscriptionFeature}
+                      />
                     </div>
                   )}
 
@@ -1228,7 +1665,9 @@ export default function App() {
                         onUpdateStrain={onUpdateStrain}
                         onDeleteStrain={onDeleteStrain}
                         onUploadStrainImage={onUploadStrainImage}
-                        setEditingGrow={setEditingGrow}
+                        setEditingGrow={(grow) =>
+                          grow?.id ? setEditingGrow(grow) : requestNewGrow(grow || {})
+                        }
                         openLibraryItemId={openLibraryItemId}
                         onConsumeOpenLibraryItem={consumeOpenLibraryItem}
                       />
@@ -1237,13 +1676,20 @@ export default function App() {
 
                   {activeTab === "labels" && (
                     <div className="bg-white dark:bg-zinc-900 rounded-2xl shadow p-4">
-                      <LabelPrintWrapper grows={grows} prefs={prefs} />
+                      <LabelPrintWrapper
+                        grows={grows}
+                        prefs={prefs}
+                        canUsePostProcessLabels={subscription.hasFeature(
+                          SUBSCRIPTION_FEATURE_KEYS.POST_PROCESS_LABELS
+                        )}
+                        onSubscriptionFeatureBlocked={requestSubscriptionFeature}
+                      />
                     </div>
                   )}
 
                   {activeTab === "archive" && (
                     <div className="bg-white dark:bg-zinc-900 rounded-2xl shadow p-4">
-                      <Archive grows={grows} setEditingGrow={setEditingGrow} />
+                      <Archive grows={grows} onUpdateGrow={onUpdateGrow} />
                     </div>
                   )}
 
@@ -1256,16 +1702,16 @@ export default function App() {
                       }}
                       onSavePreferences={savePrefs}
                       applyAppearance={applyAppearance}
+                      activeGrowCount={activeGrowsBase.length}
                     />
                   )}
                 </Suspense>
 
-                <OnboardingModal visible={showOnboarding} onClose={() => setShowOnboarding(false)} />
               </div>
 
               <FabQuickActions
                 grows={activeGrowsBase}
-                onNewGrow={() => setEditingGrow({})}
+                onNewGrow={() => requestNewGrow({})}
                 onLogStatus={(id) => {
                   const g = activeGrowsBase.find((x) => x.id === id) || grows.find((x) => x.id === id);
                   if (g) setEditingGrow(g);
@@ -1279,6 +1725,59 @@ export default function App() {
         />
 
       </Routes>
+
+      <ActiveGrowLimitNotice
+        open={Boolean(growLimitNotice)}
+        message={growLimitNotice?.message || ""}
+        usage={growLimitNotice?.usage || 0}
+        limit={growLimitNotice?.limit || 0}
+        onClose={() => setGrowLimitNotice(null)}
+        onViewPlans={() => {
+          setGrowLimitNotice(null);
+          setActiveTab("settings");
+          window.setTimeout(() => {
+            window.dispatchEvent(
+              new CustomEvent("cn:settings-tab", {
+                detail: { tab: "subscription" },
+              })
+            );
+          }, 0);
+        }}
+      />
+
+      <SubscriptionFeatureNotice
+        open={Boolean(featureAccessNotice)}
+        featureLabel={featureAccessNotice?.featureLabel || "Subscription feature"}
+        minimumPlanLabel={featureAccessNotice?.minimumPlanLabel || "an eligible plan"}
+        actionLabel={featureAccessNotice?.actionLabel || "Use this feature"}
+        message={featureAccessNotice?.message || ""}
+        supportingText={featureAccessNotice?.supportingText || ""}
+        onClose={() => setFeatureAccessNotice(null)}
+        onViewPlans={() => {
+          setFeatureAccessNotice(null);
+          setActiveTab("settings");
+          window.setTimeout(() => {
+            window.dispatchEvent(
+              new CustomEvent("cn:settings-tab", {
+                detail: { tab: "subscription" },
+              })
+            );
+          }, 0);
+        }}
+      />
+
+      <TrialExpirationNotice
+        onViewPlans={() => {
+          setActiveTab("settings");
+          window.setTimeout(() => {
+            window.dispatchEvent(
+              new CustomEvent("cn:settings-tab", {
+                detail: { tab: "subscription" },
+              })
+            );
+          }, 0);
+        }}
+      />
 
       <OnboardingCoach pageKey={activeTab} enabled={prefs.guideEnabled !== false} />
     </ConfirmProvider>

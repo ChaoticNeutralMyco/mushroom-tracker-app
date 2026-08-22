@@ -1,14 +1,31 @@
 // src/pages/Settings.jsx
-// environment-v54-global-stage-targets
-// Restored original Settings with your preferences logic; adds Labels tab,
-// "Delete Grow Data Only", a safer Delete All flow with backup + type-to-confirm,
-// and a desktop-only "Check for updates" button in the Advanced tab.
+// settings-v58-consolidated-control-center
+// Centralizes active account, appearance, accessibility, workflow, reminder,
+// environment, data-safety, label-default, and desktop update controls.
 
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import SubscriptionPage from "./SubscriptionPage.jsx";
 import { auth, db } from "../firebase-config";
-import { doc, getDoc, setDoc, collection, getDocs } from "firebase/firestore";
+import { doc, getDoc, setDoc } from "firebase/firestore";
 import { deleteAllUserData, clearAllLocalCaches, deleteGrowDataOnly } from "../lib/delete-all";
+import {
+  buildUserDataBackup,
+  importUserDataBackup,
+  normalizeBackupPayload,
+} from "../lib/user-data-backup";
 import { useConfirm } from "../components/ui/ConfirmDialog";
+import {
+  getNotificationPermission,
+  requestNotificationPermission,
+} from "../lib/reminder-utils";
+import { TOUR_CONTROL_EVENT } from "../utils/tourSteps";
+import {
+  DEFAULT_ACCENT,
+  DEFAULT_APP_PREFERENCES,
+  SUPPORTED_ACCENTS,
+  getPreferenceDomClasses,
+  normalizeAppPreferences,
+} from "../lib/app-preferences";
 import {
   DEFAULT_ENVIRONMENT_TARGETS,
   ENVIRONMENT_TARGET_STAGES,
@@ -35,28 +52,35 @@ const MODES = [
   { id: "dark", label: "Dark" },
 ];
 
-const DEFAULT_ACCENT = "emerald";
-const DEFAULT_THEME_STYLE = "chaotic";
-
 const TABS = [
   { id: "general", label: "General" },
+  { id: "subscription", label: "Subscription" },
   { id: "labels", label: "Labels" },
   { id: "data", label: "Data" },
   { id: "adv", label: "Advanced" },
 ];
 
-const defaultPrefs = {
-  mode: "system",
-  accent: DEFAULT_ACCENT,
-  themeStyle: DEFAULT_THEME_STYLE, // "default" | "chaotic"
-  stageReminders: false,
-  taskDigestTime: "09:00",
-  stageMaxDays: { Inoculated: 0, Fruiting: 0 },
-  temperatureUnit: "F",
-  autoConvertEnvNotes: true,
-  environmentTargets: normalizeEnvironmentTargets(),
-  guideEnabled: true,
-};
+const defaultPrefs = normalizeAppPreferences(DEFAULT_APP_PREFERENCES, {
+  systemDark: false,
+});
+
+
+function getRequestedSettingsTab() {
+  try {
+    const requested = new URLSearchParams(window.location.search || "").get(
+      "settingsTab"
+    );
+    return TABS.some((tab) => tab.id === requested) ? requested : "general";
+  } catch {
+    return "general";
+  }
+}
+
+const FONT_SCALE_OPTIONS = [
+  { id: "small", label: "Standard" },
+  { id: "medium", label: "Medium" },
+  { id: "large", label: "Large" },
+];
 
 // LocalStorage keys used by LabelPrint.jsx
 const LS_LABEL_TEMPLATE = "labels.template"; // "5160" | "5167"
@@ -65,33 +89,35 @@ const LS_LABEL_GRID = "labels.gridOverlay"; // "1" | "0"
 const LS_WM_ENABLED = "labels.watermark.enabled"; // "1" | "0"
 const LS_WM_URL = "labels.watermark.url"; // string
 
-function applyThemeDOM(prefs) {
-  const root = document.documentElement;
-  const mq = window.matchMedia?.("(prefers-color-scheme: dark)");
-  const isSystemDark = mq ? mq.matches : false;
-  const dark = prefs.mode === "dark" || (prefs.mode === "system" && isSystemDark);
-  root.classList.toggle("dark", !!dark);
-  [
-    "theme-emerald",
-    "theme-violet",
-    "theme-amber",
-    "theme-rose",
-    "theme-slate",
-    "theme-teal",
-    "theme-indigo",
-    "theme-sky",
-    "theme-chaotic",
-  ].forEach((c) => root.classList.remove(c));
-  root.classList.add(`theme-${prefs.accent || DEFAULT_ACCENT}`);
+function getSystemDark() {
+  return !!window.matchMedia?.("(prefers-color-scheme: dark)")?.matches;
 }
 
-function syncThemeStyle(style) {
-  const enable = style === "chaotic";
+function applyThemeDOM(input) {
+  const prefs = normalizeAppPreferences(input, { systemDark: getSystemDark() });
+  const classes = getPreferenceDomClasses(prefs, { systemDark: getSystemDark() });
   const root = document.documentElement;
-  root.classList.toggle("bg-chaotic", enable);
+
+  SUPPORTED_ACCENTS.forEach((accent) => root.classList.remove(`theme-${accent}`));
+  root.classList.add(`theme-${prefs.accent || DEFAULT_ACCENT}`);
+  root.classList.toggle("dark", classes.dark);
+  root.classList.toggle("bg-chaotic", classes.chaotic);
+  root.classList.toggle("compact", classes.compact);
+  root.classList.toggle("reduce-motion", classes.reduceMotion);
+  root.classList.toggle("font-dyslexia", classes.dyslexiaFont);
+  root.classList.toggle("high-contrast", classes.highContrast);
+  root.classList.toggle("large-taps", classes.largeTaps);
+
+  ["small", "medium", "large"].forEach((scale) =>
+    root.classList.remove(`font-scale-${scale}`)
+  );
+  root.classList.add(`font-scale-${classes.fontScale}`);
+
   try {
-    localStorage.setItem("cn_theme_style", enable ? "chaotic" : "default");
+    localStorage.setItem("cn_theme_style", prefs.themeStyle);
   } catch {}
+
+  return prefs;
 }
 
 export default function Settings({
@@ -100,8 +126,9 @@ export default function Settings({
   onExportJSON, // if provided, used for backup download
   onImportJSON,
   onClearAllData,
+  activeGrowCount = 0,
 }) {
-  const [activeTab, setActiveTab] = useState("general");
+  const [activeTab, setActiveTab] = useState(getRequestedSettingsTab);
   const [prefs, setPrefs] = useState(defaultPrefs);
   const [environmentTargetStage, setEnvironmentTargetStage] = useState("Fruiting");
   const [environmentTargetsDraft, setEnvironmentTargetsDraft] = useState(() =>
@@ -111,6 +138,11 @@ export default function Settings({
   const [notice, setNotice] = useState(null);
   const uid = auth.currentUser?.uid || null;
   const confirm = useConfirm();
+  const importInputRef = useRef(null);
+  const [dataProgress, setDataProgress] = useState("");
+  const [notificationPermission, setNotificationPermission] = useState(() =>
+    getNotificationPermission()
+  );
 
   const noticeToneClass = useMemo(() => ({
     success: "border border-[rgba(var(--_accent-rgb),0.35)] bg-[rgba(var(--_accent-rgb),0.10)] text-zinc-900 dark:text-zinc-100",
@@ -167,27 +199,35 @@ export default function Settings({
   useEffect(() => {
     let isMounted = true;
     (async () => {
-      let next = defaultPrefs;
+      let rawNext = defaultPrefs;
 
       if (externalPrefs) {
-        next = { ...defaultPrefs, ...externalPrefs };
+        rawNext = { ...defaultPrefs, ...externalPrefs };
       } else if (!uid) {
         try {
           const ls = localStorage.getItem("preferences");
-          if (ls) next = { ...defaultPrefs, ...JSON.parse(ls) };
+          if (ls) rawNext = { ...defaultPrefs, ...JSON.parse(ls) };
         } catch {}
       } else {
         const ref = doc(db, "users", uid, "settings", "preferences");
         const snap = await getDoc(ref);
-        next = snap.exists() ? { ...defaultPrefs, ...snap.data() } : defaultPrefs;
-        if (!snap.exists()) await setDoc(ref, next, { merge: true });
+        rawNext = snap.exists() ? { ...defaultPrefs, ...snap.data() } : defaultPrefs;
       }
 
-      // Theme style local override
-      try {
-        const localStyle = localStorage.getItem("cn_theme_style");
-        if (localStyle) next = { ...next, themeStyle: localStyle };
-      } catch {}
+      if (!rawNext.themeStyle) {
+        try {
+          rawNext = {
+            ...rawNext,
+            themeStyle:
+              localStorage.getItem("cn_theme_style") ||
+              DEFAULT_APP_PREFERENCES.themeStyle,
+          };
+        } catch {}
+      }
+
+      const next = normalizeAppPreferences(rawNext, {
+        systemDark: getSystemDark(),
+      });
 
       // If Firestore has labels, mirror them locally
       const labels = (next && next.labels) || {};
@@ -199,18 +239,10 @@ export default function Settings({
         if (typeof labels.watermarkUrl === "string") setWmUrl(labels.watermarkUrl || "");
       }
 
-      next = {
-        ...next,
-        environmentTargets: normalizeEnvironmentTargets(
-          next?.environmentTargets || {}
-        ),
-      };
-
       if (isMounted) {
         setPrefs(next);
         setEnvironmentTargetsDraft(next.environmentTargets);
         applyThemeDOM(next);
-        syncThemeStyle(next.themeStyle);
       }
     })();
     return () => {
@@ -223,6 +255,49 @@ export default function Settings({
       normalizeEnvironmentTargets(prefs?.environmentTargets || {})
     );
   }, [prefs?.environmentTargets]);
+
+  useEffect(() => {
+    const syncSettingsTabFromLocation = () => {
+      const requestedTab = getRequestedSettingsTab();
+      if (requestedTab !== "general" || window.location.search.includes("settingsTab=")) {
+        setActiveTab(requestedTab);
+      }
+    };
+
+    window.addEventListener("popstate", syncSettingsTabFromLocation);
+    syncSettingsTabFromLocation();
+
+    return () =>
+      window.removeEventListener("popstate", syncSettingsTabFromLocation);
+  }, []);
+
+  useEffect(() => {
+    const handleSettingsTabRequest = (event) => {
+      const requestedTab =
+        typeof event?.detail === "string"
+          ? event.detail
+          : event?.detail?.tab;
+
+      if (TABS.some((tab) => tab.id === requestedTab)) {
+        setActiveTab(requestedTab);
+      }
+    };
+
+    window.addEventListener("cn:settings-tab", handleSettingsTabRequest);
+    return () =>
+      window.removeEventListener("cn:settings-tab", handleSettingsTabRequest);
+  }, []);
+
+  useEffect(() => {
+    const syncPermission = () => setNotificationPermission(getNotificationPermission());
+    syncPermission();
+    document.addEventListener("visibilitychange", syncPermission);
+    window.addEventListener("focus", syncPermission);
+    return () => {
+      document.removeEventListener("visibilitychange", syncPermission);
+      window.removeEventListener("focus", syncPermission);
+    };
+  }, []);
 
   // ---- Persist Labels to localStorage immediately on change ----
   useEffect(() => {
@@ -251,44 +326,35 @@ export default function Settings({
     } catch {}
   }, [wmUrl]);
 
-  // ---- Save core prefs (theme, units, etc.) ----
+  // ---- Save active app preferences ----
   const savePrefs = useCallback(
     async (next) => {
-      const normalizedNext = {
-        ...next,
-        environmentTargets: normalizeEnvironmentTargets(
-          next?.environmentTargets || {}
-        ),
-      };
+      const normalizedNext = normalizeAppPreferences(
+        { ...prefs, ...next },
+        { systemDark: getSystemDark() }
+      );
       setPrefs(normalizedNext);
+      applyThemeDOM(normalizedNext);
       try {
         localStorage.setItem("preferences", JSON.stringify(normalizedNext));
         localStorage.setItem(
           "cn_last_accent",
           normalizedNext.accent || DEFAULT_ACCENT
         );
-        localStorage.setItem(
-          "cn_theme_style",
-          normalizedNext.themeStyle === "default"
-            ? "default"
-            : DEFAULT_THEME_STYLE
-        );
+        localStorage.setItem("cn_theme_style", normalizedNext.themeStyle);
       } catch {}
       if (onSavePreferences) {
         await onSavePreferences(normalizedNext);
-      } else {
-        applyThemeDOM(normalizedNext);
-        syncThemeStyle(normalizedNext.themeStyle);
-        if (uid) {
-          await setDoc(
-            doc(db, "users", uid, "settings", "preferences"),
-            normalizedNext,
-            { merge: true }
-          );
-        }
+      } else if (uid) {
+        await setDoc(
+          doc(db, "users", uid, "settings", "preferences"),
+          normalizedNext,
+          { merge: true }
+        );
       }
+      return normalizedNext;
     },
-    [onSavePreferences, uid]
+    [onSavePreferences, prefs, uid]
   );
 
   const setMode = (modeId) => savePrefs({ ...prefs, mode: modeId });
@@ -301,22 +367,28 @@ export default function Settings({
     savePrefs({ ...prefs, accent: id });
   };
   const setThemeStyle = (styleId) => {
-    let style = styleId === "chaotic" ? "chaotic" : "default";
+    const style = styleId === "chaotic" ? "chaotic" : "default";
     if (style === "default") {
       try {
         const last = localStorage.getItem("cn_last_accent");
         if (last && last !== prefs.accent) {
-          savePrefs({ ...prefs, themeStyle: style, accent: last });
+          savePrefs({ themeStyle: style, accent: last });
           return;
         }
       } catch {}
     }
-    savePrefs({ ...prefs, themeStyle: style });
+    savePrefs({ themeStyle: style });
   };
 
+  const setFontScale = (fontScale) => savePrefs({ fontScale });
+  const setBooleanPreference = (key, enabled) =>
+    savePrefs({ [key]: !!enabled });
+  const setSplashDuration = (value) =>
+    savePrefs({ splashMinMs: Math.max(0, Number(value) || 0) });
+
   // Units
-  const setTempUnit = (u) => savePrefs({ ...prefs, temperatureUnit: u === "C" ? "C" : "F" });
-  const setAutoConvert = (en) => savePrefs({ ...prefs, autoConvertEnvNotes: !!en });
+  const setTempUnit = (u) => savePrefs({ temperatureUnit: u === "C" ? "C" : "F" });
+  const setAutoConvert = (en) => savePrefs({ autoConvertEnvNotes: !!en });
 
   const selectedEnvironmentTarget =
     environmentTargetsDraft?.[environmentTargetStage] ||
@@ -401,7 +473,7 @@ export default function Settings({
       return;
     }
 
-    await savePrefs({ ...prefs, environmentTargets: normalized });
+    await savePrefs({ environmentTargets: normalized });
     setEnvironmentTargetsDraft(normalized);
     pushNotice("Environment targets saved.", "success");
   };
@@ -417,58 +489,195 @@ export default function Settings({
   };
 
   // Reminders
-  const setRemindersEnabled = (en) => savePrefs({ ...prefs, stageReminders: !!en });
-  const setDigestTime = (hhmm) => savePrefs({ ...prefs, taskDigestTime: hhmm || "09:00" });
+  const setTaskRemindersEnabled = (enabled) =>
+    savePrefs({ taskReminders: !!enabled });
+  const setStageRemindersEnabled = (enabled) =>
+    savePrefs({ stageReminders: !!enabled });
+  const setStageReminderTime = (hhmm) =>
+    savePrefs({ stageReminderTime: hhmm || "09:00" });
   const setStageDays = (stage, days) => {
     const n = Math.max(0, Number(days) || 0);
-    savePrefs({ ...prefs, stageMaxDays: { ...(prefs.stageMaxDays || {}), [stage]: n } });
+    savePrefs({
+      stageMaxDays: { ...(prefs.stageMaxDays || {}), [stage]: n },
+    });
   };
   const clearFired = () => {
     try {
       localStorage.removeItem("remindersFired_v1");
-    } catch {}
+      pushNotice("Stage reminder history cleared on this device.", "success");
+    } catch {
+      pushNotice("Could not clear stage reminder history.", "warning");
+    }
+  };
+  const enableBrowserNotifications = async () => {
+    const result = await requestNotificationPermission();
+    setNotificationPermission(result);
+
+    if (result === "granted") {
+      pushNotice("Browser notifications enabled on this device.", "success");
+    } else if (result === "denied") {
+      pushNotice(
+        "Notifications are blocked in this browser or device settings. In-app reminders will still appear while the app is open.",
+        "warning"
+      );
+    } else if (result === "unsupported") {
+      pushNotice(
+        "Browser notifications are not available here. In-app reminders will still appear while the app is open.",
+        "info"
+      );
+    }
   };
   const sendTest = () => {
     window.dispatchEvent(
       new CustomEvent("cn-test-reminder", {
-        detail: { title: "CNM — test reminder", body: "If you can see this, reminders can display on this device." },
+        detail: {
+          title: "CNM — test reminder",
+          body: "If you can see this, reminders can display on this device.",
+        },
       })
     );
   };
-  const setGuideEnabled = (enabled) => savePrefs({ ...prefs, guideEnabled: !!enabled });
-
-  // ---- Backup JSON (used if onExportJSON not provided) ----
-  const generateBackupJSON = useCallback(async () => {
-    if (!uid) throw new Error("Not signed in.");
-    const data = {};
-    const subs = [
-      "grows",
-      "recipes",
-      "supplies",
-      "tasks",
-      "timeline",
-      "analytics",
-      "events",
-      "notes",
-      "images",
-      "labels",
-      "strains",
-      "audit",
-      "logs",
-      "settings",
-    ];
-    for (const sub of subs) {
-      const snap = await getDocs(collection(db, "users", uid, sub));
-      data[sub] = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+  const setGuideEnabled = (enabled) => savePrefs({ guideEnabled: !!enabled });
+  const sendTourControl = (action) => {
+    if (prefs.guideEnabled === false) {
+      pushNotice("Turn guided tours on before replaying or resetting them.", "info");
+      return;
     }
-    const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
+
+    window.dispatchEvent(
+      new CustomEvent(TOUR_CONTROL_EVENT, {
+        detail: { action, routeKey: "settings" },
+      })
+    );
+
+    pushNotice(
+      action === "reset-all"
+        ? "All page tours were reset. Each page will guide you again on its next visit."
+        : "Replaying the Settings guide.",
+      "success"
+    );
+  };
+
+  // ---- JSON export/import ----
+  const downloadBackup = useCallback((backup) => {
+    const blob = new Blob([JSON.stringify(backup, null, 2)], {
+      type: "application/json",
+    });
     const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `myco-backup-${new Date().toISOString().slice(0, 10)}.json`;
-    a.click();
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = `cnm-user-backup-${new Date().toISOString().slice(0, 10)}.json`;
+    document.body.appendChild(anchor);
+    anchor.click();
+    anchor.remove();
     URL.revokeObjectURL(url);
-  }, [uid]);
+  }, []);
+
+  const handleExportJSON = useCallback(async () => {
+    if (!uid) {
+      pushNotice("You must be signed in to export your data.", "warning");
+      return;
+    }
+
+    setBusy(true);
+    setDataProgress("Preparing backup…");
+    try {
+      if (typeof onExportJSON === "function") {
+        await onExportJSON();
+        pushNotice("Backup download started.", "success");
+        return;
+      }
+
+      const backup = await buildUserDataBackup({
+        db,
+        uid,
+        localStorage,
+        progress: setDataProgress,
+      });
+      downloadBackup(backup);
+      pushNotice(
+        `Backup downloaded with ${backup.summary.totalDocumentCount} records. Uploaded image files are not embedded in the JSON file.`,
+        "success"
+      );
+    } catch (error) {
+      console.error("Backup export failed:", error);
+      pushNotice("Backup failed. No data was changed.", "error");
+    } finally {
+      setBusy(false);
+      setDataProgress("");
+    }
+  }, [downloadBackup, onExportJSON, pushNotice, uid]);
+
+  const handleImportSelected = useCallback(
+    async (event) => {
+      const input = event.currentTarget;
+      const file = input.files?.[0];
+      input.value = "";
+      if (!file) return;
+
+      if (!uid) {
+        pushNotice("You must be signed in to import a backup.", "warning");
+        return;
+      }
+
+      try {
+        if (typeof onImportJSON === "function") {
+          await onImportJSON(file);
+          pushNotice("Import completed.", "success");
+          return;
+        }
+
+        const payload = JSON.parse(await file.text());
+        const preview = normalizeBackupPayload(payload);
+        if (preview.summary.totalDocumentCount === 0) {
+          pushNotice("That backup does not contain any supported app records.", "warning");
+          return;
+        }
+
+        const ok = await confirm({
+          title: "Import backup?",
+          message:
+            `This will merge ${preview.summary.totalDocumentCount} records into the signed-in account. ` +
+            "Records with matching IDs will be updated; unrelated current records will remain. " +
+            "JSON backups contain photo metadata but do not contain the uploaded image files themselves.",
+          confirmLabel: "Import backup",
+          cancelLabel: "Cancel",
+          tone: "warning",
+        });
+        if (!ok) return;
+
+        setBusy(true);
+        setDataProgress("Preparing import…");
+        const result = await importUserDataBackup({
+          db,
+          uid,
+          payload,
+          localStorage,
+          progress: setDataProgress,
+        });
+
+        const skipped = result.skippedCollections.length
+          ? ` Unsupported collections skipped: ${result.skippedCollections.join(", ")}.`
+          : "";
+        pushNotice(
+          `Imported ${result.restoredDocuments} records. Refresh the app to reload restored data.${skipped}`,
+          result.skippedCollections.length ? "warning" : "success"
+        );
+      } catch (error) {
+        console.error("Backup import failed:", error);
+        pushNotice(
+          error instanceof SyntaxError
+            ? "Import failed because the selected file is not valid JSON."
+            : `Import failed: ${error?.message || "The backup could not be restored."}`,
+          "error"
+        );
+      } finally {
+        setBusy(false);
+        setDataProgress("");
+      }
+    },
+    [confirm, onImportJSON, pushNotice, uid]
+  );
 
   // ---- Danger-zone helpers ----
   async function handleClearLocal() {
@@ -495,7 +704,7 @@ export default function Settings({
     const ok = await confirm({
       title: "Delete grow data only?",
       message:
-        "Delete ONLY grow data (grows, tasks, timeline, analytics, events, notes, images)? Recipes and supplies will remain.",
+        "Delete grow records, tasks, notes, photo metadata/files, cleanup queue items, and post-processing history? Recipes, supplies, strains, and settings will remain.",
       confirmLabel: "Delete grow data",
       cancelLabel: "Cancel",
       tone: "danger",
@@ -504,7 +713,10 @@ export default function Settings({
     setBusy(true);
     try {
       const res = await deleteGrowDataOnly();
-      pushNotice(`Grow data deleted. Firestore docs removed: ${res.deleted}`, "success");
+      pushNotice(
+        `Grow data deleted. Firestore docs removed: ${res.deleted}. Storage files removed: ${res.deletedFiles || 0}.`,
+        "success"
+      );
     } catch (e) {
       console.error(e);
       pushNotice("Failed to delete grow data.", "error");
@@ -577,10 +789,60 @@ export default function Settings({
   };
 
   // Derived for reminders UI
-  const remindersOn = !!prefs.stageReminders;
-  const digestTime = String(prefs.taskDigestTime || "09:00");
+  const taskRemindersOn = prefs.taskReminders !== false;
+  const stageRemindersOn = !!prefs.stageReminders;
+  const stageReminderTime = String(prefs.stageReminderTime || "09:00");
   const daysInoc = Number(prefs.stageMaxDays?.Inoculated || 0);
   const daysFruit = Number(prefs.stageMaxDays?.Fruiting || 0);
+  const notificationStatusLabel =
+    notificationPermission === "granted"
+      ? "Browser notifications enabled"
+      : notificationPermission === "denied"
+        ? "Blocked by browser or device settings"
+        : notificationPermission === "unsupported"
+          ? "Browser notifications unavailable; in-app alerts will be used"
+          : "Browser notification permission not requested";
+
+  const currentUser = auth.currentUser;
+  const accountEmail = currentUser?.email || "Signed-in account";
+  const providerLabel = Array.from(
+    new Set(
+      (currentUser?.providerData || [])
+        .map((provider) => provider?.providerId)
+        .filter(Boolean)
+    )
+  )
+    .map((providerId) =>
+      providerId === "password"
+        ? "Email and password"
+        : providerId === "google.com"
+          ? "Google"
+          : providerId
+    )
+    .join(", ") || "Firebase Authentication";
+
+  const resetAppPreferences = async () => {
+    const ok = await confirm({
+      title: "Reset app preferences?",
+      message:
+        "This resets appearance, accessibility, startup, reminder, environment, and tour preferences. Your grows, inventory, tasks, photos, and label defaults are not deleted.",
+      confirmLabel: "Reset preferences",
+      cancelLabel: "Cancel",
+      tone: "warning",
+    });
+    if (!ok) return;
+
+    const reset = normalizeAppPreferences(
+      {
+        ...DEFAULT_APP_PREFERENCES,
+        ...(prefs.labels ? { labels: prefs.labels } : {}),
+      },
+      { systemDark: getSystemDark() }
+    );
+    await savePrefs(reset);
+    setEnvironmentTargetsDraft(reset.environmentTargets);
+    pushNotice("App preferences reset to defaults.", "success");
+  };
 
   // Save Label Defaults → mirror labels to preferences.labels in Firestore
   const saveLabelDefaults = async () => {
@@ -639,6 +901,39 @@ export default function Settings({
       {/* GENERAL */}
       {activeTab === "general" && (
         <section role="tabpanel" aria-label="General settings" className="space-y-8">
+          <div
+            data-testid="settings-account-summary"
+            className="rounded-2xl border border-zinc-200 dark:border-zinc-800 bg-zinc-50/70 dark:bg-zinc-950/30 p-4"
+          >
+            <h2 className="text-lg font-medium mb-3">Account &amp; Sync</h2>
+            <dl className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-sm">
+              <div>
+                <dt className="text-slate-500 dark:text-slate-400">Signed in as</dt>
+                <dd className="font-medium break-all">{accountEmail}</dd>
+              </div>
+              <div>
+                <dt className="text-slate-500 dark:text-slate-400">Sign-in method</dt>
+                <dd className="font-medium">{providerLabel}</dd>
+              </div>
+              <div>
+                <dt className="text-slate-500 dark:text-slate-400">Email status</dt>
+                <dd className="font-medium">
+                  {currentUser?.email
+                    ? currentUser.emailVerified
+                      ? "Verified"
+                      : "Not verified"
+                    : "Not provided"}
+                </dd>
+              </div>
+              <div>
+                <dt className="text-slate-500 dark:text-slate-400">Preference storage</dt>
+                <dd className="font-medium">
+                  {uid ? "Synced to this account and cached on this device" : "Stored on this device"}
+                </dd>
+              </div>
+            </dl>
+          </div>
+
           <div>
             <h2 className="text-lg font-medium mb-3">Theme Mode</h2>
             <div className="flex flex-wrap gap-2">
@@ -699,8 +994,79 @@ export default function Settings({
             </p>
           </div>
 
+          <div data-testid="settings-accessibility-controls">
+            <h2 className="text-lg font-medium mb-3">Accessibility &amp; Layout</h2>
+            <div className="space-y-4 rounded-xl border border-zinc-200 dark:border-zinc-800 p-4">
+              <div>
+                <div className="text-sm font-medium mb-2">Text size</div>
+                <div className="flex flex-wrap gap-2">
+                  {FONT_SCALE_OPTIONS.map((option) => (
+                    <button
+                      key={option.id}
+                      type="button"
+                      className={`chip ${prefs.fontScale === option.id ? "chip--active" : ""}`}
+                      onClick={() => setFontScale(option.id)}
+                    >
+                      {option.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                {[
+                  {
+                    key: "dyslexiaFont",
+                    label: "Reading-friendly font spacing",
+                    help: "Uses a clearer system font stack with wider letter and line spacing.",
+                  },
+                  {
+                    key: "reduceMotion",
+                    label: "Reduce motion",
+                    help: "Disables nonessential animations and transitions.",
+                  },
+                  {
+                    key: "compactUI",
+                    label: "Compact layout",
+                    help: "Reduces common control and panel spacing.",
+                  },
+                  {
+                    key: "highContrast",
+                    label: "Higher contrast",
+                    help: "Strengthens borders and surface separation.",
+                  },
+                  {
+                    key: "largeTaps",
+                    label: "Larger tap targets",
+                    help: "Increases the minimum size of buttons and form controls.",
+                  },
+                ].map((option) => (
+                  <label
+                    key={option.key}
+                    className="flex items-start gap-3 rounded-xl border border-zinc-200 dark:border-zinc-800 p-3"
+                  >
+                    <input
+                      type="checkbox"
+                      className="mt-1 h-4 w-4"
+                      checked={!!prefs[option.key]}
+                      onChange={(event) =>
+                        setBooleanPreference(option.key, event.target.checked)
+                      }
+                    />
+                    <span>
+                      <span className="block text-sm font-medium">{option.label}</span>
+                      <span className="block text-xs text-slate-500 dark:text-slate-400 mt-1">
+                        {option.help}
+                      </span>
+                    </span>
+                  </label>
+                ))}
+              </div>
+            </div>
+          </div>
+
           {/* Guide toggle */}
-          <div>
+          <div data-tour="guide-controls">
             <h2 className="text-lg font-medium mb-3">Guided tour &amp; Help menu</h2>
             <div className="flex flex-wrap items-center gap-2">
               <button
@@ -716,13 +1082,101 @@ export default function Settings({
                 Off
               </button>
             </div>
+            <div className="mt-3 flex flex-wrap gap-2">
+              <button
+                type="button"
+                className="chip"
+                onClick={() => sendTourControl("replay")}
+                disabled={prefs.guideEnabled === false}
+              >
+                Replay Settings guide
+              </button>
+              <button
+                type="button"
+                className="chip"
+                onClick={() => sendTourControl("reset-all")}
+                disabled={prefs.guideEnabled === false}
+              >
+                Restart all page tours
+              </button>
+            </div>
             <p className="text-sm text-slate-500 dark:text-slate-400 mt-2">
-              When Off, the bottom-left help button is hidden and onboarding will not auto-open.
+              When Off, the bottom-left help button is hidden and page tours do not auto-open.
             </p>
           </div>
 
+          <div data-testid="settings-startup-workflow">
+            <h2 className="text-lg font-medium mb-3">Startup &amp; Workflow</h2>
+            <div className="space-y-4 rounded-xl border border-zinc-200 dark:border-zinc-800 p-4">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div>
+                  <div className="text-sm font-medium">Startup splash screen</div>
+                  <div className="text-xs text-slate-500 dark:text-slate-400">
+                    Show the branded loading screen while account preferences and live data connect.
+                  </div>
+                </div>
+                <div className="flex gap-2">
+                  <button
+                    type="button"
+                    className={`chip ${prefs.showSplashOnLoad ? "chip--active" : ""}`}
+                    onClick={() => setBooleanPreference("showSplashOnLoad", true)}
+                  >
+                    On
+                  </button>
+                  <button
+                    type="button"
+                    className={`chip ${!prefs.showSplashOnLoad ? "chip--active" : ""}`}
+                    onClick={() => setBooleanPreference("showSplashOnLoad", false)}
+                  >
+                    Off
+                  </button>
+                </div>
+              </div>
+
+              {prefs.showSplashOnLoad ? (
+                <label className="flex flex-wrap items-center gap-3 text-sm">
+                  <span className="text-slate-600 dark:text-slate-300">Minimum splash duration</span>
+                  <select
+                    value={String(prefs.splashMinMs || 1200)}
+                    onChange={(event) => setSplashDuration(event.target.value)}
+                    className="rounded-lg border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-900 px-3 py-2 text-sm"
+                  >
+                    <option value="600">0.6 seconds</option>
+                    <option value="1200">1.2 seconds</option>
+                    <option value="2000">2 seconds</option>
+                  </select>
+                </label>
+              ) : null}
+
+              <div className="flex flex-wrap items-center justify-between gap-3 border-t border-zinc-200 dark:border-zinc-800 pt-4">
+                <div>
+                  <div className="text-sm font-medium">Automatically stamp stage dates</div>
+                  <div className="text-xs text-slate-500 dark:text-slate-400">
+                    Records today&apos;s date the first time a grow enters a stage, unless that stage date is locked.
+                  </div>
+                </div>
+                <div className="flex gap-2">
+                  <button
+                    type="button"
+                    className={`chip ${prefs.autoStampStageDates ? "chip--active" : ""}`}
+                    onClick={() => setBooleanPreference("autoStampStageDates", true)}
+                  >
+                    On
+                  </button>
+                  <button
+                    type="button"
+                    className={`chip ${!prefs.autoStampStageDates ? "chip--active" : ""}`}
+                    onClick={() => setBooleanPreference("autoStampStageDates", false)}
+                  >
+                    Off
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+
           {/* Units */}
-          <div>
+          <div data-tour="units-block">
             <h2 className="text-lg font-medium mb-3">Units</h2>
             <div className="flex flex-wrap items-center gap-2">
               <button
@@ -893,74 +1347,145 @@ export default function Settings({
           </div>
 
           {/* Reminders */}
-          <div>
-            <h2 className="text-lg font-medium mb-3">Task Reminders</h2>
-            <p className="text-sm text-slate-500 dark:text-slate-400 mb-3">
-              Local (device-only) reminders for stage windows.
+          <div data-tour="reminders-block">
+            <h2 className="text-lg font-medium mb-2">Reminders</h2>
+            <p className="text-sm text-slate-500 dark:text-slate-400 mb-4">
+              Task and grow-stage reminders run while the app is open. Enable browser notifications for system alerts; otherwise the app uses an in-app reminder.
             </p>
 
-            <div className="flex flex-wrap items-center gap-2 mb-3">
-              <button
-                className={`chip ${!remindersOn ? "chip--active" : ""}`}
-                onClick={() => setRemindersEnabled(false)}
-              >
-                Off
-              </button>
-              <button
-                className={`chip ${remindersOn ? "chip--active" : ""}`}
-                onClick={() => setRemindersEnabled(true)}
-              >
-                On
-              </button>
-              <button className="btn-outline text-xs ml-2" onClick={sendTest}>
-                Send test notification
-              </button>
-            </div>
-
-            <div className="flex flex-wrap items-center gap-3 mb-3">
-              <label className="text-sm text-slate-600 dark:text-slate-300">Daily digest time</label>
-              <input
-                type="time"
-                value={digestTime}
-                onChange={(e) => setDigestTime(e.target.value)}
-                className="rounded-lg border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-900 px-3 py-2 text-sm"
-              />
-            </div>
-
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-              <div className="flex items-center gap-2">
-                <label className="w-36 text-sm text-slate-600 dark:text-slate-300">Inoculated (days)</label>
-                <input
-                  type="number"
-                  min="0"
-                  step="1"
-                  value={Number.isFinite(daysInoc) ? daysInoc : 0}
-                  onChange={(e) => setStageDays("Inoculated", e.target.value)}
-                  className="w-28 rounded-lg border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-900 px-3 py-2 text-sm"
-                />
-              </div>
-              <div className="flex items-center gap-2">
-                <label className="w-36 text-sm text-slate-600 dark:text-slate-300">Fruiting (days)</label>
-                <input
-                  type="number"
-                  min="0"
-                  step="1"
-                  value={Number.isFinite(daysFruit) ? daysFruit : 0}
-                  onChange={(e) => setStageDays("Fruiting", e.target.value)}
-                  className="w-28 rounded-lg border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-900 px-3 py-2 text-sm"
-                />
+            <div className="rounded-xl border border-zinc-200 dark:border-zinc-800 p-3 mb-4">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div>
+                  <div className="text-sm font-medium">Notification permission</div>
+                  <div className="text-xs text-slate-500 dark:text-slate-400">
+                    {notificationStatusLabel}
+                  </div>
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  {notificationPermission === "default" && (
+                    <button
+                      type="button"
+                      className="btn-outline text-xs"
+                      onClick={enableBrowserNotifications}
+                    >
+                      Enable browser notifications
+                    </button>
+                  )}
+                  <button type="button" className="btn-outline text-xs" onClick={sendTest}>
+                    Send test reminder
+                  </button>
+                </div>
               </div>
             </div>
 
-            <div className="mt-3 flex flex-wrap items-center gap-2">
-              <button type="button" className="btn-outline text-xs" onClick={clearFired}>
-                Clear fired reminders
-              </button>
-              <span className="text-xs text-slate-500 dark:text-slate-400">
-                (Only clears local “already notified” memory on this device)
-              </span>
+            <div className="rounded-xl border border-zinc-200 dark:border-zinc-800 p-3 mb-4">
+              <div className="text-sm font-medium mb-1">Task reminders</div>
+              <p className="text-xs text-slate-500 dark:text-slate-400 mb-3">
+                Uses each task's due date and reminder lead time. A task is notified once for its current schedule, including when overdue.
+              </p>
+              <div className="flex flex-wrap items-center gap-2">
+                <button
+                  type="button"
+                  className={`chip ${!taskRemindersOn ? "chip--active" : ""}`}
+                  onClick={() => setTaskRemindersEnabled(false)}
+                >
+                  Off
+                </button>
+                <button
+                  type="button"
+                  className={`chip ${taskRemindersOn ? "chip--active" : ""}`}
+                  onClick={() => setTaskRemindersEnabled(true)}
+                >
+                  On
+                </button>
+              </div>
+            </div>
+
+            <div className="rounded-xl border border-zinc-200 dark:border-zinc-800 p-3">
+              <div className="text-sm font-medium mb-1">Grow-stage window reminders</div>
+              <p className="text-xs text-slate-500 dark:text-slate-400 mb-3">
+                Optional reminders for configured inoculation-check and fruiting-to-harvest windows.
+              </p>
+
+              <div className="flex flex-wrap items-center gap-2 mb-3">
+                <button
+                  type="button"
+                  className={`chip ${!stageRemindersOn ? "chip--active" : ""}`}
+                  onClick={() => setStageRemindersEnabled(false)}
+                >
+                  Off
+                </button>
+                <button
+                  type="button"
+                  className={`chip ${stageRemindersOn ? "chip--active" : ""}`}
+                  onClick={() => setStageRemindersEnabled(true)}
+                >
+                  On
+                </button>
+              </div>
+
+              <div className="flex flex-wrap items-center gap-3 mb-3">
+                <label className="text-sm text-slate-600 dark:text-slate-300">
+                  Stage reminder time
+                </label>
+                <input
+                  type="time"
+                  value={stageReminderTime}
+                  onChange={(event) => setStageReminderTime(event.target.value)}
+                  className="rounded-lg border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-900 px-3 py-2 text-sm"
+                />
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div className="flex items-center gap-2">
+                  <label className="w-36 text-sm text-slate-600 dark:text-slate-300">
+                    Inoculated (days)
+                  </label>
+                  <input
+                    type="number"
+                    min="0"
+                    step="1"
+                    value={Number.isFinite(daysInoc) ? daysInoc : 0}
+                    onChange={(event) => setStageDays("Inoculated", event.target.value)}
+                    className="w-28 rounded-lg border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-900 px-3 py-2 text-sm"
+                  />
+                </div>
+                <div className="flex items-center gap-2">
+                  <label className="w-36 text-sm text-slate-600 dark:text-slate-300">
+                    Fruiting (days)
+                  </label>
+                  <input
+                    type="number"
+                    min="0"
+                    step="1"
+                    value={Number.isFinite(daysFruit) ? daysFruit : 0}
+                    onChange={(event) => setStageDays("Fruiting", event.target.value)}
+                    className="w-28 rounded-lg border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-900 px-3 py-2 text-sm"
+                  />
+                </div>
+              </div>
+
+              <div className="mt-3 flex flex-wrap items-center gap-2">
+                <button type="button" className="btn-outline text-xs" onClick={clearFired}>
+                  Clear stage reminder history
+                </button>
+                <span className="text-xs text-slate-500 dark:text-slate-400">
+                  Clears only this device's grow-stage reminder history.
+                </span>
+              </div>
             </div>
           </div>
+        </section>
+      )}
+
+      {/* SUBSCRIPTION */}
+      {activeTab === "subscription" && (
+        <section
+          role="tabpanel"
+          aria-label="Subscription settings"
+          data-testid="settings-subscription-panel"
+        >
+          <SubscriptionPage activeGrowCount={activeGrowCount} />
         </section>
       )}
 
@@ -1044,20 +1569,70 @@ export default function Settings({
       {/* DATA */}
       {activeTab === "data" && (
         <section role="tabpanel" aria-label="Data settings" className="space-y-6">
-          <div className="flex flex-wrap gap-2">
-            <button type="button" className="btn btn-outline" onClick={onExportJSON}>
-              Export JSON
-            </button>
-            <button type="button" className="btn" onClick={onImportJSON}>
-              Import JSON
-            </button>
-            <button type="button" className="btn-accent" onClick={onExportJSON}>
-              Backup Now
-            </button>
+          <input
+            ref={importInputRef}
+            type="file"
+            accept="application/json,.json"
+            className="hidden"
+            onChange={handleImportSelected}
+          />
+
+          <div data-testid="settings-storage-overview" className="space-y-3">
+            <h2 className="text-lg font-medium">Storage &amp; Persistence</h2>
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+              <div className="rounded-xl border border-zinc-200 dark:border-zinc-800 p-3">
+                <div className="text-sm font-medium">App records</div>
+                <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
+                  Grows, tasks, recipes, inventory, sales history, and preferences are stored in Firestore under your account.
+                </p>
+              </div>
+              <div className="rounded-xl border border-zinc-200 dark:border-zinc-800 p-3">
+                <div className="text-sm font-medium">Uploaded images</div>
+                <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
+                  Grow and strain image files are stored in Firebase Storage with Firestore metadata for traceability.
+                </p>
+              </div>
+              <div className="rounded-xl border border-zinc-200 dark:border-zinc-800 p-3">
+                <div className="text-sm font-medium">This device</div>
+                <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
+                  A local cache keeps preferences and app data responsive. Clearing it does not delete cloud records.
+                </p>
+              </div>
+            </div>
           </div>
-          <p className="text-sm text-slate-500 dark:text-slate-400">
-            Exports and backups include grows, recipes, supplies, tasks, and preferences.
-          </p>
+
+          <div className="space-y-3">
+            <h2 className="text-lg font-medium">Backup and Restore</h2>
+            <div className="flex flex-wrap gap-2">
+              <button
+                type="button"
+                className="btn-accent"
+                onClick={handleExportJSON}
+                disabled={busy}
+              >
+                {busy && dataProgress ? "Working…" : "Download JSON Backup"}
+              </button>
+              <button
+                type="button"
+                className="btn"
+                onClick={() => importInputRef.current?.click()}
+                disabled={busy}
+              >
+                Import JSON Backup
+              </button>
+            </div>
+            {dataProgress ? (
+              <p className="text-sm font-medium text-[rgb(var(--_accent-rgb))]">
+                {dataProgress}
+              </p>
+            ) : null}
+            <p className="text-sm text-slate-500 dark:text-slate-400">
+              The backup includes current grow, recipe, supply, task, photo metadata, strain, storage-location, cleanup, post-processing, sales-history, and settings records. Import uses a safe merge: matching document IDs are updated and unrelated current records remain.
+            </p>
+            <p className="text-sm text-amber-700 dark:text-amber-300">
+              Uploaded image files are stored separately in Firebase Storage and are not embedded in the JSON backup. Subscription and billing data are also excluded.
+            </p>
+          </div>
         </section>
       )}
 
@@ -1104,15 +1679,10 @@ export default function Settings({
               <button
                 type="button"
                 className="btn-outline"
-                onClick={() => {
-                  try {
-                    localStorage.removeItem("preferences");
-                  } catch {}
-                  savePrefs(defaultPrefs);
-                }}
+                onClick={resetAppPreferences}
                 disabled={busy}
               >
-                Reset Theme Preferences
+                Reset App Preferences
               </button>
               <button type="button" className="btn" onClick={handleClearLocal} disabled={busy}>
                 Clear Local Cache
@@ -1129,7 +1699,7 @@ export default function Settings({
               </button>
             </div>
             <p className="text-sm text-slate-500 dark:text-slate-400">
-              Deleting data cannot be undone. Make sure you have an export/backup first.
+              Resetting preferences does not delete records. Data deletion cannot be undone, so download a JSON backup first and separately preserve any uploaded images you need.
             </p>
           </div>
         </section>
@@ -1141,25 +1711,14 @@ export default function Settings({
           <div className="w-full max-w-md rounded-lg bg-white p-6 shadow-lg dark:bg-zinc-900">
             <h3 className="text-lg font-semibold text-rose-600 dark:text-rose-400">Delete ALL Data</h3>
             <p className="mt-2 text-sm text-zinc-700 dark:text-zinc-300">
-              This will permanently delete <strong>all</strong> your data (grows, recipes, supplies, labels, strains,
-              tasks, Storage files, etc.). First, download a backup so you can re-import if needed.
+              This will permanently delete <strong>all</strong> app data and uploaded Storage files. The JSON backup can restore database records, but it does not contain the uploaded image files themselves.
             </p>
 
             <div className="mt-4 flex gap-2">
               <button
                 className="btn-outline text-sm"
-                onClick={async () => {
-                  try {
-                    if (typeof onExportJSON === "function") {
-                      await onExportJSON();
-                    } else {
-                      await generateBackupJSON();
-                    }
-                  } catch (e) {
-                    console.error(e);
-                    pushNotice("Backup failed. Try again.", "error");
-                  }
-                }}
+                onClick={handleExportJSON}
+                disabled={busy}
               >
                 Download Backup
               </button>

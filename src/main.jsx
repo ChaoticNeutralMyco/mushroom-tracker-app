@@ -4,6 +4,7 @@ import ReactDOM from "react-dom/client";
 import { BrowserRouter } from "react-router-dom";
 import App from "./App.jsx";
 import QueryProvider from "./providers/QueryProvider.jsx";
+import { SubscriptionProvider } from "./providers/SubscriptionProvider.jsx";
 import "./index.css";
 
 const rootEl = document.getElementById("root");
@@ -16,7 +17,9 @@ ReactDOM.createRoot(rootEl).render(
   <React.StrictMode>
     <BrowserRouter>
       <QueryProvider>
-        <App />
+        <SubscriptionProvider>
+          <App />
+        </SubscriptionProvider>
       </QueryProvider>
     </BrowserRouter>
   </React.StrictMode>

@@ -1,4 +1,4 @@
-﻿// tests/unit/subscriptionMessaging.test.js
+// tests/unit/subscriptionMessaging.test.js
 
 import { describe, expect, it } from "vitest";
 
@@ -9,6 +9,7 @@ import {
   getLimitReachedMessage,
   getPlanDisplayName,
   getPlanPriceLabel,
+  getTrialNoticeMessage,
   getTrialSummaryMessage,
 } from "../../src/lib/subscriptionMessaging.js";
 
@@ -17,25 +18,31 @@ import {
   SUBSCRIPTION_ENTITLEMENT_STATUSES,
 } from "../../src/lib/subscriptionEntitlements.js";
 
-import { SUBSCRIPTION_PLAN_IDS } from "../../src/lib/subscriptionPlans.js";
+import {
+  SUBSCRIPTION_FEATURE_KEYS,
+  SUBSCRIPTION_PLAN_IDS,
+} from "../../src/lib/subscriptionPlans.js";
 
 describe("subscriptionMessaging pure helpers", () => {
-  it("returns plan names with Free fallback", () => {
-    expect(getPlanDisplayName(SUBSCRIPTION_PLAN_IDS.PRO)).toBe("Pro");
+  it("returns plan names with legacy and Free fallback behavior", () => {
+    expect(getPlanDisplayName(SUBSCRIPTION_PLAN_IDS.CULTIVATOR)).toBe("Cultivator");
+    expect(getPlanDisplayName("pro")).toBe("Cultivator");
     expect(getPlanDisplayName("missing")).toBe("Free");
   });
 
-  it("returns price labels", () => {
+  it("returns honest price labels before paid pricing is approved", () => {
     expect(getPlanPriceLabel(SUBSCRIPTION_PLAN_IDS.FREE)).toBe("$0/mo");
-    expect(getPlanPriceLabel(SUBSCRIPTION_PLAN_IDS.HOBBY)).toBe("$4.99/mo");
+    expect(getPlanPriceLabel(SUBSCRIPTION_PLAN_IDS.HOBBY)).toBe("Pricing TBD");
+    expect(getPlanPriceLabel(SUBSCRIPTION_PLAN_IDS.LAB)).toBe("Pricing TBD");
     expect(getPlanPriceLabel(SUBSCRIPTION_PLAN_IDS.ADMIN)).toBe("Internal");
-    expect(getPlanPriceLabel("missing")).toBe("Unavailable");
   });
 
-  it("returns trial and downgrade safety messages", () => {
-    expect(getTrialSummaryMessage()).toContain("7-day full-access trial");
+  it("summarizes the approved trial and downgrade rules", () => {
+    expect(getTrialSummaryMessage()).toContain("14-day Lab trial");
+    expect(getTrialSummaryMessage()).toContain("7 days remaining");
     expect(getDowngradeSafetyMessage()).toContain("Your data is safe");
     expect(getDowngradeSafetyMessage()).toContain("read-only");
+    expect(getDowngradeSafetyMessage()).toContain("safety actions");
   });
 
   it("summarizes default entitlement as Free", () => {
@@ -44,41 +51,56 @@ describe("subscriptionMessaging pure helpers", () => {
     );
   });
 
-  it("summarizes trial entitlement specially", () => {
+  it("summarizes trial entitlement as Lab access", () => {
     expect(
       getEntitlementSummaryMessage({
-        planId: SUBSCRIPTION_PLAN_IDS.PRO,
+        planId: SUBSCRIPTION_PLAN_IDS.TRIAL,
         status: SUBSCRIPTION_ENTITLEMENT_STATUSES.TRIALING,
         source: SUBSCRIPTION_ENTITLEMENT_SOURCES.TRIAL,
       })
-    ).toBe("Current plan: Pro trial. Trial access is active.");
+    ).toBe("Current plan: Trial. Lab trial access is active.");
   });
 
-  it("creates limit reached messages", () => {
+  it("creates active-grow limit messages", () => {
     expect(
       getLimitReachedMessage({
         planId: SUBSCRIPTION_PLAN_IDS.FREE,
         limitName: "activeGrows",
-        limitValue: 5,
+        limitValue: 6,
       })
-    ).toBe("Free includes 5 active grows. Upgrade later to unlock more capacity.");
+    ).toBe(
+      "Free includes 6 active grows. Complete or archive an existing item, or upgrade to add another."
+    );
 
     expect(
       getLimitReachedMessage({
         planId: SUBSCRIPTION_PLAN_IDS.CULTIVATOR,
-        limitName: "recipes",
+        limitName: "activeGrows",
         limitValue: null,
       })
-    ).toBe("Cultivator includes unlimited recipes.");
+    ).toBe("Cultivator includes unlimited active grows.");
   });
 
-  it("creates feature preview messages", () => {
+  it("creates feature messages from the configuration matrix", () => {
     expect(
       getFeaturePreviewMessage({
         planId: SUBSCRIPTION_PLAN_IDS.FREE,
-        featureName: "fullCogBreakdown",
-        requiredPlanId: SUBSCRIPTION_PLAN_IDS.CULTIVATOR,
+        featureName: SUBSCRIPTION_FEATURE_KEYS.SOP_WORKFLOWS,
       })
-    ).toBe("full cog breakdown is planned for Cultivator. Your current plan is Free.");
+    ).toBe("SOP workflows is included with Cultivator. Your current plan is Free.");
+
+    expect(
+      getFeaturePreviewMessage({
+        planId: SUBSCRIPTION_PLAN_IDS.CULTIVATOR,
+        featureName: SUBSCRIPTION_FEATURE_KEYS.POST_PROCESS_LABELS,
+      })
+    ).toBe("Post Processing labels is included with Lab. Your current plan is Cultivator.");
+  });
+
+  it("creates warning, ends-today, and expiration notices", () => {
+    expect(getTrialNoticeMessage({ phase: "warning", daysRemaining: 7 })).toContain("7 days remaining");
+    expect(getTrialNoticeMessage({ phase: "ends_today", daysRemaining: 1 })).toContain("ends today");
+    expect(getTrialNoticeMessage({ phase: "expired", daysRemaining: 0 })).toContain("existing data remains safe");
+    expect(getTrialNoticeMessage({ phase: "none" })).toBe("");
   });
 });

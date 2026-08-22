@@ -1,6 +1,5 @@
 // src/components/Tasks/TaskManager.jsx
 import React, { useMemo, useState, useEffect } from "react";
-import useTaskReminders from "../../hooks/useTaskReminders";
 import {
   PRIORITIES,
   clampRepeat,
@@ -54,6 +53,7 @@ export default function TaskManager(props) {
     tasks = [],
     grows,
     selectedGrowId = "",
+    selectedTaskId = "",
     onCreate,
     onUpdate,
     onDelete,
@@ -62,9 +62,6 @@ export default function TaskManager(props) {
   const hasGrowsProp = Object.prototype.hasOwnProperty.call(props || {}, "grows");
   const propGrows = Array.isArray(grows) ? grows : [];
   const MIN_INTERVAL = 1;
-
-  // Reminder ticker (notifications, overdue, etc.)
-  useTaskReminders({ tasks, onUpdate });
 
   // ---------- Fallback grows only when grows prop is not supplied ----------
   const [uid, setUid] = useState(() => auth?.currentUser?.uid || null);
@@ -166,6 +163,27 @@ export default function TaskManager(props) {
       setFilterGrowId(selectedGrowId);
     }
   }, [selectedGrowId]);
+
+  useEffect(() => {
+    if (!selectedTaskId) return;
+
+    const target = tasks.find((task) => task?.id === selectedTaskId);
+    if (!target) return;
+
+    setFilter("all");
+    setFilterGrowId("");
+    if (target.completedAt) setShowCompleted(true);
+
+    const id = window.setTimeout(() => {
+      const rows = document.querySelectorAll("[data-task-id]");
+      const row = Array.from(rows).find(
+        (element) => element.getAttribute("data-task-id") === selectedTaskId
+      );
+      row?.scrollIntoView?.({ behavior: "smooth", block: "center" });
+    }, 0);
+
+    return () => window.clearTimeout(id);
+  }, [selectedTaskId, tasks]);
 
   const tagSet = useMemo(() => {
     const s = new Set();
@@ -376,9 +394,15 @@ export default function TaskManager(props) {
   const stats = analytics(tasks);
 
   return (
-    <div className="max-w-7xl mx-auto rounded-2xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 p-4 md:p-6 shadow-sm space-y-6">
+    <div
+      className="max-w-7xl mx-auto rounded-2xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 p-4 md:p-6 shadow-sm space-y-6"
+      data-tour="tasks-root"
+    >
       {/* Header: filters + export + analytics */}
-      <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+      <div
+        className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between"
+        data-tour="task-filters"
+      >
         <div className="flex flex-wrap items-center gap-2">
           <select
             className="rounded-lg border border-gray-300 dark:border-zinc-700 bg-white dark:bg-zinc-800 text-gray-900 dark:text-white px-3 py-2"
@@ -459,7 +483,7 @@ export default function TaskManager(props) {
       </div>
 
       {/* Quick add */}
-      <form onSubmit={submitQuick} className="flex gap-2">
+      <form onSubmit={submitQuick} className="flex gap-2" data-tour="task-quick-add">
         <input
           className="flex-1 rounded-lg border border-gray-300 dark:border-zinc-700 bg-white dark:bg-zinc-800 text-gray-900 dark:text-white px-3 py-2"
           placeholder='Quick add (e.g. "Mist & fan in 3d @ 7pm every 2d !high #fruiting remind 2h")'
@@ -627,7 +651,12 @@ export default function TaskManager(props) {
           return (
             <div
               key={t.id}
-              className={`flex flex-col md:flex-row md:items-center md:justify-between gap-3 p-3 bg-white dark:bg-zinc-900 ${prClass}`}
+              data-task-id={t.id}
+              className={`flex flex-col md:flex-row md:items-center md:justify-between gap-3 p-3 bg-white dark:bg-zinc-900 ${prClass} ${
+                selectedTaskId === t.id
+                  ? "ring-2 ring-[var(--_accent-500)] ring-inset"
+                  : ""
+              }`}
             >
               <div className="flex items-start gap-3 w-full md:w-auto">
                 <input

@@ -1,3 +1,4 @@
+// src/providers/QueryProvider.jsx
 import React, { useEffect } from "react";
 import { QueryClientProvider } from "@tanstack/react-query";
 import { persistQueryClient } from "@tanstack/react-query-persist-client";

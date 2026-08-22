@@ -193,7 +193,9 @@ function UnarchiveModal({ grow, onClose, onSubmit }) {
       ? isBulk
         ? "Harvested"
         : "Colonized"
-      : prevStage || (isBulk ? "Colonizing" : "Inoculated");
+      : prevStage === "Contaminated"
+        ? "Inoculated"
+        : prevStage || (isBulk ? "Colonizing" : "Inoculated");
 
   const [amount, setAmount] = useState(grow?.amountAvailable ?? 0);
   const [unit] = useState(grow?.amountUnit || grow?.volumeUnit || (isBulk ? "g" : "ml"));
@@ -201,6 +203,7 @@ function UnarchiveModal({ grow, onClose, onSubmit }) {
   const [status, setStatus] = useState("Active");
   const [note, setNote] = useState("");
   const [err, setErr] = useState("");
+  const [isSubmitting, setIsSubmitting] = useState(false);
 
   const stageOptions =
     normType === "Bulk"
@@ -209,8 +212,9 @@ function UnarchiveModal({ grow, onClose, onSubmit }) {
 
   const mustRequireAmount = Number(grow?.amountAvailable || 0) <= 0;
 
-  function handleSubmit(e) {
+  async function handleSubmit(e) {
     e.preventDefault();
+    if (isSubmitting) return;
     setErr("");
 
     const nAmt = Number(amount);
@@ -225,13 +229,20 @@ function UnarchiveModal({ grow, onClose, onSubmit }) {
       nextStage = isBulk ? "Harvested" : "Colonized";
     }
 
-    onSubmit({
-      amountAvailable: Number.isFinite(nAmt) ? nAmt : 0,
-      stage: nextStage,
-      status,
-      unarchiveNote: note,
-      unit,
-    });
+    setIsSubmitting(true);
+    try {
+      await onSubmit({
+        amountAvailable: Number.isFinite(nAmt) ? nAmt : 0,
+        stage: nextStage,
+        status,
+        unarchiveNote: note,
+        unit,
+      });
+    } catch (error) {
+      setErr(error?.message || "Unable to reactivate this grow.");
+    } finally {
+      setIsSubmitting(false);
+    }
   }
 
   return (
@@ -354,8 +365,12 @@ function UnarchiveModal({ grow, onClose, onSubmit }) {
           >
             Cancel
           </button>
-          <button type="submit" className="px-3 py-1.5 rounded-full accent-bg text-white">
-            Confirm Unarchive
+          <button
+            type="submit"
+            disabled={isSubmitting}
+            className="px-3 py-1.5 rounded-full accent-bg text-white disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            {isSubmitting ? "Checking limit…" : "Confirm Unarchive"}
           </button>
         </div>
       </form>
@@ -375,6 +390,10 @@ function ArchivedLotRow({ lot, label }) {
   const yieldMetrics = getYieldMetrics(lot);
   const labelMeta = getLabelMetadataSnapshot(lot);
   const shelfAction = getShelfLifeAction(lot);
+  const finalDisposition =
+    lot?.finalDisposition && typeof lot.finalDisposition === "object"
+      ? lot.finalDisposition
+      : null;
 
   return (
     <Row>
@@ -415,6 +434,15 @@ function ArchivedLotRow({ lot, label }) {
           {workflow?.quarantineReason ? <StatText label="Quarantine reason" value={workflow.quarantineReason} /> : null}
           {labelMeta?.packDate ? <StatText label="Pack date" value={labelMeta.packDate} /> : null}
           {labelMeta?.bestBy ? <StatText label="Best by" value={labelMeta.bestBy} /> : null}
+          {finalDisposition?.method ? <StatText label="Disposition method" value={titleCaseStatus(finalDisposition.method)} /> : null}
+          {finalDisposition?.lastDate ? <StatText label="Disposition date" value={finalDisposition.lastDate} /> : null}
+          {finalDisposition?.reason ? <StatText label="Disposition reason" value={finalDisposition.reason} /> : null}
+          {finalDisposition?.totalQuantity ? (
+            <StatText
+              label="Disposed quantity"
+              value={formatQty(finalDisposition.totalQuantity, unit, unit === "count" ? 0 : 2)}
+            />
+          ) : null}
         </div>
 
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-2 text-xs text-zinc-500">

@@ -1,5 +1,5 @@
 // src/pages/CalendarView.jsx
-import React, { useMemo } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { Calendar as BigCalendar, dateFnsLocalizer } from "react-big-calendar";
 import { format, parse, startOfWeek, getDay } from "date-fns";
@@ -11,6 +11,7 @@ import "react-big-calendar/lib/css/react-big-calendar.css";
  * Props:
  *  - grows: []
  *  - tasks: []
+ *  - onOpenTask(task)
  */
 
 const locales = { "en-US": enUS };
@@ -21,6 +22,16 @@ const localizer = dateFnsLocalizer({
   getDay,
   locales,
 });
+
+export const CALENDAR_FILTER_STORAGE_KEY = "cnm.calendar.filters.v1";
+export const DEFAULT_CALENDAR_FILTERS = Object.freeze({
+  showGrowMilestones: true,
+  showOpenTasks: true,
+  showCompletedTasks: true,
+  taskSource: "all",
+});
+
+const TASK_SOURCE_VALUES = new Set(["all", "manual", "sop"]);
 
 // --- Utilities ---
 function toDateMaybe(v) {
@@ -54,8 +65,66 @@ function coalesce(...vals) {
   return null;
 }
 
+export function isTaskCompleted(task) {
+  return Boolean(
+    task?.completedAt ||
+      task?.completed === true ||
+      task?.done === true ||
+      task?.complete === true
+  );
+}
+
+export function isSopGeneratedTask(task) {
+  const source = String(task?.taskSource || task?.source || "").trim().toLowerCase();
+  const tags = Array.isArray(task?.tags)
+    ? task.tags.map((tag) => String(tag || "").trim().toLowerCase())
+    : [];
+
+  return Boolean(
+    task?.workflowTemplateId ||
+      task?.sopTemplateId ||
+      source === "sop-template" ||
+      source === "sop" ||
+      tags.includes("sop") ||
+      tags.includes("workflow")
+  );
+}
+
+export function normalizeCalendarFilters(value) {
+  const incoming = value && typeof value === "object" ? value : {};
+  const taskSource = TASK_SOURCE_VALUES.has(incoming.taskSource)
+    ? incoming.taskSource
+    : DEFAULT_CALENDAR_FILTERS.taskSource;
+
+  return {
+    showGrowMilestones:
+      typeof incoming.showGrowMilestones === "boolean"
+        ? incoming.showGrowMilestones
+        : DEFAULT_CALENDAR_FILTERS.showGrowMilestones,
+    showOpenTasks:
+      typeof incoming.showOpenTasks === "boolean"
+        ? incoming.showOpenTasks
+        : DEFAULT_CALENDAR_FILTERS.showOpenTasks,
+    showCompletedTasks:
+      typeof incoming.showCompletedTasks === "boolean"
+        ? incoming.showCompletedTasks
+        : DEFAULT_CALENDAR_FILTERS.showCompletedTasks,
+    taskSource,
+  };
+}
+
+function readStoredFilters() {
+  if (typeof window === "undefined") return { ...DEFAULT_CALENDAR_FILTERS };
+  try {
+    const raw = window.localStorage.getItem(CALENDAR_FILTER_STORAGE_KEY);
+    return raw ? normalizeCalendarFilters(JSON.parse(raw)) : { ...DEFAULT_CALENDAR_FILTERS };
+  } catch {
+    return { ...DEFAULT_CALENDAR_FILTERS };
+  }
+}
+
 // --- Event builders ---
-function buildGrowEvents(grows) {
+export function buildGrowEvents(grows) {
   if (!Array.isArray(grows)) return [];
   const out = [];
   for (const g of grows) {
@@ -148,33 +217,64 @@ function buildGrowEvents(grows) {
   return out;
 }
 
-function buildTaskEvents(tasks) {
+export function buildTaskEvents(tasks) {
   if (!Array.isArray(tasks)) return [];
+
   return tasks
     .filter(Boolean)
-    .map((t) => {
+    .map((task) => {
       const when =
-        toDateMaybe(t?.dueDate) ||
-        toDateMaybe(t?.due) ||
-        toDateMaybe(t?.date) ||
-        toDateMaybe(t?.createdAt) ||
-        new Date();
+        toDateMaybe(task?.dueAt) ||
+        toDateMaybe(task?.dueDate) ||
+        toDateMaybe(task?.due) ||
+        toDateMaybe(task?.date);
+
+      // Calendar represents due dates. Undated tasks remain available in TaskManager.
+      if (!when) return null;
+
       const title =
-        t?.title || t?.name || (t?.text ? String(t.text).slice(0, 60) : "Task");
+        task?.title ||
+        task?.name ||
+        (task?.text ? String(task.text).slice(0, 60) : "Task");
+      const taskSource = isSopGeneratedTask(task) ? "sop" : "manual";
+
       return {
-        id: t.id || `${title}-${+when}`,
-        title: `Task: ${title}`,
+        id: task.id || `${title}-${+when}`,
+        title: `${taskSource === "sop" ? "SOP Task" : "Task"}: ${title}`,
         start: when,
         end: when,
         allDay: true,
         kind: "task",
-        task: t,
+        task,
+        taskSource,
+        completed: isTaskCompleted(task),
       };
-    });
+    })
+    .filter(Boolean);
+}
+
+export function filterCalendarEvents(events, rawFilters) {
+  const filters = normalizeCalendarFilters(rawFilters);
+  if (!Array.isArray(events)) return [];
+
+  return events.filter((event) => {
+    if (event?.kind === "grow") return filters.showGrowMilestones;
+    if (event?.kind !== "task") return true;
+
+    const completed =
+      typeof event.completed === "boolean" ? event.completed : isTaskCompleted(event.task);
+    if (completed && !filters.showCompletedTasks) return false;
+    if (!completed && !filters.showOpenTasks) return false;
+
+    const source = event.taskSource || (isSopGeneratedTask(event.task) ? "sop" : "manual");
+    if (filters.taskSource !== "all" && source !== filters.taskSource) return false;
+
+    return true;
+  });
 }
 
 // --- Styling for events ---
-function eventPropGetter(event) {
+export function eventPropGetter(event) {
   const base = {
     style: {
       borderRadius: "8px",
@@ -188,11 +288,22 @@ function eventPropGetter(event) {
   };
 
   if (event.kind === "task") {
-    const completed = !!(event.task?.completed || event.task?.done);
+    const completed =
+      typeof event.completed === "boolean" ? event.completed : isTaskCompleted(event.task);
     const now = new Date();
-    const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate()); // midnight
+    const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
     const overdue = !completed && event.start < todayStart;
-    base.style.backgroundColor = completed ? "#64748b" : overdue ? "#f59e0b" : "#3b82f6";
+    const sopGenerated =
+      event.taskSource === "sop" ||
+      (!event.taskSource && isSopGeneratedTask(event.task));
+
+    base.style.backgroundColor = completed
+      ? "#64748b"
+      : overdue
+      ? "#f59e0b"
+      : sopGenerated
+      ? "#8b5cf6"
+      : "#3b82f6";
     base.style.borderColor = "rgba(255,255,255,.25)";
     return base;
   }
@@ -230,8 +341,43 @@ const RBC_DARK_CSS = `
 .dark .rbc-theme .rbc-today { background: rgba(var(--_accent-rgb), .18); }
 `;
 
-export default function CalendarView({ grows = [], tasks = [] }) {
+function FilterToggle({ checked, onChange, label, count }) {
+  return (
+    <label className="flex items-center gap-2 rounded-xl border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-900 px-3 py-2 text-sm cursor-pointer">
+      <input
+        type="checkbox"
+        checked={checked}
+        onChange={(event) => onChange(event.target.checked)}
+        className="h-4 w-4 accent-[var(--_accent-600)]"
+      />
+      <span className="font-medium">{label}</span>
+      <span className="text-xs text-zinc-500 dark:text-zinc-400">{count}</span>
+    </label>
+  );
+}
+
+function LegendItem({ color, label }) {
+  return (
+    <span className="inline-flex items-center gap-1.5 text-xs text-zinc-600 dark:text-zinc-400">
+      <span className="h-2.5 w-2.5 rounded-full" style={{ backgroundColor: color }} />
+      {label}
+    </span>
+  );
+}
+
+export default function CalendarView({ grows = [], tasks = [], onOpenTask }) {
   const navigate = useNavigate();
+  const [filters, setFilters] = useState(readStoredFilters);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    try {
+      window.localStorage.setItem(
+        CALENDAR_FILTER_STORAGE_KEY,
+        JSON.stringify(normalizeCalendarFilters(filters))
+      );
+    } catch {}
+  }, [filters]);
 
   const handleSelectEvent = (event) => {
     try {
@@ -240,30 +386,129 @@ export default function CalendarView({ grows = [], tasks = [] }) {
         return;
       }
       if (event?.kind === "task") {
-        const gid = event?.task?.growId || event?.task?.grow?.id || event?.task?.growID;
-        if (gid) {
-          navigate(`/quick/${gid}`);
+        if (typeof onOpenTask === "function") {
+          onOpenTask(event.task);
           return;
         }
-        // Fallback: navigate home and hint tasks tab via hash
-        navigate(`/`);
-        try { window.location.hash = "#tasks"; } catch (e) {}
-        return;
+        navigate(`/?tab=tasks`);
       }
-    } catch (e) {}
+    } catch {}
   };
 
-  const events = useMemo(() => {
-    const g = buildGrowEvents(grows);
-    const t = buildTaskEvents(tasks);
-    return [...g, ...t];
-  }, [grows, tasks]);
+  const growEvents = useMemo(() => buildGrowEvents(grows), [grows]);
+  const taskEvents = useMemo(() => buildTaskEvents(tasks), [tasks]);
+  const allEvents = useMemo(() => [...growEvents, ...taskEvents], [growEvents, taskEvents]);
+  const events = useMemo(
+    () => filterCalendarEvents(allEvents, filters),
+    [allEvents, filters]
+  );
+
+  const counts = useMemo(() => {
+    let openTasks = 0;
+    let completedTasks = 0;
+    let manualTasks = 0;
+    let sopTasks = 0;
+
+    taskEvents.forEach((event) => {
+      if (event.completed) completedTasks += 1;
+      else openTasks += 1;
+      if (event.taskSource === "sop") sopTasks += 1;
+      else manualTasks += 1;
+    });
+
+    return {
+      growMilestones: growEvents.length,
+      openTasks,
+      completedTasks,
+      manualTasks,
+      sopTasks,
+      undatedTasks: Math.max(0, (Array.isArray(tasks) ? tasks.length : 0) - taskEvents.length),
+    };
+  }, [growEvents.length, taskEvents, tasks]);
+
+  const updateFilter = (key, value) => {
+    setFilters((current) => normalizeCalendarFilters({ ...current, [key]: value }));
+  };
+
+  const resetFilters = () => setFilters({ ...DEFAULT_CALENDAR_FILTERS });
 
   return (
-    <div className="p-6 md:p-8 bg-white dark:bg-zinc-900 text-zinc-900 dark:text-white rounded-2xl border border-zinc-200 dark:border-zinc-800 shadow-sm space-y-3 max-w-6xl mx-auto">
-      {/* Scoped style for react-big-calendar dark mode polish */}
+    <div className="p-6 md:p-8 bg-white dark:bg-zinc-900 text-zinc-900 dark:text-white rounded-2xl border border-zinc-200 dark:border-zinc-800 shadow-sm space-y-4 max-w-6xl mx-auto">
       <style dangerouslySetInnerHTML={{ __html: RBC_DARK_CSS }} />
-      <div className="space-y-1"><h2 className="text-xl font-semibold">Calendar</h2><p className="text-sm text-zinc-600 dark:text-zinc-400">Grow milestones and task due dates stay in one view, with active toolbar controls matching your selected accent.</p></div>
+
+      <div className="space-y-1">
+        <h2 className="text-xl font-semibold">Calendar</h2>
+        <p className="text-sm text-zinc-600 dark:text-zinc-400">
+          Grow milestones and real task due dates stay in one view. Select an event to open its source record.
+        </p>
+      </div>
+
+      <section
+        data-tour="calendar-filters"
+        className="rounded-2xl border border-zinc-200 dark:border-zinc-700 bg-zinc-50 dark:bg-zinc-950/50 p-4 space-y-3"
+      >
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div>
+            <h3 className="font-semibold">Calendar filters</h3>
+            <p className="text-xs text-zinc-500 dark:text-zinc-400">
+              Showing {events.length} of {allEvents.length} dated events.
+            </p>
+          </div>
+          <button type="button" className="chip text-sm" onClick={resetFilters}>
+            Show all
+          </button>
+        </div>
+
+        <div className="grid gap-2 sm:grid-cols-3">
+          <FilterToggle
+            checked={filters.showGrowMilestones}
+            onChange={(value) => updateFilter("showGrowMilestones", value)}
+            label="Grow milestones"
+            count={counts.growMilestones}
+          />
+          <FilterToggle
+            checked={filters.showOpenTasks}
+            onChange={(value) => updateFilter("showOpenTasks", value)}
+            label="Open tasks"
+            count={counts.openTasks}
+          />
+          <FilterToggle
+            checked={filters.showCompletedTasks}
+            onChange={(value) => updateFilter("showCompletedTasks", value)}
+            label="Completed tasks"
+            count={counts.completedTasks}
+          />
+        </div>
+
+        <div className="flex flex-wrap items-end gap-3">
+          <label className="min-w-[220px] space-y-1 text-sm">
+            <span className="font-medium">Task source</span>
+            <select
+              value={filters.taskSource}
+              onChange={(event) => updateFilter("taskSource", event.target.value)}
+              className="input w-full"
+            >
+              <option value="all">All tasks ({taskEvents.length})</option>
+              <option value="manual">Manual tasks ({counts.manualTasks})</option>
+              <option value="sop">SOP-generated tasks ({counts.sopTasks})</option>
+            </select>
+          </label>
+
+          <div className="flex flex-wrap gap-x-4 gap-y-2 pb-1">
+            <LegendItem color="#3b82f6" label="Open manual task" />
+            <LegendItem color="#8b5cf6" label="Open SOP task" />
+            <LegendItem color="#f59e0b" label="Overdue task" />
+            <LegendItem color="#64748b" label="Completed task" />
+          </div>
+        </div>
+
+        {counts.undatedTasks > 0 ? (
+          <p className="text-xs text-zinc-500 dark:text-zinc-400">
+            {counts.undatedTasks} {counts.undatedTasks === 1 ? "task has" : "tasks have"} no due date and remains available in Tasks instead of being placed on an unrelated Calendar date.
+          </p>
+        ) : null}
+      </section>
+
       <div className="rbc-theme">
         <BigCalendar
           localizer={localizer}

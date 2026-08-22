@@ -1,3 +1,4 @@
+// src/lib/queryClient.js
 import { QueryClient, onlineManager, focusManager } from "@tanstack/react-query";
 
 export const queryClient = new QueryClient({

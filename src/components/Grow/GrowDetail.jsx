@@ -15,7 +15,11 @@ import {
   serverTimestamp,
 } from "firebase/firestore";
 import { db, auth, storage } from "../../firebase-config";
-import { ref as storageRef, deleteObject } from "firebase/storage";
+import {
+  deleteGrowPhoto,
+  getPhotoTimeMs,
+  setGrowCoverPhoto,
+} from "../../lib/photo-storage";
 import { useConfirm } from "../ui/ConfirmDialog";
 import { getCoverSrc } from "../../lib/grow-images";
 import { enqueueReusablesForGrow } from "../../lib/clean-queue";
@@ -27,6 +31,7 @@ import {
   getLotStatus,
   isHarvestComplete,
 } from "../../lib/postprocess";
+import { SUBSCRIPTION_FEATURE_KEYS } from "../../lib/subscriptionPlans.js";
 import {
   compareToRange,
   formatTargetRange,
@@ -46,14 +51,6 @@ import {
 const STAGES_BULK = ["Inoculated", "Colonizing", "Colonized", "Fruiting", "Harvesting", "Harvested"];
 const STAGES_NON_BULK = ["Inoculated", "Colonizing", "Colonized"];
 const TERMINAL_STAGES = ["Contaminated"];
-
-function pathFromDownloadURL(url) {
-  try {
-    const m = String(url).match(/\/o\/([^?]+)/);
-    if (m && m[1]) return decodeURIComponent(m[1]);
-  } catch {}
-  return null;
-}
 
 function pickCoverUrl(grow, photos) {
   return getCoverSrc(grow, photos);
@@ -263,9 +260,13 @@ export default function GrowDetail({
   photosByGrow,
   onUploadPhoto,
   onUploadStagePhoto,
+  onDeletePhoto,
+  onSetCoverPhoto,
   onAddEnvLog,
   onUpdateEnvLog,
   onDeleteEnvLog,
+  canUsePostProcessing = true,
+  onSubscriptionFeatureBlocked = () => false,
 }) {
   const confirm = useConfirm();
 
@@ -651,6 +652,15 @@ export default function GrowDetail({
   const handleCreateDryLot = async () => {
     const user = auth.currentUser;
     if (!user?.uid || !grow?.id) return;
+    if (!canUsePostProcessing) {
+      onSubscriptionFeatureBlocked({
+        featureKey: SUBSCRIPTION_FEATURE_KEYS.POST_PROCESSING,
+        actionLabel: "Create a dry-material intake lot",
+        supportingText:
+          "Existing grow and harvest history remains available. Starting Post Processing intake requires Lab access.",
+      });
+      return;
+    }
 
     setDryLotBusy(true);
     setDryLotMessage("");
@@ -806,60 +816,98 @@ export default function GrowDetail({
   };
 
   const handleDeletePhoto = async (p) => {
-    if (!p || !p.id) return;
+    if (!p?.id) return;
     if (!(await confirm("Delete this photo?"))) return;
 
     const user = auth.currentUser;
     if (!user) return;
 
-    const prev = Array.isArray(photos) ? photos : [];
-    setPhotos((curr) => (Array.isArray(curr) ? curr.filter((x) => x.id !== p.id) : curr));
+    const previousPhotos = Array.isArray(photos) ? photos : [];
+    const previousCover = {
+      coverPhotoId: grow?.coverPhotoId || null,
+      coverUrl: grow?.coverUrl || null,
+      coverStoragePath: grow?.coverStoragePath || null,
+    };
+    const wasCover = grow?.coverPhotoId === p.id;
+    setPhotos((current) =>
+      Array.isArray(current) ? current.filter((item) => item.id !== p.id) : current
+    );
+    if (wasCover) {
+      setGrow((current) =>
+        current
+          ? {
+              ...current,
+              coverPhotoId: null,
+              coverUrl: null,
+              coverStoragePath: null,
+            }
+          : current
+      );
+    }
 
     try {
-      const storagePath = p.storagePath || pathFromDownloadURL(p.url);
-      if (storagePath) {
-        try {
-          await deleteObject(storageRef(storage, storagePath));
-        } catch (err) {
-          console.warn("Storage delete warning:", err?.message || err);
-        }
-      }
-
-      await deleteDoc(doc(db, "users", user.uid, "photos", p.id));
-
-      if (grow?.coverPhotoId === p.id) {
-        await callUpdateGrow({
-          coverPhotoId: null,
-          coverUrl: null,
-          coverStoragePath: null,
-          coverUpdatedAt: serverTimestamp(),
+      if (typeof onDeletePhoto === "function") {
+        await onDeletePhoto(growId, p);
+      } else {
+        await deleteGrowPhoto({
+          db,
+          storage,
+          uid: user.uid,
+          growId,
+          photo: p,
         });
       }
-    } catch (err) {
-      setPhotos(prev);
-      setPageNotice({ tone: "error", message: err?.message || String(err) });
+    } catch (error) {
+      setPhotos(previousPhotos);
+      if (wasCover) {
+        setGrow((current) =>
+          current ? { ...current, ...previousCover } : current
+        );
+      }
+      setPageNotice({
+        tone: "error",
+        message: error?.message || "Photo deletion failed.",
+      });
     }
   };
 
   const handleSetCoverPhoto = async (p) => {
-    if (!p) return;
+    if (!p?.id || !p?.url) return;
     if (!(await confirm("Set this photo as the cover image?"))) return;
 
-    const storagePath = p.storagePath || pathFromDownloadURL(p.url) || null;
+    const previousCover = {
+      coverPhotoId: grow?.coverPhotoId || null,
+      coverUrl: grow?.coverUrl || null,
+      coverStoragePath: grow?.coverStoragePath || null,
+    };
+    const nextCover = {
+      coverPhotoId: p.id,
+      coverUrl: p.url,
+      coverStoragePath: p.storagePath || null,
+    };
 
-    setGrow((prev) => ({
-      ...prev,
-      coverPhotoId: p.id || null,
-      coverUrl: p.url || null,
-      coverStoragePath: storagePath,
-    }));
+    setGrow((current) => (current ? { ...current, ...nextCover } : current));
 
-    await callUpdateGrow({
-      coverPhotoId: p.id || null,
-      coverUrl: p.url || null,
-      coverStoragePath: storagePath,
-      coverUpdatedAt: serverTimestamp(),
-    });
+    try {
+      if (typeof onSetCoverPhoto === "function") {
+        await onSetCoverPhoto(growId, p);
+      } else {
+        const user = auth.currentUser;
+        if (!user) throw new Error("Not signed in.");
+        await setGrowCoverPhoto({
+          db,
+          uid: user.uid,
+          growId,
+          photo: p,
+        });
+      }
+    } catch (error) {
+      setGrow((current) => (current ? { ...current, ...previousCover } : current));
+      setPageNotice({
+        tone: "error",
+        message: error?.message || "Cover photo update failed.",
+      });
+    }
   };
 
   const saveEnvLog = async () => {
@@ -1725,7 +1773,7 @@ export default function GrowDetail({
           <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-3">
             {photos
               .slice()
-              .sort((a, b) => String(b.timestamp || 0).localeCompare(String(a.timestamp || 0)))
+              .sort((a, b) => getPhotoTimeMs(b) - getPhotoTimeMs(a))
               .map((p) => {
                 const isCover = grow?.coverPhotoId && p.id === grow.coverPhotoId;
 

@@ -45,6 +45,9 @@ import path from "path";
 })();
 
 const isCI = !!process.env.CI;
+const requiresFirebaseEmulators = /^(1|true|yes)$/i.test(
+  String(process.env.E2E_REQUIRE_FIREBASE_EMULATORS || "")
+);
 const devPort = Number(process.env.DEV_PORT || 5173);
 const authStatePath = path.join("tests", "e2e", ".auth", "user.json");
 
@@ -88,7 +91,7 @@ export default defineConfig({
   webServer: {
     command: `npm run dev:e2e -- --port ${devPort}`,
     url: `http://127.0.0.1:${devPort}`,
-    reuseExistingServer: !isCI,
+    reuseExistingServer: !isCI && !requiresFirebaseEmulators,
     timeout: 120_000,
   },
 });

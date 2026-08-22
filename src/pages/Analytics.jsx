@@ -15,6 +15,13 @@ import {
   isArchivedOrDepletedMaterialLot,
   isFinishedGoodsLot,
 } from "../lib/postprocess";
+import { SUBSCRIPTION_FEATURE_KEYS } from "../lib/subscriptionPlans.js";
+import { getSubscriptionFeatureGateState } from "../lib/subscriptionFeatureGates.js";
+import {
+  getAnalyticsExportScope,
+  getAnalyticsReportFeatureKey,
+  getAnalyticsSectionFeatureKey,
+} from "../lib/subscriptionAnalyticsAccess.js";
 
 /* ---------- helpers ---------- */
 function isActiveGrow(g) {
@@ -197,6 +204,49 @@ function ChartEmptyState({ message = "No matching data is available for this rep
   return (
     <div className="min-h-52 rounded-2xl border border-dashed border-zinc-300 dark:border-zinc-700 bg-zinc-50/60 dark:bg-zinc-950/30 flex items-center justify-center p-8 text-center text-sm text-zinc-500 dark:text-zinc-400">
       {message}
+    </div>
+  );
+}
+
+function AnalyticsLockedPanel({
+  featureKey,
+  actionLabel,
+  supportingText,
+  onRequest = () => false,
+  compact = false,
+}) {
+  const gate = getSubscriptionFeatureGateState({
+    allowed: false,
+    featureKey,
+    actionLabel,
+    supportingText,
+  });
+
+  return (
+    <div
+      data-testid={`analytics-locked-${featureKey || "feature"}`}
+      className={`rounded-2xl border border-violet-200 bg-violet-50/80 text-violet-950 dark:border-violet-900/60 dark:bg-violet-950/25 dark:text-violet-100 ${compact ? "p-3" : "p-5"}`}
+    >
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div className="min-w-0">
+          <div className="text-sm font-semibold">{gate.featureLabel}</div>
+          <div className="mt-1 text-sm leading-6 text-violet-800/90 dark:text-violet-200/90">
+            {gate.message}
+          </div>
+          {supportingText ? (
+            <div className="mt-2 text-xs leading-5 text-violet-700/80 dark:text-violet-300/80">
+              {supportingText}
+            </div>
+          ) : null}
+        </div>
+        <button
+          type="button"
+          onClick={() => onRequest({ featureKey, actionLabel, supportingText })}
+          className="shrink-0 rounded-full bg-violet-600 px-4 py-2 text-sm font-semibold text-white hover:bg-violet-700"
+        >
+          View plans
+        </button>
+      </div>
     </div>
   );
 }
@@ -552,6 +602,23 @@ const ANALYTICS_REPORTS = {
     { key: "ppPackaging", title: "Packaging Usage vs On Hand", description: "Packaging consumption compared with current supply inventory." },
   ],
 };
+
+const ANALYTICS_FEATURE_SUPPORTING_TEXT = Object.freeze({
+  [SUBSCRIPTION_FEATURE_KEYS.BASIC_ANALYTICS]:
+    "Basic grow summaries remain available on every public plan unless an account-specific override removes access.",
+  [SUBSCRIPTION_FEATURE_KEYS.ADVANCED_ANALYTICS]:
+    "Basic grow counts, stage summaries, harvest totals, task status, and simple history remain available. Cultivator adds comparisons, trends, SOP performance, and advanced filters.",
+  [SUBSCRIPTION_FEATURE_KEYS.ADVANCED_COST_ANALYTICS]:
+    "Basic cost tracking remains available in grow records. Cultivator adds cross-grow cost reports and yield-versus-cost analysis.",
+  [SUBSCRIPTION_FEATURE_KEYS.ANALYTICS_EXPORTS]:
+    "Settings backup and raw data export remain available on every tier. Downloadable analytics reports begin with Cultivator and only include reports the account can access.",
+  [SUBSCRIPTION_FEATURE_KEYS.LAB_ANALYTICS]:
+    "Existing Post Processing records remain available in their operational views. Lab analytics adds inventory, production, sales, quality, financial, and risk reporting.",
+});
+
+function getAnalyticsFeatureSupportingText(featureKey) {
+  return ANALYTICS_FEATURE_SUPPORTING_TEXT[featureKey] || "";
+}
 
 function toDateMaybe(v) {
   if (!v && v !== 0) return null;
@@ -1006,6 +1073,12 @@ export default function Analytics({
   supplies = [],
   tasks = [],
   supplyAudits = null,
+  canUseBasicAnalytics = true,
+  canUseAdvancedAnalytics = true,
+  canUseAdvancedCostAnalytics = true,
+  canExportAnalytics = true,
+  canUseLabAnalytics = true,
+  onSubscriptionFeatureBlocked = () => false,
 }) {
   // Default to something that always has data
   
@@ -1022,6 +1095,68 @@ export default function Analytics({
   const [processBatches, setProcessBatches] = useState([]);
   const [inventoryMoves, setInventoryMoves] = useState([]);
 
+  const hasAnalyticsFeature = (featureKey) => {
+    switch (featureKey) {
+      case SUBSCRIPTION_FEATURE_KEYS.BASIC_ANALYTICS:
+        return Boolean(canUseBasicAnalytics);
+      case SUBSCRIPTION_FEATURE_KEYS.ADVANCED_ANALYTICS:
+        return Boolean(canUseAdvancedAnalytics);
+      case SUBSCRIPTION_FEATURE_KEYS.ADVANCED_COST_ANALYTICS:
+        return Boolean(canUseAdvancedCostAnalytics);
+      case SUBSCRIPTION_FEATURE_KEYS.ANALYTICS_EXPORTS:
+        return Boolean(canExportAnalytics);
+      case SUBSCRIPTION_FEATURE_KEYS.LAB_ANALYTICS:
+        return Boolean(canUseLabAnalytics);
+      default:
+        return false;
+    }
+  };
+
+  const analyticsExportScope = useMemo(
+    () =>
+      getAnalyticsExportScope((featureKey) => {
+        switch (featureKey) {
+          case SUBSCRIPTION_FEATURE_KEYS.BASIC_ANALYTICS:
+            return Boolean(canUseBasicAnalytics);
+          case SUBSCRIPTION_FEATURE_KEYS.ADVANCED_ANALYTICS:
+            return Boolean(canUseAdvancedAnalytics);
+          case SUBSCRIPTION_FEATURE_KEYS.ADVANCED_COST_ANALYTICS:
+            return Boolean(canUseAdvancedCostAnalytics);
+          case SUBSCRIPTION_FEATURE_KEYS.ANALYTICS_EXPORTS:
+            return Boolean(canExportAnalytics);
+          case SUBSCRIPTION_FEATURE_KEYS.LAB_ANALYTICS:
+            return Boolean(canUseLabAnalytics);
+          default:
+            return false;
+        }
+      }),
+    [
+      canExportAnalytics,
+      canUseAdvancedAnalytics,
+      canUseAdvancedCostAnalytics,
+      canUseBasicAnalytics,
+      canUseLabAnalytics,
+    ]
+  );
+
+  const analyticsExportGate = getSubscriptionFeatureGateState({
+    allowed: analyticsExportScope.canExport,
+    featureKey: SUBSCRIPTION_FEATURE_KEYS.ANALYTICS_EXPORTS,
+    actionLabel: "Export analytics",
+  });
+  const labAnalyticsGate = getSubscriptionFeatureGateState({
+    allowed: canUseLabAnalytics,
+    featureKey: SUBSCRIPTION_FEATURE_KEYS.LAB_ANALYTICS,
+    actionLabel: "View Lab analytics",
+  });
+
+  const requestAnalyticsFeature = (featureKey, actionLabel) =>
+    onSubscriptionFeatureBlocked?.({
+      featureKey,
+      actionLabel,
+      supportingText: getAnalyticsFeatureSupportingText(featureKey),
+    });
+
   useEffect(() => setAudits(Array.isArray(supplyAudits) ? supplyAudits : []), [supplyAudits]);
   useEffect(() => {
     if (Array.isArray(supplyAudits)) return;
@@ -1032,8 +1167,15 @@ export default function Analytics({
     return () => unsub && unsub();
   }, []);
   useEffect(() => {
+    if (!canUseLabAnalytics) {
+      setMaterialLots([]);
+      setProcessBatches([]);
+      setInventoryMoves([]);
+      return undefined;
+    }
+
     const u = auth.currentUser;
-    if (!u) return;
+    if (!u) return undefined;
     const lotsCol = collection(db, "users", u.uid, "materialLots");
     const batchCol = collection(db, "users", u.uid, "processBatches");
     const moveCol = collection(db, "users", u.uid, "inventoryMovements");
@@ -1045,7 +1187,7 @@ export default function Analytics({
       unsubBatches && unsubBatches();
       unsubMoves && unsubMoves();
     };
-  }, []);
+  }, [canUseLabAnalytics]);
 
   // Filters (strain + date)
   const allStrainOptions = useMemo(() => {
@@ -1243,6 +1385,33 @@ export default function Analytics({
     const avgAgeDays = ages.length ? Math.round(ages.reduce((a, b) => a + b, 0) / ages.length) : 0;
     return { totalActive, uniqueStrains, runningCost: Number(runningCost.toFixed(2)), avgAgeDays };
   }, [activeFiltered, normalizedCostById]);
+
+  const taskSummary = useMemo(() => {
+    const rows = Array.isArray(tasks) ? tasks : [];
+    const nowMs = Date.now();
+    let completed = 0;
+    let overdue = 0;
+
+    rows.forEach((task) => {
+      const isComplete = Boolean(
+        task?.completedAt || task?.completed === true || task?.done === true
+      );
+      if (isComplete) {
+        completed += 1;
+        return;
+      }
+
+      const due = toDateMaybe(task?.dueAt || task?.dueDate || task?.due);
+      if (due && due.getTime() < nowMs) overdue += 1;
+    });
+
+    return {
+      total: rows.length,
+      completed,
+      open: Math.max(0, rows.length - completed),
+      overdue,
+    };
+  }, [tasks]);
 
   const supplyNameById = useMemo(() => new Map((supplies || []).map((s) => [s.id, s.name])), [supplies]);
   const supplyQtyById = useMemo(() => new Map((supplies || []).map((s) => [s.id, Number(s.quantity || 0)])), [supplies]);
@@ -2168,50 +2337,97 @@ for (let i = weeksBack - 1; i >= 0; i--) {
     sortMode,
   ]);
 
+  const recordedYieldSummary = useMemo(
+    () =>
+      yieldData.reduce(
+        (totals, row) => ({
+          wet: totals.wet + num(row?.Wet, 0),
+          dry: totals.dry + num(row?.Dry, 0),
+        }),
+        { wet: 0, dry: 0 }
+      ),
+    [yieldData]
+  );
+
   // CSV export
   const exportCSV = () => {
+    if (!analyticsExportScope.canExport) {
+      requestAnalyticsFeature(
+        SUBSCRIPTION_FEATURE_KEYS.ANALYTICS_EXPORTS,
+        "Export analytics as CSV"
+      );
+      return;
+    }
+
     const csvCell = (value) => {
       const text = value == null ? "" : String(value);
       return /[",\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
     };
     const row = (...values) => values.map(csvCell).join(",");
-    const lines = [
-      row("Type", "Name", "ValueA", "ValueB", "ValueC", "ValueD"),
-      ...stageCounts.map((d) => row("StageCount (active)", d.name, d.value)),
-      ...yieldData.map((d) => row("Yield", d.name, d.Wet, d.Dry)),
-      ...avgYieldPerStrain.map((d) => row("AvgYieldPerStrain", d.name, d.Wet, d.Dry)),
-      ...growCosts.map((d) => row("Cost", d.name, d.Cost)),
-      ...mostUsedSupplies.map((d) => row("MostUsedSupplies", d.name, d.count)),
-      ...recipeUseCounts.map((d) => row("RecipeUseCount", d.name, d.count, round2(d.avgCost))),
-      ...stageTransitions.map((d) => row("StageTransition", d.month, d.count)),
-      ...contamRate.map((d) => row(`ContamRate(${groupMode})`, d.name, round2(d.rate), d.bad, d.total)),
-      ...ttsSeries.map((d) => row(
-        `TimeToStage(${groupMode})`,
-        d.name,
-        d.Inoc_to_Colonized,
-        d.Colonized_to_Fruiting,
-        d.Fruiting_to_Harvested
-      )),
-      ...burnRateSeries.map((d) => row("BurnRate", d.week, JSON.stringify(d))),
-      ...yieldVsCost.map((d) => row("YieldVsCost", d.name, d.x, d.y)),
-      ...throughputSeries.map((d) => row("Throughput", d.month, d.Started, d.Harvested)),
-      ...postProcessAnalytics.workflowCounts.map((d) => row("PP Workflow", d.name, d.value)),
-      ...postProcessAnalytics.inventoryStatus.map((d) => row("PP Inventory Status", d.name, d.Active, d.Depleted)),
-      ...postProcessAnalytics.financialSnapshot.map((d) => row("PP Financial", d.name, d.Revenue, d.Cost, d.Profit)),
-      ...postProcessAnalytics.productPerformance.map((d) => row("PP Product", d.name, d.sold, d.revenue, d.profit, d.available)),
-      ...postProcessAnalytics.batchPerformance.map((d) => row("PP Batch", d.name, d.sold, d.revenue, d.profit, d.available)),
-      ...postProcessAnalytics.skuPerformance.map((d) => row("PP SKU", d.name, d.sold, d.samples, d.revenue, d.available)),
-      ...postProcessAnalytics.packageSizePerformance.map((d) => row("PP Package Size", d.name, d.sold, d.samples, d.revenue, d.available)),
-      ...postProcessAnalytics.lockedPricing.map((d) => row("PP Locked Pricing", d.name, d.Cost, d.DefaultPrice, d.MSRP)),
-      ...postProcessAnalytics.overrideByProduct.map((d) => row("PP Overrides", d.name, d.priceOverrides, d.fefoOverrides)),
-      ...postProcessAnalytics.expirationBuckets.map((d) => row("PP Expiration", d.name, d.units, d.lots)),
-      ...postProcessAnalytics.salesByDestination.map((d) => row("PP Destination", d.name, d.quantity, d.revenue)),
-      ...postProcessAnalytics.finishedLossByReason.map((d) => row("PP Finished Loss", d.name, d.destroyed, d.wasted, d.costLoss)),
-      ...postProcessAnalytics.processWasteByReason.map((d) => row("PP Process Waste", d.name, d.quantity)),
-      ...postProcessAnalytics.efficiencyByBatch.map((d) => row("PP Efficiency", d.name, d.expected, d.actual, d.waste, d.variancePct)),
-      ...postProcessAnalytics.reworkSeries.map((d) => row("PP Rework", d.name, d.salvage, d.waste)),
-      ...postProcessAnalytics.packagingUsage.map((d) => row("Packaging Usage", d.name, d.used, d.onHand, d.daysCover)),
-    ];
+    const lines = [row("Type", "Name", "ValueA", "ValueB", "ValueC", "ValueD")];
+
+    if (analyticsExportScope.includeBasic) {
+      lines.push(
+        ...stageCounts.map((d) => row("StageCount (active)", d.name, d.value)),
+        ...yieldData.map((d) => row("Yield", d.name, d.Wet, d.Dry)),
+        ...stageTransitions.map((d) => row("StageTransition", d.month, d.count)),
+        ...throughputSeries.map((d) => row("Throughput", d.month, d.Started, d.Harvested))
+      );
+    }
+
+    if (analyticsExportScope.includeAdvanced) {
+      lines.push(
+        ...avgYieldPerStrain.map((d) => row("AvgYieldPerStrain", d.name, d.Wet, d.Dry)),
+        ...mostUsedSupplies.map((d) => row("MostUsedSupplies", d.name, d.count)),
+        ...recipeUseCounts.map((d) => row("RecipeUseCount", d.name, d.count, round2(d.avgCost))),
+        ...contamRate.map((d) => row(`ContamRate(${groupMode})`, d.name, round2(d.rate), d.bad, d.total)),
+        ...ttsSeries.map((d) => row(
+          `TimeToStage(${groupMode})`,
+          d.name,
+          d.Inoc_to_Colonized,
+          d.Colonized_to_Fruiting,
+          d.Fruiting_to_Harvested
+        )),
+        ...burnRateSeries.map((d) => row("BurnRate", d.week, JSON.stringify(d))),
+        ...sopWorkflowPerformance.map((d) => row(
+          "SOP Workflow",
+          d.name,
+          d.grows,
+          d.checklistCompletionPercent,
+          d.tasks,
+          d.completedTasks
+        ))
+      );
+    }
+
+    if (analyticsExportScope.includeAdvancedCost) {
+      lines.push(
+        ...growCosts.map((d) => row("Cost", d.name, d.Cost)),
+        ...yieldVsCost.map((d) => row("YieldVsCost", d.name, d.x, d.y))
+      );
+    }
+
+    if (analyticsExportScope.includeLab) {
+      lines.push(
+        ...postProcessAnalytics.workflowCounts.map((d) => row("PP Workflow", d.name, d.value)),
+        ...postProcessAnalytics.inventoryStatus.map((d) => row("PP Inventory Status", d.name, d.Active, d.Depleted)),
+        ...postProcessAnalytics.financialSnapshot.map((d) => row("PP Financial", d.name, d.Revenue, d.Cost, d.Profit)),
+        ...postProcessAnalytics.productPerformance.map((d) => row("PP Product", d.name, d.sold, d.revenue, d.profit, d.available)),
+        ...postProcessAnalytics.batchPerformance.map((d) => row("PP Batch", d.name, d.sold, d.revenue, d.profit, d.available)),
+        ...postProcessAnalytics.skuPerformance.map((d) => row("PP SKU", d.name, d.sold, d.samples, d.revenue, d.available)),
+        ...postProcessAnalytics.packageSizePerformance.map((d) => row("PP Package Size", d.name, d.sold, d.samples, d.revenue, d.available)),
+        ...postProcessAnalytics.lockedPricing.map((d) => row("PP Locked Pricing", d.name, d.Cost, d.DefaultPrice, d.MSRP)),
+        ...postProcessAnalytics.overrideByProduct.map((d) => row("PP Overrides", d.name, d.priceOverrides, d.fefoOverrides)),
+        ...postProcessAnalytics.expirationBuckets.map((d) => row("PP Expiration", d.name, d.units, d.lots)),
+        ...postProcessAnalytics.salesByDestination.map((d) => row("PP Destination", d.name, d.quantity, d.revenue)),
+        ...postProcessAnalytics.finishedLossByReason.map((d) => row("PP Finished Loss", d.name, d.destroyed, d.wasted, d.costLoss)),
+        ...postProcessAnalytics.processWasteByReason.map((d) => row("PP Process Waste", d.name, d.quantity)),
+        ...postProcessAnalytics.efficiencyByBatch.map((d) => row("PP Efficiency", d.name, d.expected, d.actual, d.waste, d.variancePct)),
+        ...postProcessAnalytics.reworkSeries.map((d) => row("PP Rework", d.name, d.salvage, d.waste)),
+        ...postProcessAnalytics.packagingUsage.map((d) => row("Packaging Usage", d.name, d.used, d.onHand, d.daysCover))
+      );
+    }
+
     const blob = new Blob([lines.join("\n")], { type: "text/csv;charset=utf-8" });
     const a = document.createElement("a");
     a.href = URL.createObjectURL(blob);
@@ -2222,22 +2438,40 @@ for (let i = weeksBack - 1; i >= 0; i--) {
 
   // JSON export
   const exportJSON = () => {
+    if (!analyticsExportScope.canExport) {
+      requestAnalyticsFeature(
+        SUBSCRIPTION_FEATURE_KEYS.ANALYTICS_EXPORTS,
+        "Export analytics as JSON"
+      );
+      return;
+    }
+
     const chosenGrows = showAll ? (Array.isArray(growsAll) ? growsAll : allGrows) : datasetActive;
     const payload = {
       app: "Chaotic Neutral Myco Tracker",
-      schemaVersion: 3,
+      schemaVersion: 4,
       exportedAt: new Date().toISOString(),
       growDataset: showAll ? "all" : "active",
       activityRange: { from: fromDate || null, to: toDate || null },
+      accessScope: {
+        basicAnalytics: analyticsExportScope.includeBasic,
+        advancedAnalytics: analyticsExportScope.includeAdvanced,
+        advancedCostAnalytics: analyticsExportScope.includeAdvancedCost,
+        labAnalytics: analyticsExportScope.includeLab,
+      },
       counts: {
         grows: Array.isArray(chosenGrows) ? chosenGrows.length : 0,
         tasks: Array.isArray(tasks) ? tasks.length : 0,
         recipes: Array.isArray(recipes) ? recipes.length : 0,
         supplies: Array.isArray(supplies) ? supplies.length : 0,
         audits: Array.isArray(audits) ? audits.length : 0,
-        materialLots: materialLots.length,
-        processBatches: processBatches.length,
-        inventoryMovements: inventoryMoves.length,
+        ...(analyticsExportScope.includeLab
+          ? {
+              materialLots: materialLots.length,
+              processBatches: processBatches.length,
+              inventoryMovements: inventoryMoves.length,
+            }
+          : {}),
       },
       data: {
         grows: Array.isArray(chosenGrows) ? chosenGrows : [],
@@ -2245,24 +2479,37 @@ for (let i = weeksBack - 1; i >= 0; i--) {
         recipes: Array.isArray(recipes) ? recipes : [],
         supplies: Array.isArray(supplies) ? supplies : [],
         audits: Array.isArray(audits) ? audits : [],
-        materialLots,
-        processBatches,
-        inventoryMovements: inventoryMoves,
+        ...(analyticsExportScope.includeLab
+          ? { materialLots, processBatches, inventoryMovements: inventoryMoves }
+          : {}),
       },
       analytics: {
-        recipeUseCounts,
-        mostUsedSupplies,
-        contamRate,
-        ttsSeries,
-        burnTopSupplies,
-        throughputSeries,
-        postProcess: postProcessAnalytics,
+        ...(analyticsExportScope.includeBasic
+          ? { stageCounts, yieldData, stageTransitions, throughputSeries, taskSummary }
+          : {}),
+        ...(analyticsExportScope.includeAdvanced
+          ? {
+              avgYieldPerStrain,
+              recipeUseCounts,
+              mostUsedSupplies,
+              contamRate,
+              ttsSeries,
+              burnTopSupplies,
+              sopWorkflowPerformance,
+            }
+          : {}),
+        ...(analyticsExportScope.includeAdvancedCost
+          ? { growCosts, yieldVsCost }
+          : {}),
+        ...(analyticsExportScope.includeLab
+          ? { postProcess: postProcessAnalytics }
+          : {}),
       },
     };
     const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
     const a = document.createElement("a");
     a.href = URL.createObjectURL(blob);
-    a.download = `myco-backup-${payload.growDataset}-${new Date().toISOString().slice(0, 10)}.json`;
+    a.download = `myco-analytics-${payload.growDataset}-${new Date().toISOString().slice(0, 10)}.json`;
     a.click();
     URL.revokeObjectURL(a.href);
   };
@@ -2851,8 +3098,14 @@ for (let i = weeksBack - 1; i >= 0; i--) {
   const expiringAttention = postProcessAnalytics.expiringLots.filter((lot) => lot.days <= 90).slice(0, 8);
   const activeSectionConfig = ANALYTICS_SECTIONS.find((section) => section.id === activeSection) || ANALYTICS_SECTIONS[0];
   const activeReports = ANALYTICS_REPORTS[activeSection] || [];
-  const usesGrowFilters = activeSection === "cultivation" || activeSection === "supplies";
+  const activeSectionFeatureKey = getAnalyticsSectionFeatureKey(activeSection);
+  const activeSectionAllowed = hasAnalyticsFeature(activeSectionFeatureKey);
+  const usesGrowFilters =
+    activeSectionAllowed &&
+    (activeSection === "cultivation" || activeSection === "supplies");
   const isPostProcessSection = ["production", "sales", "quality"].includes(activeSection);
+  const reportIsAllowed = (reportKey) =>
+    hasAnalyticsFeature(getAnalyticsReportFeatureKey(reportKey));
 
   const clearDateRange = () => {
     setFromDate("");
@@ -2877,10 +3130,17 @@ for (let i = weeksBack - 1; i >= 0; i--) {
         </div>
       </div>
 
-      <div role="tablist" aria-label="Analytics workspaces" className="flex flex-wrap gap-2 rounded-2xl border border-zinc-200 dark:border-zinc-800 bg-zinc-50/80 dark:bg-zinc-950/40 p-2">
+      <div
+        role="tablist"
+        aria-label="Analytics workspaces"
+        data-tour="analytics-workspaces"
+        className="flex flex-wrap gap-2 rounded-2xl border border-zinc-200 dark:border-zinc-800 bg-zinc-50/80 dark:bg-zinc-950/40 p-2"
+      >
         {ANALYTICS_SECTIONS.map((section) => {
           const active = section.id === activeSection;
           const reportCount = (ANALYTICS_REPORTS[section.id] || []).length;
+          const sectionFeatureKey = getAnalyticsSectionFeatureKey(section.id);
+          const sectionAllowed = hasAnalyticsFeature(sectionFeatureKey);
           return (
             <button
               key={section.id}
@@ -2892,12 +3152,17 @@ for (let i = weeksBack - 1; i >= 0; i--) {
             >
               {section.label}
               {reportCount > 0 ? <span className={`ml-2 text-xs ${active ? "text-purple-100" : "text-zinc-400"}`}>{reportCount}</span> : null}
+              {!sectionAllowed ? (
+                <span className={`ml-2 rounded-full px-2 py-0.5 text-[10px] uppercase tracking-wide ${active ? "bg-white/20 text-white" : "bg-violet-100 text-violet-700 dark:bg-violet-950/60 dark:text-violet-300"}`}>
+                  Locked
+                </span>
+              ) : null}
             </button>
           );
         })}
       </div>
 
-      <section className="rounded-2xl border border-zinc-200 dark:border-zinc-800 bg-zinc-50/70 dark:bg-zinc-950/30 p-4 space-y-4">
+      <section className="rounded-2xl border border-zinc-200 dark:border-zinc-800 bg-zinc-50/70 dark:bg-zinc-950/30 p-4 space-y-4" data-tour="analytics-filters">
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div>
             <div className="text-sm font-semibold text-zinc-800 dark:text-zinc-100">Filters and exports</div>
@@ -2905,9 +3170,24 @@ for (let i = weeksBack - 1; i >= 0; i--) {
               Date filters apply to grow reference dates and Post Processing outbound activity. Current inventory remains a live snapshot.
             </div>
           </div>
-          <div className="flex flex-wrap gap-2">
-            <button onClick={exportCSV} className="btn btn-accent">Export CSV</button>
-            <button onClick={exportJSON} className="btn" title="Export grows, post-processing collections, and analytic snapshots">Export JSON</button>
+          <div className="flex flex-wrap gap-2" data-tour="analytics-export">
+            <button
+              type="button"
+              onClick={exportCSV}
+              aria-disabled={!analyticsExportScope.canExport}
+              className={`btn ${analyticsExportScope.canExport ? "btn-accent" : "border-violet-300 text-violet-700 dark:border-violet-800 dark:text-violet-300"}`}
+            >
+              Export CSV{analyticsExportScope.canExport ? "" : ` · ${analyticsExportGate.minimumPlanLabel}`}
+            </button>
+            <button
+              type="button"
+              onClick={exportJSON}
+              aria-disabled={!analyticsExportScope.canExport}
+              className={`btn ${analyticsExportScope.canExport ? "" : "border-violet-300 text-violet-700 dark:border-violet-800 dark:text-violet-300"}`}
+              title="Export analytic reports allowed by the current entitlement"
+            >
+              Export JSON{analyticsExportScope.canExport ? "" : ` · ${analyticsExportGate.minimumPlanLabel}`}
+            </button>
           </div>
         </div>
 
@@ -2928,12 +3208,14 @@ for (let i = weeksBack - 1; i >= 0; i--) {
 
           {usesGrowFilters ? (
             <>
-              <label className="space-y-1 text-sm min-w-48">
-                <span className="block text-xs text-zinc-500 dark:text-zinc-400">Strain</span>
-                <select value={strainFilter} onChange={(event) => setStrainFilter(event.target.value)} className="w-full rounded-lg border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-900 px-3 py-2">
-                  {allStrainOptions.map((strain) => <option key={strain} value={strain}>{strain}</option>)}
-                </select>
-              </label>
+              {canUseAdvancedAnalytics ? (
+                <label className="space-y-1 text-sm min-w-48">
+                  <span className="block text-xs text-zinc-500 dark:text-zinc-400">Strain</span>
+                  <select value={strainFilter} onChange={(event) => setStrainFilter(event.target.value)} className="w-full rounded-lg border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-900 px-3 py-2">
+                    {allStrainOptions.map((strain) => <option key={strain} value={strain}>{strain}</option>)}
+                  </select>
+                </label>
+              ) : null}
               <label className="space-y-1 text-sm">
                 <span className="block text-xs text-zinc-500 dark:text-zinc-400">Grow dataset</span>
                 <select value={showAll ? "all" : "active"} onChange={(event) => setShowAll(event.target.value === "all")} className="rounded-lg border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-900 px-3 py-2">
@@ -2944,7 +3226,7 @@ for (let i = weeksBack - 1; i >= 0; i--) {
             </>
           ) : null}
 
-          {activeSection === "cultivation" ? (
+          {activeSection === "cultivation" && canUseAdvancedAnalytics ? (
             <>
               <label className="space-y-1 text-sm">
                 <span className="block text-xs text-zinc-500 dark:text-zinc-400">Rate and timing groups</span>
@@ -2969,9 +3251,23 @@ for (let i = weeksBack - 1; i >= 0; i--) {
           </label>
         </div>
 
+        {usesGrowFilters && !canUseAdvancedAnalytics ? (
+          <AnalyticsLockedPanel
+            compact
+            featureKey={SUBSCRIPTION_FEATURE_KEYS.ADVANCED_ANALYTICS}
+            actionLabel="Use advanced analytics filters"
+            supportingText={getAnalyticsFeatureSupportingText(
+              SUBSCRIPTION_FEATURE_KEYS.ADVANCED_ANALYTICS
+            )}
+            onRequest={onSubscriptionFeatureBlocked}
+          />
+        ) : null}
+
         <div className="text-xs text-zinc-500 dark:text-zinc-400">
-          {isPostProcessSection ? (
+          {isPostProcessSection && activeSectionAllowed ? (
             <>Post Processing activity: {postProcessAnalytics.activityMoveCount} matching outbound transaction{postProcessAnalytics.activityMoveCount === 1 ? "" : "s"}{(fromDate || toDate) ? ` · ${fromDate || "…"} → ${toDate || "…"}` : " · all history"}</>
+          ) : !activeSectionAllowed ? (
+            <>This workspace is locked. Basic cultivation summaries remain available in Overview and Cultivation.</>
           ) : usesGrowFilters ? (
             <>Grow dataset: {filteredAll.length} matching grow{filteredAll.length === 1 ? "" : "s"} · {activeFiltered.length} active{strainFilter !== "All strains" ? ` · ${strainFilter}` : ""}{(fromDate || toDate) ? ` · ${fromDate || "…"} → ${toDate || "…"}` : ""}</>
           ) : (
@@ -2982,74 +3278,116 @@ for (let i = weeksBack - 1; i >= 0; i--) {
 
       {activeSection === "overview" ? (
         <div className="space-y-5">
-          <div>
-            <div className="mb-2 text-sm font-semibold text-zinc-800 dark:text-zinc-100">Cultivation snapshot</div>
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-              <StatCard label="Active grows" value={overview.totalActive} />
-              <StatCard label="Unique strains" value={overview.uniqueStrains} />
-              <StatCard label="Average age" value={`${overview.avgAgeDays} days`} />
-              <StatCard label="Estimated running cost" value={fmt$(overview.runningCost)} />
-            </div>
-          </div>
-
-          <div>
-            <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
-              <div className="text-sm font-semibold text-zinc-800 dark:text-zinc-100">Post Processing snapshot</div>
-              <div className="text-xs text-zinc-500 dark:text-zinc-400">Inventory is current. Revenue and outbound totals follow the date range.</div>
-            </div>
-            <div className="grid grid-cols-2 md:grid-cols-4 xl:grid-cols-6 gap-4">
-              <StatCard label="Active parent batches" value={ppSummary.activeParentBatches} />
-              <StatCard label="Active package lots" value={ppSummary.activePackageLots} />
-              <StatCard label="Available package units" value={fmtInt(ppSummary.availablePackagedUnits)} />
-              <StatCard label="Depleted package lots" value={ppSummary.depletedPackageLots} />
-              <StatCard label="Units sold" value={fmtInt(ppSummary.unitsSold)} />
-              <StatCard label="Samples distributed" value={fmtInt(ppSummary.samplesDistributed)} />
-              <StatCard label="Destroyed units" value={fmtInt(ppSummary.destroyedUnits)} />
-              <StatCard label="Realized revenue" value={fmt$(ppSummary.realizedRevenue)} />
-              <StatCard label="Realized profit" value={fmt$(ppSummary.realizedProfit)} hint={`${ppSummary.realizedMarginPercent}% realized margin`} />
-              <StatCard label="Remaining projected revenue" value={fmt$(ppSummary.remainingProjectedRevenue)} />
-              <StatCard label="Remaining projected profit" value={fmt$(ppSummary.remainingProjectedProfit)} />
-              <StatCard label="Price / FEFO overrides" value={`${ppSummary.priceOverrides} / ${ppSummary.fefoOverrides}`} />
-            </div>
-          </div>
-
-          {(expiringAttention.length > 0 || ppSummary.packagingShortages > 0 || ppSummary.belowCostSales > 0) ? (
-            <section className="rounded-2xl border border-amber-300/70 dark:border-amber-800/70 bg-amber-50/70 dark:bg-amber-950/20 p-4 space-y-3">
+          {canUseBasicAnalytics ? (
+            <>
               <div>
-                <div className="font-semibold text-amber-900 dark:text-amber-100">Attention queue</div>
-                <div className="text-sm text-amber-800/80 dark:text-amber-200/80">
-                  {expiringAttention.length} expiring or expired package lot{expiringAttention.length === 1 ? "" : "s"} · {ppSummary.packagingShortages} packaging shortage{ppSummary.packagingShortages === 1 ? "" : "s"} · {ppSummary.belowCostSales} below-cost sale{ppSummary.belowCostSales === 1 ? "" : "s"}
+                <div className="mb-2 text-sm font-semibold text-zinc-800 dark:text-zinc-100">Cultivation snapshot</div>
+                <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                  <StatCard label="Active grows" value={overview.totalActive} />
+                  <StatCard label="Unique strains" value={overview.uniqueStrains} />
+                  <StatCard label="Average age" value={`${overview.avgAgeDays} days`} />
+                  <StatCard label="Recorded dry yield" value={fmtG(recordedYieldSummary.dry)} />
                 </div>
               </div>
-              <div className="grid grid-cols-1 lg:grid-cols-2 gap-3 text-sm">
-                {expiringAttention.map((lot) => (
-                  <div key={lot.id} className="rounded-xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 p-3">
-                    <div className="font-medium break-words">{lot.product}</div>
-                    <div className="mt-1 text-zinc-500 dark:text-zinc-400 break-words">
-                      {lot.name} · {lot.packageSize} · {fmtInt(lot.units)} units · Best by {lot.bestBy} · {lot.days < 0 ? `${Math.abs(lot.days)} days past` : `${lot.days} days`}
+
+              <div>
+                <div className="mb-2 text-sm font-semibold text-zinc-800 dark:text-zinc-100">Task snapshot</div>
+                <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                  <StatCard label="Total tasks" value={taskSummary.total} />
+                  <StatCard label="Open tasks" value={taskSummary.open} />
+                  <StatCard label="Completed tasks" value={taskSummary.completed} />
+                  <StatCard label="Overdue tasks" value={taskSummary.overdue} />
+                </div>
+              </div>
+            </>
+          ) : (
+            <AnalyticsLockedPanel
+              featureKey={SUBSCRIPTION_FEATURE_KEYS.BASIC_ANALYTICS}
+              actionLabel="View basic analytics"
+              supportingText={getAnalyticsFeatureSupportingText(
+                SUBSCRIPTION_FEATURE_KEYS.BASIC_ANALYTICS
+              )}
+              onRequest={onSubscriptionFeatureBlocked}
+            />
+          )}
+
+          {canUseLabAnalytics ? (
+            <>
+              <div>
+                <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+                  <div className="text-sm font-semibold text-zinc-800 dark:text-zinc-100">Post Processing snapshot</div>
+                  <div className="text-xs text-zinc-500 dark:text-zinc-400">Inventory is current. Revenue and outbound totals follow the date range.</div>
+                </div>
+                <div className="grid grid-cols-2 md:grid-cols-4 xl:grid-cols-6 gap-4">
+                  <StatCard label="Active parent batches" value={ppSummary.activeParentBatches} />
+                  <StatCard label="Active package lots" value={ppSummary.activePackageLots} />
+                  <StatCard label="Available package units" value={fmtInt(ppSummary.availablePackagedUnits)} />
+                  <StatCard label="Depleted package lots" value={ppSummary.depletedPackageLots} />
+                  <StatCard label="Units sold" value={fmtInt(ppSummary.unitsSold)} />
+                  <StatCard label="Samples distributed" value={fmtInt(ppSummary.samplesDistributed)} />
+                  <StatCard label="Destroyed units" value={fmtInt(ppSummary.destroyedUnits)} />
+                  <StatCard label="Realized revenue" value={fmt$(ppSummary.realizedRevenue)} />
+                  <StatCard label="Realized profit" value={fmt$(ppSummary.realizedProfit)} hint={`${ppSummary.realizedMarginPercent}% realized margin`} />
+                  <StatCard label="Remaining projected revenue" value={fmt$(ppSummary.remainingProjectedRevenue)} />
+                  <StatCard label="Remaining projected profit" value={fmt$(ppSummary.remainingProjectedProfit)} />
+                  <StatCard label="Price / FEFO overrides" value={`${ppSummary.priceOverrides} / ${ppSummary.fefoOverrides}`} />
+                </div>
+              </div>
+
+              {(expiringAttention.length > 0 || ppSummary.packagingShortages > 0 || ppSummary.belowCostSales > 0) ? (
+                <section className="rounded-2xl border border-amber-300/70 dark:border-amber-800/70 bg-amber-50/70 dark:bg-amber-950/20 p-4 space-y-3">
+                  <div>
+                    <div className="font-semibold text-amber-900 dark:text-amber-100">Attention queue</div>
+                    <div className="text-sm text-amber-800/80 dark:text-amber-200/80">
+                      {expiringAttention.length} expiring or expired package lot{expiringAttention.length === 1 ? "" : "s"} · {ppSummary.packagingShortages} packaging shortage{ppSummary.packagingShortages === 1 ? "" : "s"} · {ppSummary.belowCostSales} below-cost sale{ppSummary.belowCostSales === 1 ? "" : "s"}
                     </div>
                   </div>
-                ))}
-              </div>
-            </section>
+                  <div className="grid grid-cols-1 lg:grid-cols-2 gap-3 text-sm">
+                    {expiringAttention.map((lot) => (
+                      <div key={lot.id} className="rounded-xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 p-3">
+                        <div className="font-medium break-words">{lot.product}</div>
+                        <div className="mt-1 text-zinc-500 dark:text-zinc-400 break-words">
+                          {lot.name} · {lot.packageSize} · {fmtInt(lot.units)} units · Best by {lot.bestBy} · {lot.days < 0 ? `${Math.abs(lot.days)} days past` : `${lot.days} days`}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </section>
+              ) : (
+                <div className="rounded-2xl border border-emerald-300/70 dark:border-emerald-800/70 bg-emerald-50/70 dark:bg-emerald-950/20 p-4 text-sm text-emerald-800 dark:text-emerald-200">
+                  No expiring inventory, packaging shortages, or below-cost sales currently require attention.
+                </div>
+              )}
+            </>
           ) : (
-            <div className="rounded-2xl border border-emerald-300/70 dark:border-emerald-800/70 bg-emerald-50/70 dark:bg-emerald-950/20 p-4 text-sm text-emerald-800 dark:text-emerald-200">
-              No expiring inventory, packaging shortages, or below-cost sales currently require attention.
-            </div>
+            <AnalyticsLockedPanel
+              featureKey={SUBSCRIPTION_FEATURE_KEYS.LAB_ANALYTICS}
+              actionLabel="View Post Processing analytics"
+              supportingText={getAnalyticsFeatureSupportingText(
+                SUBSCRIPTION_FEATURE_KEYS.LAB_ANALYTICS
+              )}
+              onRequest={onSubscriptionFeatureBlocked}
+            />
           )}
 
           <div>
             <div className="mb-2 text-sm font-semibold text-zinc-800 dark:text-zinc-100">Analytics workspaces</div>
             <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
-              {ANALYTICS_SECTIONS.filter((section) => section.id !== "overview").map((section) => (
-                <button key={section.id} type="button" onClick={() => setActiveSection(section.id)} className="rounded-2xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 p-4 text-left hover:border-purple-400 dark:hover:border-purple-700 hover:shadow-sm transition">
-                  <div className="flex items-center justify-between gap-3">
-                    <div className="font-semibold text-zinc-900 dark:text-zinc-100">{section.label}</div>
-                    <div className="rounded-full bg-purple-100 dark:bg-purple-950/60 px-2 py-0.5 text-xs text-purple-700 dark:text-purple-300">{(ANALYTICS_REPORTS[section.id] || []).length} reports</div>
-                  </div>
-                  <div className="mt-2 text-sm text-zinc-500 dark:text-zinc-400">{section.description}</div>
-                </button>
-              ))}
+              {ANALYTICS_SECTIONS.filter((section) => section.id !== "overview").map((section) => {
+                const sectionFeatureKey = getAnalyticsSectionFeatureKey(section.id);
+                const sectionAllowed = hasAnalyticsFeature(sectionFeatureKey);
+                return (
+                  <button key={section.id} type="button" onClick={() => setActiveSection(section.id)} className="rounded-2xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 p-4 text-left hover:border-purple-400 dark:hover:border-purple-700 hover:shadow-sm transition">
+                    <div className="flex items-center justify-between gap-3">
+                      <div className="font-semibold text-zinc-900 dark:text-zinc-100">{section.label}</div>
+                      <div className={`rounded-full px-2 py-0.5 text-xs ${sectionAllowed ? "bg-purple-100 text-purple-700 dark:bg-purple-950/60 dark:text-purple-300" : "bg-violet-100 text-violet-700 dark:bg-violet-950/60 dark:text-violet-300"}`}>
+                        {sectionAllowed ? `${(ANALYTICS_REPORTS[section.id] || []).length} reports` : "Locked"}
+                      </div>
+                    </div>
+                    <div className="mt-2 text-sm text-zinc-500 dark:text-zinc-400">{section.description}</div>
+                  </button>
+                );
+              })}
             </div>
           </div>
         </div>
@@ -3060,12 +3398,21 @@ for (let i = weeksBack - 1; i >= 0; i--) {
             <div className="mt-1 text-sm text-zinc-500 dark:text-zinc-400">{activeSectionConfig.description}</div>
           </div>
 
+          {!activeSectionAllowed ? (
+            <AnalyticsLockedPanel
+              featureKey={activeSectionFeatureKey}
+              actionLabel={`Open ${activeSectionConfig.label} analytics`}
+              supportingText={getAnalyticsFeatureSupportingText(activeSectionFeatureKey)}
+              onRequest={onSubscriptionFeatureBlocked}
+            />
+          ) : (
+            <>
           {activeSection === "cultivation" ? (
             <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
               <StatCard label="Matching grows" value={filteredAll.length} />
               <StatCard label="Active grows" value={activeFiltered.length} />
               <StatCard label="Unique strains" value={overview.uniqueStrains} />
-              <StatCard label="Estimated running cost" value={fmt$(overview.runningCost)} />
+              <StatCard label="Recorded dry yield" value={fmtG(recordedYieldSummary.dry)} />
             </div>
           ) : null}
 
@@ -3107,23 +3454,45 @@ for (let i = weeksBack - 1; i >= 0; i--) {
               <StatCard label="Recipes" value={Array.isArray(recipes) ? recipes.length : 0} />
               <StatCard label="Supplies" value={Array.isArray(supplies) ? supplies.length : 0} />
               <StatCard label="Supply audits" value={Array.isArray(audits) ? audits.length : 0} />
-              <StatCard label="Packaging shortages" value={ppSummary.packagingShortages} />
+              {canUseLabAnalytics ? (
+                <StatCard label="Packaging shortages" value={ppSummary.packagingShortages} />
+              ) : (
+                <div className="rounded-2xl border border-violet-200 bg-violet-50/80 p-4 text-violet-950 shadow-sm dark:border-violet-900/60 dark:bg-violet-950/25 dark:text-violet-100">
+                  <div className="text-sm text-violet-700 dark:text-violet-300">Packaging analytics</div>
+                  <div className="mt-1 text-lg font-semibold">{labAnalyticsGate.minimumPlanLabel}</div>
+                </div>
+              )}
             </div>
           ) : null}
 
           <div className="space-y-4">
-            {activeReports.map((report, index) => (
-              <AnalyticsReportCard
-                key={report.key}
-                title={report.title}
-                description={report.description}
-                defaultOpen={index === 0}
-                testId={`analytics-report-${report.key}`}
-              >
-                {renderChart(report.key)}
-              </AnalyticsReportCard>
-            ))}
+            {activeReports.map((report, index) => {
+              const reportFeatureKey = getAnalyticsReportFeatureKey(report.key);
+              const allowed = reportIsAllowed(report.key);
+              return (
+                <AnalyticsReportCard
+                  key={report.key}
+                  title={report.title}
+                  description={report.description}
+                  defaultOpen={index === 0}
+                  testId={`analytics-report-${report.key}`}
+                >
+                  {allowed ? (
+                    renderChart(report.key)
+                  ) : (
+                    <AnalyticsLockedPanel
+                      featureKey={reportFeatureKey}
+                      actionLabel={`Open ${report.title}`}
+                      supportingText={getAnalyticsFeatureSupportingText(reportFeatureKey)}
+                      onRequest={onSubscriptionFeatureBlocked}
+                    />
+                  )}
+                </AnalyticsReportCard>
+              );
+            })}
           </div>
+            </>
+          )}
         </div>
       )}
     </div>

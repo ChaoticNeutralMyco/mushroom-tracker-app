@@ -2,6 +2,7 @@
 import fs from "fs";
 import path from "path";
 import { test, expect, Page, Locator } from "@playwright/test";
+import { waitForFirebaseAuthSession } from "./helpers/app";
 
 const authStatePath = path.join("tests", "e2e", ".auth", "user.json");
 
@@ -11,6 +12,134 @@ function safeVisible(locator: Locator) {
 
 function safeEnabled(locator: Locator) {
   return locator.isEnabled().catch(() => false);
+}
+
+function isTransientRuntimeEvaluationError(error: unknown) {
+  const message = String((error as any)?.message || error || "");
+  return /execution context was destroyed|cannot find context|most likely because of a navigation|target page, context or browser has been closed|frame was detached/i.test(
+    message
+  );
+}
+
+async function readFirebaseEmulatorRuntime(
+  page: Page,
+  { functionsRequired = false } = {}
+) {
+  const timeoutMs = 60_000;
+  const startedAt = Date.now();
+  let lastError = "No runtime result was returned.";
+
+  while (Date.now() - startedAt < timeoutMs) {
+    try {
+      await page
+        .waitForLoadState("domcontentloaded", { timeout: 5_000 })
+        .catch(() => undefined);
+
+      const runtime = await page.evaluate(async () => {
+        const mod = await import("/src/firebase-config.js");
+        await mod.authReady;
+
+        if (typeof mod.auth.authStateReady === "function") {
+          await mod.auth.authStateReady();
+        }
+
+        const authAny = mod.auth as any;
+        const dbAny = mod.db as any;
+        const functionsBridge = (globalThis as any).__CNM_FUNCTIONS_E2E__;
+
+        return {
+          authEmulator: Boolean(authAny?.emulatorConfig),
+          firestoreHost: String(
+            dbAny?._settings?.host ||
+              dbAny?._settingsFrozen?.host ||
+              ""
+          ),
+          functionsBridgeReady: Boolean(functionsBridge),
+          functionsEmulator: Boolean(functionsBridge?.connected),
+          functionsHost: String(functionsBridge?.host || ""),
+          functionsPort: Number(functionsBridge?.port || 0),
+        };
+      });
+
+      if (
+        !runtime.authEmulator ||
+        (functionsRequired && !runtime.functionsBridgeReady)
+      ) {
+        lastError = "The browser Firebase emulator runtime is still initializing.";
+        await page.waitForTimeout(250);
+        continue;
+      }
+
+      return runtime;
+    } catch (error) {
+      lastError = String((error as any)?.message || error || "Unknown error");
+      if (!isTransientRuntimeEvaluationError(error)) {
+        throw error;
+      }
+      await page.waitForTimeout(250);
+    }
+  }
+
+  throw new Error(
+    `Could not inspect the browser Firebase emulator runtime within ${timeoutMs}ms. Last error: ${lastError}`
+  );
+}
+
+async function assertRequiredFirebaseEmulators(page: Page) {
+  const required = /^(1|true|yes)$/i.test(
+    String(process.env.E2E_REQUIRE_FIREBASE_EMULATORS || "")
+  );
+  if (!required) return;
+
+  const functionsRequired = /^(1|true|yes)$/i.test(
+    String(process.env.E2E_REQUIRE_FUNCTIONS_EMULATOR || "")
+  );
+
+  if (
+    !process.env.FIRESTORE_EMULATOR_HOST ||
+    !process.env.FIREBASE_AUTH_EMULATOR_HOST
+  ) {
+    throw new Error(
+      "E2E_REQUIRE_FIREBASE_EMULATORS is enabled, but Firestore/Auth emulator hosts are missing."
+    );
+  }
+
+  if (functionsRequired && !process.env.FUNCTIONS_EMULATOR_HOST) {
+    throw new Error(
+      "E2E_REQUIRE_FUNCTIONS_EMULATOR is enabled, but FUNCTIONS_EMULATOR_HOST is missing."
+    );
+  }
+
+  const runtime = await readFirebaseEmulatorRuntime(page, { functionsRequired });
+
+  if (!runtime.authEmulator) {
+    throw new Error("The browser app did not connect Firebase Auth to the emulator.");
+  }
+
+  if (
+    runtime.firestoreHost &&
+    !/127\.0\.0\.1|localhost/i.test(runtime.firestoreHost)
+  ) {
+    throw new Error(
+      `The browser app resolved a non-emulator Firestore host: ${runtime.firestoreHost}`
+    );
+  }
+
+  if (functionsRequired && !runtime.functionsEmulator) {
+    throw new Error(
+      "The browser app did not connect trusted grow mutations to the Functions emulator."
+    );
+  }
+
+  if (
+    functionsRequired &&
+    runtime.functionsHost &&
+    !/^(127\.0\.0\.1|localhost)$/i.test(runtime.functionsHost)
+  ) {
+    throw new Error(
+      `The browser app resolved a non-local Functions host: ${runtime.functionsHost}`
+    );
+  }
 }
 
 function authLocators(page: Page) {
@@ -74,6 +203,7 @@ async function dismissTutorialIfPresent(page: Page) {
 
 async function trySignIn(page: Page, email: string, password: string) {
   const { signInButton, emailInput, needAccountButton } = authLocators(page);
+  const authError = page.locator(".text-rose-700, .text-rose-200").first();
 
   await fillAuthForm(page, email, password);
 
@@ -81,23 +211,33 @@ async function trySignIn(page: Page, email: string, password: string) {
   await expect(signInButton).toBeEnabled({ timeout: 20_000 });
   await signInButton.click();
 
-  try {
-    await waitForSignedIn(page);
-    return "signed-in";
-  } catch {
+  const outcome = await expect
+    .poll(
+      async () => {
+        if (await isSignedIn(page)) return "signed-in";
+        if (await safeVisible(authError)) return "needs-signup";
+        return "pending";
+      },
+      {
+        timeout: 60_000,
+        intervals: [250, 500, 1000, 1500, 2000],
+      }
+    )
+    .not.toBe("pending")
+    .then(async () => {
+      if (await isSignedIn(page)) return "signed-in";
+      if (await safeVisible(authError)) return "needs-signup";
+      return "unknown";
+    })
+    .catch(() => "unknown");
+
+  if (outcome === "needs-signup") {
     const stillOnAuth = await safeVisible(emailInput);
     const canOpenSignup = await safeEnabled(needAccountButton);
-
-    if (stillOnAuth && canOpenSignup) {
-      return "needs-signup";
-    }
-
-    if (await isSignedIn(page)) {
-      return "signed-in";
-    }
-
-    return "unknown";
+    return stillOnAuth && canOpenSignup ? "needs-signup" : "unknown";
   }
+
+  return outcome;
 }
 
 async function tryCreateAccount(page: Page, email: string, password: string) {
@@ -116,6 +256,19 @@ async function tryCreateAccount(page: Page, email: string, password: string) {
   await waitForSignedIn(page);
 }
 
+async function saveDurableAuthState(page: Page, context: any) {
+  const emulatorRequired = /^(1|true|yes)$/i.test(
+    String(process.env.E2E_REQUIRE_FIREBASE_EMULATORS || "")
+  );
+
+  if (emulatorRequired) {
+    await waitForFirebaseAuthSession(page);
+  }
+
+  fs.mkdirSync(path.dirname(authStatePath), { recursive: true });
+  await context.storageState({ path: authStatePath, indexedDB: true });
+}
+
 test("authenticate dedicated e2e user", async ({ page, context }) => {
   const email = process.env.E2E_EMAIL;
   const password = process.env.E2E_PASSWORD;
@@ -126,12 +279,16 @@ test("authenticate dedicated e2e user", async ({ page, context }) => {
     );
   }
 
+  if (/^(1|true|yes)$/i.test(String(process.env.E2E_REQUIRE_FIREBASE_EMULATORS || ""))) {
+    fs.rmSync(authStatePath, { force: true });
+  }
+
   await page.goto("/", { waitUntil: "domcontentloaded" });
+  await assertRequiredFirebaseEmulators(page);
 
   if (await isSignedIn(page)) {
     await dismissTutorialIfPresent(page);
-    fs.mkdirSync(path.dirname(authStatePath), { recursive: true });
-    await context.storageState({ path: authStatePath });
+    await saveDurableAuthState(page, context);
     return;
   }
 
@@ -147,7 +304,5 @@ test("authenticate dedicated e2e user", async ({ page, context }) => {
 
   await waitForSignedIn(page);
   await dismissTutorialIfPresent(page);
-
-  fs.mkdirSync(path.dirname(authStatePath), { recursive: true });
-  await context.storageState({ path: authStatePath });
+  await saveDurableAuthState(page, context);
 });

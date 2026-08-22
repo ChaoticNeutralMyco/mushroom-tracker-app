@@ -92,7 +92,12 @@ function RecipeSummaryCard({ icon: Icon, label, value, hint }) {
   );
 }
 
-export default function RecipeManager({ onStartGrowFromTemplate }) {
+export default function RecipeManager({
+  onStartGrowFromTemplate,
+  canUseSopWorkflows = true,
+  canGenerateSopTasks = true,
+  onSubscriptionFeatureBlocked = () => false,
+}) {
   const [supplies, setSupplies] = useState([]);
   const [recipes, setRecipes] = useState([]);
   const [selected, setSelected] = useState([]);
@@ -631,6 +636,9 @@ export default function RecipeManager({ onStartGrowFromTemplate }) {
       <SopWorkflowToolkit
         onUseTemplate={useWorkflowTemplateInNewRecipe}
         onStartGrowFromTemplate={onStartGrowFromTemplate}
+        canUseSopWorkflows={canUseSopWorkflows}
+        canGenerateSopTasks={canGenerateSopTasks}
+        onSubscriptionFeatureBlocked={onSubscriptionFeatureBlocked}
       />
 
       {selected.length > 0 && (

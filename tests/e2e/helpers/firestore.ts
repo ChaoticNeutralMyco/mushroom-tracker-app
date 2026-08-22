@@ -17,33 +17,26 @@ const FIRESTORE_REST_TIMEOUT_MS = 15_000;
 
 export async function captureNodeAuthSession(page: Page): Promise<NodeAuthSession> {
   return page.evaluate(async (defaults) => {
-    const mod = await import("/src/firebase-config.js");
+    const bridge = (globalThis as any).__CNM_FIREBASE_E2E__;
 
-    const currentUser =
-      mod.auth.currentUser ||
-      (await new Promise<any>((resolve) => {
-        const timeout = setTimeout(() => {
-          unsubscribe();
-          resolve(null);
-        }, 30_000);
-
-        const unsubscribe = mod.auth.onAuthStateChanged((user: any) => {
-          clearTimeout(timeout);
-          unsubscribe();
-          resolve(user);
-        });
-      }));
-
-    if (!currentUser) {
-      throw new Error("No authenticated Firebase user found in page context after waiting.");
+    if (!bridge || typeof bridge.getAuthSession !== "function") {
+      throw new Error(
+        "The Firebase E2E session bridge is unavailable. Confirm the app is running through the Vite development server."
+      );
     }
 
-    const idToken = await currentUser.getIdToken();
+    const session = await bridge.getAuthSession();
+    if (!session?.userId || !session?.idToken) {
+      throw new Error(
+        "No authenticated Firebase user found in the existing page runtime after waiting."
+      );
+    }
+
     return {
-      userId: currentUser.uid,
-      idToken,
-      projectId: mod.app?.options?.projectId || defaults.projectId,
-      apiKey: mod.app?.options?.apiKey || defaults.apiKey,
+      userId: String(session.userId),
+      idToken: String(session.idToken),
+      projectId: String(session.projectId || defaults.projectId),
+      apiKey: String(session.apiKey || defaults.apiKey),
     };
   }, FIREBASE_WEB_DEFAULTS);
 }
