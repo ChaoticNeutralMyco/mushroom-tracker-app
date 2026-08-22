@@ -208,13 +208,18 @@ export function getSubscriptionPlanBillingAction({
   }
 
   if (hasManagedStripeSubscription(sourceEntitlement)) {
+    if (safeCurrentPlanId === safePlanId) {
+      return {
+        kind: "portal",
+        label: "Manage billing",
+        disabled: false,
+      };
+    }
+
     return {
-      kind: "portal",
-      label:
-        safeCurrentPlanId === safePlanId
-          ? "Manage billing"
-          : "Change in billing portal",
-      disabled: false,
+      kind: "none",
+      label: "Plan changes coming soon",
+      disabled: true,
     };
   }
 

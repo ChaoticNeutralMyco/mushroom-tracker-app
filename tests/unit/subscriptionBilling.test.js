@@ -86,7 +86,7 @@ describe("subscription billing client safety", () => {
     ).toBe("/?tab=settings&settingsTab=subscription");
   });
 
-  it("routes active Stripe subscriptions through the customer portal", () => {
+  it("keeps active Stripe billing management available but blocks unsupported plan switching", () => {
     const sourceEntitlement = {
       planId: "lab",
       status: "active",
@@ -115,9 +115,10 @@ describe("subscription billing client safety", () => {
         sourceEntitlement,
         accessReady: true,
       })
-    ).toMatchObject({
-      kind: "portal",
-      label: "Change in billing portal",
+    ).toEqual({
+      kind: "none",
+      label: "Plan changes coming soon",
+      disabled: true,
     });
   });
 
