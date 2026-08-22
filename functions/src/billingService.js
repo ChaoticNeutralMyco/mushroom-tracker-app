@@ -826,6 +826,15 @@ async function resolveUid({
   );
 }
 
+function latestTrustedPaidThrough(...values) {
+  const dates = values
+    .map((value) => asValidDate(value))
+    .filter(Boolean)
+    .sort((left, right) => right.getTime() - left.getTime());
+
+  return dates[0] || null;
+}
+
 async function synchronizeSubscription({
   db,
   uid,
@@ -841,8 +850,94 @@ async function synchronizeSubscription({
   const subscriptionId = objectId(subscription);
   const { planId, priceId } = planIdForSubscription(subscription, config);
   const currentPeriodEndsAt = subscriptionPeriodEnd(subscription);
+  const cancelAtPeriodEnd = subscription?.cancel_at_period_end === true;
+  const cancellationEffectiveAt =
+    cancelAtPeriodEnd && currentPeriodEndsAt ? currentPeriodEndsAt : null;
+  const cancellationEvent =
+    forcedAction === "cancel" || status === "canceled";
 
-  if (forcedAction === "cancel" || INACTIVE_STRIPE_STATUSES.has(status)) {
+  if (cancellationEvent) {
+    const currentSnapshot = await entitlementRef(db, uid).get();
+    const currentEntitlement = currentSnapshot.exists
+      ? currentSnapshot.data()
+      : null;
+    const establishedPaidAccess = entitlementHasEstablishedStripeAccess(
+      currentEntitlement,
+      subscriptionId
+    );
+
+    if (!establishedPaidAccess) {
+      const result = await applyTrustedEntitlementTransition({
+        db,
+        uid,
+        eventId,
+        type: `stripe_subscription_${status || "inactive"}_without_established_paid_access`,
+        source: "stripe_webhook",
+        providerOccurredAt: occurredAt,
+        ignoreIfProviderEventOlder: true,
+        patch: {
+          stripeCustomerId: customerId,
+          stripeSubscriptionId: subscriptionId,
+          stripePriceId: priceId,
+          stripeEventId: event.id,
+          stripeEventCreatedAt: occurredAt,
+        },
+      });
+      return { action: "pending", result };
+    }
+
+    const paidThrough = latestTrustedPaidThrough(
+      currentEntitlement?.currentPeriodEndsAt,
+      currentPeriodEndsAt
+    );
+
+    if (paidThrough && paidThrough.getTime() > occurredAt.getTime()) {
+      const result = await applyTrustedEntitlementTransition({
+        db,
+        uid,
+        eventId,
+        type: "stripe_cancellation_scheduled_until_paid_period_end",
+        source: "stripe_webhook",
+        providerOccurredAt: occurredAt,
+        ignoreIfProviderEventOlder: true,
+        patch: {
+          planId,
+          status: SUBSCRIPTION_STATUSES.ACTIVE,
+          source: SUBSCRIPTION_SOURCES.STRIPE,
+          currentPeriodEndsAt: paidThrough,
+          cancelAtPeriodEnd: true,
+          cancellationEffectiveAt: paidThrough,
+          accessGrantedThroughGrace: false,
+          stripeCustomerId: customerId,
+          stripeSubscriptionId: subscriptionId,
+          stripePriceId: priceId,
+          stripeEventId: event.id,
+          stripeEventCreatedAt: occurredAt,
+          endReason: "stripe_cancel_at_period_end",
+        },
+      });
+      return { action: "cancel_scheduled", result };
+    }
+
+    const result = await cancelEntitlement({
+      db,
+      uid,
+      eventId,
+      canceledAt: occurredAt,
+      reason:
+        forcedAction === "cancel"
+          ? "stripe_subscription_deleted"
+          : `stripe_subscription_${status || "inactive"}`,
+      stripeCustomerId: customerId,
+      stripeSubscriptionId: subscriptionId,
+      stripePriceId: priceId,
+      stripeEventId: event.id,
+      stripeEventCreatedAt: occurredAt,
+    });
+    return { action: "canceled", result };
+  }
+
+  if (INACTIVE_STRIPE_STATUSES.has(status)) {
     const currentSnapshot = await entitlementRef(db, uid).get();
     const currentEntitlement = currentSnapshot.exists
       ? currentSnapshot.data()
@@ -877,10 +972,7 @@ async function synchronizeSubscription({
       uid,
       eventId,
       canceledAt: occurredAt,
-      reason:
-        forcedAction === "cancel"
-          ? "stripe_subscription_deleted"
-          : `stripe_subscription_${status || "inactive"}`,
+      reason: `stripe_subscription_${status || "inactive"}`,
       stripeCustomerId: customerId,
       stripeSubscriptionId: subscriptionId,
       stripePriceId: priceId,
@@ -953,6 +1045,8 @@ async function synchronizeSubscription({
       stripePriceId: priceId,
       stripeEventId: event.id,
       stripeEventCreatedAt: occurredAt,
+      cancelAtPeriodEnd,
+      cancellationEffectiveAt,
     });
     return { action: "past_due", result };
   }
@@ -976,8 +1070,13 @@ async function synchronizeSubscription({
       stripePriceId: priceId,
       stripeEventId: event.id,
       stripeEventCreatedAt: occurredAt,
+      cancelAtPeriodEnd,
+      cancellationEffectiveAt,
     });
-    return { action: "active", result };
+    return {
+      action: cancelAtPeriodEnd ? "cancel_scheduled" : "active",
+      result,
+    };
   }
 
   throw new BillingServiceError(

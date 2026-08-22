@@ -165,6 +165,18 @@ export function hasManagedStripeSubscription(sourceEntitlement = null) {
   );
 }
 
+export function isStripeCancellationScheduled(sourceEntitlement = null) {
+  return Boolean(
+    normalizedText(sourceEntitlement?.source) === "stripe" &&
+      normalizedText(sourceEntitlement?.status) === "active" &&
+      sourceEntitlement?.cancelAtPeriodEnd === true &&
+      sourceEntitlement?.stripeCustomerId &&
+      sourceEntitlement?.stripeSubscriptionId &&
+      (sourceEntitlement?.cancellationEffectiveAt ||
+        sourceEntitlement?.currentPeriodEndsAt)
+  );
+}
+
 export function getSubscriptionPlanBillingAction({
   planId,
   currentPlanId,
@@ -213,7 +225,9 @@ export function getSubscriptionPlanBillingAction({
     if (stripePlanId === safePlanId) {
       return {
         kind: "portal",
-        label: "Manage billing",
+        label: isStripeCancellationScheduled(sourceEntitlement)
+          ? "Manage cancellation"
+          : "Manage billing",
         disabled: false,
       };
     }

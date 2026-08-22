@@ -145,6 +145,8 @@ export function buildInitialTrialEntitlement({
     currentPeriodEndsAt: null,
     pastDueStartedAt: null,
     graceEndsAt: null,
+    cancelAtPeriodEnd: false,
+    cancellationEffectiveAt: null,
     accessGrantedThroughGrace: false,
     testerCodeId: null,
     stripeCustomerId: null,
@@ -235,6 +237,20 @@ export function entitlementShouldExpire(entitlement, now = new Date()) {
     );
   }
 
+  if (
+    status === SUBSCRIPTION_STATUSES.ACTIVE &&
+    source === SUBSCRIPTION_SOURCES.STRIPE &&
+    entitlement?.cancelAtPeriodEnd === true
+  ) {
+    const cancellationEffectiveAt =
+      asValidDate(entitlement?.cancellationEffectiveAt) ||
+      asValidDate(entitlement?.currentPeriodEndsAt);
+    return Boolean(
+      cancellationEffectiveAt &&
+        cancellationEffectiveAt.getTime() <= currentDate.getTime()
+    );
+  }
+
   return false;
 }
 
@@ -246,6 +262,13 @@ export function getExpirationReason(entitlement) {
     return entitlement?.graceEndsAt
       ? "past_due_grace_expired"
       : "past_due_missing_trusted_grace_anchor";
+  }
+  if (
+    entitlement?.status === SUBSCRIPTION_STATUSES.ACTIVE &&
+    entitlement?.source === SUBSCRIPTION_SOURCES.STRIPE &&
+    entitlement?.cancelAtPeriodEnd === true
+  ) {
+    return "stripe_cancellation_period_ended";
   }
   if (entitlement?.source === SUBSCRIPTION_SOURCES.TESTER_CODE) {
     return "tester_code_expired";

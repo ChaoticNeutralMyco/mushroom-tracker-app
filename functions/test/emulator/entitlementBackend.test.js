@@ -261,6 +261,7 @@ function stripeSubscription({
   priceId = stripeConfig.priceIds.lab,
   customerId = "cus_emulator",
   periodEnd = 1788134400,
+  cancelAtPeriodEnd = false,
 } = {}) {
   return {
     id,
@@ -268,6 +269,7 @@ function stripeSubscription({
     status,
     customer: customerId,
     current_period_end: periodEnd,
+    cancel_at_period_end: cancelAtPeriodEnd,
     metadata: {
       firebaseUid: uid,
       planId: "lab",
@@ -329,6 +331,173 @@ test("Stripe subscription events activate paid access and remain idempotent", as
   assert.equal(stored.stripeSubscriptionId, "sub_emulator");
   assert.equal(stored.stripePriceId, stripeConfig.priceIds.lab);
   assert.equal(stored.stripeEventId, event.id);
+});
+
+test("cancel-at-period-end keeps paid access active until the trusted renewal boundary", async () => {
+  const uid = "stripe-cancel-at-period-end-user";
+  const periodEnd = 1788134400;
+
+  await provisionInitialTrialEntitlement({
+    db,
+    uid,
+    accountCreatedAt: "2026-07-28T00:00:00.000Z",
+    now: "2026-07-28T00:00:00.000Z",
+  });
+
+  const activeSubscription = stripeSubscription({
+    uid,
+    periodEnd,
+  });
+
+  await processStripeBillingEvent({
+    db,
+    event: {
+      id: "evt_cancel_period_active",
+      type: "customer.subscription.updated",
+      created: 1785456000,
+      data: { object: activeSubscription },
+    },
+    config: stripeConfig,
+    stripeClient: {
+      retrieveSubscription: async () => activeSubscription,
+    },
+  });
+
+  const scheduledSubscription = {
+    ...activeSubscription,
+    cancel_at_period_end: true,
+  };
+
+  const scheduled = await processStripeBillingEvent({
+    db,
+    event: {
+      id: "evt_cancel_period_scheduled",
+      type: "customer.subscription.updated",
+      created: 1785542400,
+      data: { object: scheduledSubscription },
+    },
+    config: stripeConfig,
+    stripeClient: {
+      retrieveSubscription: async () => scheduledSubscription,
+    },
+  });
+
+  assert.equal(scheduled.action, "cancel_scheduled");
+
+  let stored = (await entitlementRef(uid).get()).data();
+  assert.equal(stored.planId, SUBSCRIPTION_PLAN_IDS.LAB);
+  assert.equal(stored.status, SUBSCRIPTION_STATUSES.ACTIVE);
+  assert.equal(stored.source, SUBSCRIPTION_SOURCES.STRIPE);
+  assert.equal(stored.cancelAtPeriodEnd, true);
+  assert.equal(
+    stored.currentPeriodEndsAt.toDate().toISOString(),
+    new Date(periodEnd * 1000).toISOString()
+  );
+  assert.equal(
+    stored.cancellationEffectiveAt.toDate().toISOString(),
+    new Date(periodEnd * 1000).toISOString()
+  );
+
+  const deletedBeforePaidThrough = await processStripeBillingEvent({
+    db,
+    event: {
+      id: "evt_cancel_period_deleted_early",
+      type: "customer.subscription.deleted",
+      created: periodEnd - 3600,
+      data: {
+        object: {
+          ...scheduledSubscription,
+          status: "canceled",
+        },
+      },
+    },
+    config: stripeConfig,
+    stripeClient: {
+      retrieveSubscription: async () => scheduledSubscription,
+    },
+  });
+
+  assert.equal(deletedBeforePaidThrough.action, "cancel_scheduled");
+
+  stored = (await entitlementRef(uid).get()).data();
+  assert.equal(stored.status, SUBSCRIPTION_STATUSES.ACTIVE);
+  assert.equal(stored.cancelAtPeriodEnd, true);
+
+  const beforeEnd = await reconcileExpiredEntitlements({
+    db,
+    now: new Date((periodEnd - 1) * 1000),
+  });
+  assert.equal(beforeEnd.expired, 0);
+
+  const atEnd = await reconcileExpiredEntitlements({
+    db,
+    now: new Date(periodEnd * 1000),
+  });
+  assert.equal(atEnd.expired, 1);
+
+  stored = (await entitlementRef(uid).get()).data();
+  assert.equal(stored.status, SUBSCRIPTION_STATUSES.EXPIRED);
+  assert.equal(stored.cancelAtPeriodEnd, false);
+  assert.equal(stored.cancellationEffectiveAt, null);
+  assert.equal(stored.endReason, "stripe_cancellation_period_ended");
+});
+
+test("resuming before the period end clears the scheduled cancellation", async () => {
+  const uid = "stripe-cancel-resume-user";
+  const periodEnd = 1788134400;
+  const scheduledSubscription = stripeSubscription({
+    uid,
+    periodEnd,
+    cancelAtPeriodEnd: true,
+  });
+
+  await provisionInitialTrialEntitlement({
+    db,
+    uid,
+    accountCreatedAt: "2026-07-28T00:00:00.000Z",
+    now: "2026-07-28T00:00:00.000Z",
+  });
+
+  await processStripeBillingEvent({
+    db,
+    event: {
+      id: "evt_cancel_resume_scheduled",
+      type: "customer.subscription.updated",
+      created: 1785456000,
+      data: { object: scheduledSubscription },
+    },
+    config: stripeConfig,
+    stripeClient: {
+      retrieveSubscription: async () => scheduledSubscription,
+    },
+  });
+
+  const resumedSubscription = {
+    ...scheduledSubscription,
+    cancel_at_period_end: false,
+  };
+
+  const resumed = await processStripeBillingEvent({
+    db,
+    event: {
+      id: "evt_cancel_resume_active",
+      type: "customer.subscription.updated",
+      created: 1785542400,
+      data: { object: resumedSubscription },
+    },
+    config: stripeConfig,
+    stripeClient: {
+      retrieveSubscription: async () => resumedSubscription,
+    },
+  });
+
+  assert.equal(resumed.action, "active");
+
+  const stored = (await entitlementRef(uid).get()).data();
+  assert.equal(stored.status, SUBSCRIPTION_STATUSES.ACTIVE);
+  assert.equal(stored.cancelAtPeriodEnd, false);
+  assert.equal(stored.cancellationEffectiveAt, null);
+  assert.equal(stored.endReason, null);
 });
 
 test("repeated Stripe payment failures do not reset the trusted grace window", async () => {

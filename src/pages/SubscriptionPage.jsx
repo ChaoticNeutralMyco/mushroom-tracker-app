@@ -17,6 +17,7 @@ import {
   getBillingReturnNotice,
   getSubscriptionPlanBillingAction,
   hasManagedStripeSubscription,
+  isStripeCancellationScheduled,
   removeBillingReturnParameters,
 } from "../lib/subscriptionBilling.js";
 import { getPlanPriceLabel } from "../lib/subscriptionMessaging.js";
@@ -149,6 +150,12 @@ export default function SubscriptionPage({ activeGrowCount = 0 }) {
     accessReady && SUBSCRIPTION_PLAN_ORDER.includes(currentPlanId);
   const canManageStripeBilling =
     accessReady && hasManagedStripeSubscription(sourceEntitlement);
+  const stripeCancellationScheduled =
+    accessReady && isStripeCancellationScheduled(sourceEntitlement);
+  const stripeCancellationEffectiveAt =
+    sourceEntitlement?.cancellationEffectiveAt ||
+    sourceEntitlement?.currentPeriodEndsAt ||
+    null;
   const isInternalAdmin =
     accessReady &&
     internalFullAccess === true &&
@@ -273,7 +280,9 @@ export default function SubscriptionPage({ activeGrowCount = 0 }) {
                   ? "Opening secure billing…"
                   : isInternalAdmin
                     ? "Manage existing billing"
-                    : "Manage billing"}
+                    : stripeCancellationScheduled
+                      ? "Manage cancellation"
+                      : "Manage billing"}
               </button>
             ) : null}
           </div>
@@ -317,6 +326,25 @@ export default function SubscriptionPage({ activeGrowCount = 0 }) {
             </div>
           </dl>
         </div>
+
+        {stripeCancellationScheduled && !isInternalAdmin ? (
+          <div
+            className="mt-4 rounded-xl border border-amber-300 bg-amber-50 p-4 text-sm text-amber-900 dark:border-amber-800 dark:bg-amber-950/30 dark:text-amber-100"
+            data-testid="subscription-cancellation-scheduled"
+          >
+            <p className="font-semibold">Renewal canceled</p>
+            <p className="mt-1">
+              Your current {currentPlan.label} access remains fully active through{" "}
+              {formatDate(stripeCancellationEffectiveAt)} because that billing
+              period is already paid. After that date, the account falls back to
+              Free unless another active entitlement exists.
+            </p>
+            <p className="mt-1 text-xs opacity-80">
+              You can reopen Manage cancellation before the period ends if you
+              decide to keep the subscription.
+            </p>
+          </div>
+        ) : null}
 
         {isInternalAdmin ? (
           <div className="mt-4 rounded-xl border border-violet-200 bg-violet-50 p-4 text-sm text-violet-950 dark:border-violet-900/70 dark:bg-violet-950/30 dark:text-violet-100">
@@ -526,6 +554,11 @@ export default function SubscriptionPage({ activeGrowCount = 0 }) {
           <li>
             • Existing records remain visible, and full raw-data export stays
             available.
+          </li>
+          <li>
+            • Canceling a paid subscription stops the next renewal, but the paid
+            access level stays active through the end of the already-paid billing
+            period.
           </li>
           <li>
             • The account falls back to Free unless another active entitlement

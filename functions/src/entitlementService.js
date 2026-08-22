@@ -69,6 +69,8 @@ function serializeForEvent(value) {
     "currentPeriodEndsAt",
     "pastDueStartedAt",
     "graceEndsAt",
+    "cancelAtPeriodEnd",
+    "cancellationEffectiveAt",
     "testerCodeId",
     "stripeCustomerId",
     "stripeSubscriptionId",
@@ -98,6 +100,7 @@ function canonicalizeEntitlementPatch(patch = {}) {
     "currentPeriodEndsAt",
     "pastDueStartedAt",
     "graceEndsAt",
+    "cancellationEffectiveAt",
     "expiredAt",
     "canceledAt",
     "stripeEventCreatedAt",
@@ -118,6 +121,10 @@ function canonicalizeEntitlementPatch(patch = {}) {
     if (patch[key] !== undefined) {
       output[key] = patch[key] === null ? null : String(patch[key]);
     }
+  }
+
+  if (patch.cancelAtPeriodEnd !== undefined) {
+    output.cancelAtPeriodEnd = patch.cancelAtPeriodEnd === true;
   }
 
   if (patch.accessGrantedThroughGrace !== undefined) {
@@ -311,6 +318,8 @@ export async function activatePaidEntitlement({
   stripePriceId = null,
   stripeEventId = eventId,
   stripeEventCreatedAt = null,
+  cancelAtPeriodEnd = false,
+  cancellationEffectiveAt = null,
   featureOverrides = {},
   limitOverrides = {},
 } = {}) {
@@ -339,6 +348,11 @@ export async function activatePaidEntitlement({
       currentPeriodEndsAt: endDate,
       pastDueStartedAt: null,
       graceEndsAt: null,
+      cancelAtPeriodEnd: cancelAtPeriodEnd === true,
+      cancellationEffectiveAt:
+        cancelAtPeriodEnd === true
+          ? asValidDate(cancellationEffectiveAt) || endDate
+          : null,
       accessGrantedThroughGrace: false,
       testerCodeId: null,
       stripeCustomerId,
@@ -368,6 +382,8 @@ export async function markEntitlementPastDue({
   stripePriceId = null,
   stripeEventId = eventId,
   stripeEventCreatedAt = null,
+  cancelAtPeriodEnd = false,
+  cancellationEffectiveAt = null,
 } = {}) {
   const safeUid = requireUid(uid);
   const currentSnapshot = await entitlementRef(db, safeUid).get();
@@ -390,6 +406,12 @@ export async function markEntitlementPastDue({
     stripePriceId,
     stripeEventId,
     stripeEventCreatedAt,
+    cancelAtPeriodEnd: cancelAtPeriodEnd === true,
+    cancellationEffectiveAt:
+      cancelAtPeriodEnd === true
+        ? asValidDate(cancellationEffectiveAt) ||
+          asValidDate(currentPeriodEndsAt)
+        : null,
     endReason: null,
   };
 
@@ -443,6 +465,8 @@ export async function cancelEntitlement({
       status: SUBSCRIPTION_STATUSES.CANCELED,
       source,
       canceledAt,
+      cancelAtPeriodEnd: false,
+      cancellationEffectiveAt: null,
       accessGrantedThroughGrace: false,
       stripeCustomerId,
       stripeSubscriptionId,
@@ -471,6 +495,8 @@ export async function expireEntitlement({
     patch: {
       status: SUBSCRIPTION_STATUSES.EXPIRED,
       expiredAt,
+      cancelAtPeriodEnd: false,
+      cancellationEffectiveAt: null,
       accessGrantedThroughGrace: false,
       endReason: reason,
     },
@@ -486,6 +512,7 @@ function expirationAnchor(entitlement) {
   return (
     asValidDate(entitlement?.trialEndsAt) ||
     asValidDate(entitlement?.graceEndsAt) ||
+    asValidDate(entitlement?.cancellationEffectiveAt) ||
     asValidDate(entitlement?.currentPeriodEndsAt) ||
     new Date(0)
   );
