@@ -13,6 +13,7 @@ import {
   ENTITLEMENT_RECONCILE_SCHEDULE,
   STRIPE_CONFIG_SECRET_NAME,
   SUBSCRIPTION_BACKEND_REGION,
+  SUBSCRIPTION_PLAN_IDS,
 } from "./subscriptionConfig.js";
 import {
   EntitlementServiceError,
@@ -38,6 +39,7 @@ import {
 import {
   AdminServiceError,
   grantPromotionalAccess,
+  hasInternalAdminFullAccess,
   isAuthorizedAdminUid,
   listAdminAccounts,
   parseAdminConfig,
@@ -147,6 +149,21 @@ function adminConfigFromEnvironment() {
   return parseAdminConfig(process.env[ADMIN_CONFIG_SECRET_NAME]);
 }
 
+function internalFullAccessForUid(uid) {
+  try {
+    return hasInternalAdminFullAccess(uid, adminConfigFromEnvironment());
+  } catch (error) {
+    // Fail closed. A missing or malformed secret must never create internal
+    // access; the account simply falls back to its normal trusted entitlement.
+    logger.error("Internal admin full-access check failed closed.", {
+      uid,
+      code: error?.code || "unknown",
+      message: error?.message || "Unknown internal-access configuration error",
+    });
+    return false;
+  }
+}
+
 export const provisionSubscriptionEntitlementOnCreate = functionsV1
   .region(SUBSCRIPTION_BACKEND_REGION)
   .auth.user()
@@ -232,7 +249,10 @@ export const redeemTesterCode = onCall(
 );
 
 export const createGrowBatch = onCall(
-  { region: SUBSCRIPTION_BACKEND_REGION },
+  {
+    region: SUBSCRIPTION_BACKEND_REGION,
+    secrets: adminSecretBindings,
+  },
   async (request) => {
     if (!request.auth?.uid) {
       throw new HttpsError("unauthenticated", "Sign in is required.");
@@ -242,11 +262,13 @@ export const createGrowBatch = onCall(
 
     try {
       await ensureTrustedEntitlement(request.auth.uid, now);
+      const internalFullAccess = internalFullAccessForUid(request.auth.uid);
       const result = await createGrowBatchWithEntitlement({
         db: initializeBackend(),
         uid: request.auth.uid,
         grows: request.data?.grows,
         now,
+        internalFullAccess,
       });
 
       logger.info("Trusted grow batch created.", {
@@ -270,7 +292,10 @@ export const createGrowBatch = onCall(
 );
 
 export const reactivateGrowBatch = onCall(
-  { region: SUBSCRIPTION_BACKEND_REGION },
+  {
+    region: SUBSCRIPTION_BACKEND_REGION,
+    secrets: adminSecretBindings,
+  },
   async (request) => {
     if (!request.auth?.uid) {
       throw new HttpsError("unauthenticated", "Sign in is required.");
@@ -280,11 +305,13 @@ export const reactivateGrowBatch = onCall(
 
     try {
       await ensureTrustedEntitlement(request.auth.uid, now);
+      const internalFullAccess = internalFullAccessForUid(request.auth.uid);
       const result = await reactivateGrowBatchWithEntitlement({
         db: initializeBackend(),
         uid: request.auth.uid,
         updates: request.data?.updates,
         now,
+        internalFullAccess,
       });
 
       logger.info("Trusted grow batch reactivated.", {
@@ -316,13 +343,25 @@ export const getMyAdminAccess = onCall(
   },
   async (request) => {
     if (!request.auth?.uid) {
-      return { authorized: false };
+      return {
+        authorized: false,
+        internalFullAccess: false,
+        accessPlanId: null,
+      };
     }
 
     try {
       const config = adminConfigFromEnvironment();
+      const authorized = isAuthorizedAdminUid(request.auth.uid, config);
+      const internalFullAccess = hasInternalAdminFullAccess(
+        request.auth.uid,
+        config
+      );
+
       return {
-        authorized: isAuthorizedAdminUid(request.auth.uid, config),
+        authorized,
+        internalFullAccess,
+        accessPlanId: internalFullAccess ? SUBSCRIPTION_PLAN_IDS.ADMIN : null,
       };
     } catch (error) {
       logger.error("getMyAdminAccess failed", {

@@ -27,6 +27,8 @@ import {
   canEntitlementUseFeature,
   getEntitlementLimit,
 } from "../lib/subscriptionEntitlements.js";
+import { getMyAdminAccess } from "../lib/adminApi.js";
+import { applyInternalAdminFullAccess } from "../lib/internalAdminAccess.js";
 import { getUserEntitlementDocumentPath } from "../lib/subscriptionEntitlementPaths.js";
 import {
   buildLoadingSubscriptionRuntime,
@@ -92,6 +94,10 @@ export function SubscriptionProvider({ children }) {
   const [billingError, setBillingError] = useState("");
   const [promotionalGrant, setPromotionalGrant] = useState(null);
   const [promotionReady, setPromotionReady] = useState(!auth.currentUser);
+  const [internalAdminAccess, setInternalAdminAccess] = useState(() => ({
+    ready: !auth.currentUser,
+    fullAccess: false,
+  }));
 
   useEffect(() => {
     const timer = window.setInterval(() => setNow(new Date()), 60_000);
@@ -102,6 +108,8 @@ export function SubscriptionProvider({ children }) {
     let unsubEntitlement = null;
     let unsubPromotion = null;
     let unsubUi = null;
+    let disposed = false;
+    let authGeneration = 0;
 
     const stopUserListeners = () => {
       if (unsubEntitlement) unsubEntitlement();
@@ -114,6 +122,8 @@ export function SubscriptionProvider({ children }) {
 
     const unsubAuth = onAuthStateChanged(auth, (nextUser) => {
       stopUserListeners();
+      const generation = ++authGeneration;
+
       setUser(nextUser || null);
       setError(null);
       setBillingBusy(false);
@@ -123,17 +133,42 @@ export function SubscriptionProvider({ children }) {
       setUiReady(false);
       setPromotionalGrant(null);
       setPromotionReady(false);
+      setInternalAdminAccess({
+        ready: false,
+        fullAccess: false,
+      });
 
       if (!nextUser) {
         setRuntime(buildUnavailableSubscriptionRuntime());
         setUiReady(true);
         setPromotionReady(true);
+        setInternalAdminAccess({
+          ready: true,
+          fullAccess: false,
+        });
         setLoading(false);
         return;
       }
 
       setRuntime(buildLoadingSubscriptionRuntime());
       setLoading(true);
+
+      getMyAdminAccess()
+        .then((result) => {
+          if (disposed || generation !== authGeneration) return;
+          setInternalAdminAccess({
+            ready: true,
+            fullAccess: result?.internalFullAccess === true,
+          });
+        })
+        .catch((accessError) => {
+          if (disposed || generation !== authGeneration) return;
+          console.warn("Internal admin access check failed:", accessError);
+          setInternalAdminAccess({
+            ready: true,
+            fullAccess: false,
+          });
+        });
 
       const entitlementPath = getUserEntitlementDocumentPath(nextUser.uid);
       const entitlementRef = doc(db, entitlementPath);
@@ -213,6 +248,8 @@ export function SubscriptionProvider({ children }) {
     });
 
     return () => {
+      disposed = true;
+      authGeneration += 1;
       stopUserListeners();
       unsubAuth();
     };
@@ -231,19 +268,37 @@ export function SubscriptionProvider({ children }) {
     );
   }, [now, user]);
 
-  const effectiveRuntime = useMemo(
+  const promotionalRuntime = useMemo(
     () => applyPromotionalGrantToRuntime(runtime, promotionalGrant, now),
     [now, promotionalGrant, runtime]
   );
 
-  const accessReady =
-    effectiveRuntime.accessReady === true && !loading && promotionReady;
+  const effectiveRuntime = useMemo(
+    () =>
+      applyInternalAdminFullAccess(
+        promotionalRuntime,
+        internalAdminAccess.fullAccess
+      ),
+    [internalAdminAccess.fullAccess, promotionalRuntime]
+  );
+
+  const internalFullAccess =
+    internalAdminAccess.ready && effectiveRuntime.internalFullAccess === true;
+  const effectiveLoading = internalFullAccess ? false : loading;
+  const effectiveError = internalFullAccess ? null : error;
+  const accessReady = internalFullAccess
+    ? true
+    : effectiveRuntime.accessReady === true &&
+      !loading &&
+      promotionReady &&
+      internalAdminAccess.ready;
 
   const trialNotice = useMemo(() => {
     if (
       !user ||
       !uiReady ||
       !accessReady ||
+      internalFullAccess ||
       effectiveRuntime.promotionApplied === true
     ) {
       return {
@@ -269,6 +324,7 @@ export function SubscriptionProvider({ children }) {
   }, [
     accessReady,
     effectiveRuntime.promotionApplied,
+    internalFullAccess,
     now,
     runtime.trialEntitlement,
     uiReady,
@@ -444,10 +500,12 @@ export function SubscriptionProvider({ children }) {
   const value = useMemo(
     () => ({
       user,
-      loading,
+      loading: effectiveLoading,
       accessReady,
       uiReady,
-      error,
+      error: effectiveError,
+      internalAccessReady: internalAdminAccess.ready,
+      internalFullAccess,
       entitlement: effectiveRuntime.entitlement,
       sourceEntitlement: runtime.sourceEntitlement,
       trialEntitlement: runtime.trialEntitlement,
@@ -455,9 +513,12 @@ export function SubscriptionProvider({ children }) {
       resolution: effectiveRuntime.resolution,
       grace: runtime.grace,
       promotionalGrant: effectiveRuntime.promotionalGrant,
-      promotionActive: effectiveRuntime.promotionActive === true,
-      promotionScheduled: effectiveRuntime.promotionScheduled === true,
-      promotionApplied: effectiveRuntime.promotionApplied === true,
+      promotionActive:
+        !internalFullAccess && effectiveRuntime.promotionActive === true,
+      promotionScheduled:
+        !internalFullAccess && effectiveRuntime.promotionScheduled === true,
+      promotionApplied:
+        !internalFullAccess && effectiveRuntime.promotionApplied === true,
       promotionReady,
       summary: buildSubscriptionRuntimeSummary({
         entitlement: effectiveRuntime.entitlement,
@@ -484,10 +545,12 @@ export function SubscriptionProvider({ children }) {
     }),
     [
       user,
-      loading,
+      effectiveLoading,
       accessReady,
       uiReady,
-      error,
+      effectiveError,
+      internalAdminAccess.ready,
+      internalFullAccess,
       runtime,
       effectiveRuntime,
       promotionReady,

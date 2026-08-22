@@ -123,6 +123,14 @@ export function isAuthorizedAdminUid(uid, adminConfig) {
   return config.adminUids.includes(safeUid);
 }
 
+// Internal full-access accounts currently use the same server-secret UID
+// allowlist as the private Admin dashboard. Keep this as a separate helper so
+// dashboard authorization and subscription access can diverge later without
+// changing call sites throughout the app.
+export function hasInternalAdminFullAccess(uid, adminConfig) {
+  return isAuthorizedAdminUid(uid, adminConfig);
+}
+
 export function assertAuthorizedAdminUid(uid, adminConfig) {
   const safeUid = requireUid(uid);
   const config = normalizeAdminConfig(adminConfig);
@@ -289,8 +297,13 @@ function isPromotionalGrantOpen(grant, now = new Date()) {
 export function resolveEffectiveSubscriptionPlanId({
   entitlement = null,
   promotionalGrant = null,
+  internalFullAccess = false,
   now = new Date(),
 } = {}) {
+  if (internalFullAccess === true) {
+    return SUBSCRIPTION_PLAN_IDS.ADMIN;
+  }
+
   const baseAccess = resolveEffectiveGrowAccessPlan(entitlement, now);
   const promoActive = isPromotionalGrantActive(promotionalGrant, now);
 
@@ -405,8 +418,17 @@ export async function grantPromotionalAccess({
   adminConfig,
   now = new Date(),
 } = {}) {
-  const safeActorUid = assertAuthorizedAdminUid(actorUid, adminConfig);
+  const config = normalizeAdminConfig(adminConfig);
+  const safeActorUid = assertAuthorizedAdminUid(actorUid, config);
   const safeTargetUid = requireUid(targetUid);
+
+  if (hasInternalAdminFullAccess(safeTargetUid, config)) {
+    throw new AdminServiceError(
+      "Internal admin accounts already have permanent full access and do not need promotional access.",
+      "failed-precondition"
+    );
+  }
+
   const safePlanId = requirePromotionalPlanId(planId);
   const safeDurationDays = requireDurationDays(durationDays);
   const safeReason = requireReason(reason);
@@ -720,9 +742,11 @@ async function buildAdminAccountRecord({
     : null;
   const grant = grantSnapshot.exists ? grantSnapshot.data() : null;
   const baseAccess = resolveEffectiveGrowAccessPlan(entitlement, now);
+  const internalFullAccess = hasInternalAdminFullAccess(uid, adminConfig);
   const effectivePlanId = resolveEffectiveSubscriptionPlanId({
     entitlement,
     promotionalGrant: grant,
+    internalFullAccess,
     now,
   });
   const promotionActive = isPromotionalGrantActive(grant, now);
@@ -741,13 +765,16 @@ async function buildAdminAccountRecord({
     createdAt: serializeDate(userRecord.metadata?.creationTime),
     lastSignInAt: serializeDate(userRecord.metadata?.lastSignInTime),
     isAuthorizedAdmin: isAuthorizedAdminUid(uid, adminConfig),
+    internalFullAccess,
     entitlement: serializeEntitlementForAdmin(entitlement, now),
     effectivePlanId,
     baseAccessPlanId: baseAccess.planId,
     promotion: serializeGrant(grant),
     promotionActive,
     promotionApplied:
-      promotionActive && effectivePlanId !== baseAccess.planId,
+      !internalFullAccess &&
+      promotionActive &&
+      effectivePlanId !== baseAccess.planId,
     activeGrowCount,
   };
 }

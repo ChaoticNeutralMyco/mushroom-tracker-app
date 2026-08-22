@@ -67,8 +67,12 @@ export function normalizeAdminRequestError(error, fallbackMessage = "") {
 
 export async function getMyAdminAccess() {
   const response = await getMyAdminAccessCallable({});
+  const data = response?.data || {};
+
   return {
-    authorized: response?.data?.authorized === true,
+    authorized: data.authorized === true,
+    internalFullAccess: data.internalFullAccess === true,
+    accessPlanId: normalizeText(data.accessPlanId).toLowerCase() || null,
   };
 }
 

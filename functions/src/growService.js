@@ -317,9 +317,21 @@ function isPromotionalGrowGrantActive(grant, now) {
 export function resolveEffectiveActiveGrowLimit(
   entitlement = null,
   now = new Date(),
-  promotionalGrant = null
+  promotionalGrant = null,
+  { internalFullAccess = false } = {}
 ) {
   const currentDate = asValidDate(now) || new Date();
+
+  if (internalFullAccess === true) {
+    return {
+      planId: SUBSCRIPTION_PLAN_IDS.ADMIN,
+      useOverrides: false,
+      resolution: "internal-admin-full-access",
+      limit: null,
+      source: "internal-admin",
+    };
+  }
+
   const access = resolveEffectiveGrowAccessPlan(entitlement, currentDate);
 
   if (isPromotionalGrowGrantActive(promotionalGrant, currentDate)) {
@@ -676,6 +688,7 @@ export async function createGrowBatchWithEntitlement({
   uid,
   grows,
   now = new Date(),
+  internalFullAccess = false,
 } = {}) {
   const safeUid = requireUid(uid);
   const payloads = normalizeBatch(grows, "Grow creation").map(
@@ -704,7 +717,8 @@ export async function createGrowBatchWithEntitlement({
     const access = resolveEffectiveActiveGrowLimit(
       entitlement,
       currentDate,
-      promotionalGrant
+      promotionalGrant,
+      { internalFullAccess }
     );
     const usage = countActiveGrows(existingGrows);
     const requested = rawPayloads.reduce(
@@ -754,6 +768,7 @@ export async function reactivateGrowBatchWithEntitlement({
   uid,
   updates,
   now = new Date(),
+  internalFullAccess = false,
 } = {}) {
   const safeUid = requireUid(uid);
   const normalizedUpdates = normalizeBatch(
@@ -797,7 +812,8 @@ export async function reactivateGrowBatchWithEntitlement({
     const access = resolveEffectiveActiveGrowLimit(
       entitlement,
       currentDate,
-      promotionalGrant
+      promotionalGrant,
+      { internalFullAccess }
     );
     const usage = countActiveGrows(existingGrows);
 

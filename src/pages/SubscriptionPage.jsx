@@ -4,6 +4,7 @@ import React, { useCallback, useEffect, useMemo, useState } from "react";
 import {
   SUBSCRIPTION_FEATURE_KEYS,
   SUBSCRIPTION_LIMIT_KEYS,
+  SUBSCRIPTION_PLAN_IDS,
   SUBSCRIPTION_PLAN_ORDER,
   SUBSCRIPTION_PLANS,
 } from "../lib/subscriptionPlans.js";
@@ -87,6 +88,7 @@ export default function SubscriptionPage({ activeGrowCount = 0 }) {
     loading,
     accessReady,
     error,
+    internalFullAccess,
     entitlement,
     sourceEntitlement,
     entitlementExists,
@@ -147,6 +149,10 @@ export default function SubscriptionPage({ activeGrowCount = 0 }) {
     accessReady && SUBSCRIPTION_PLAN_ORDER.includes(currentPlanId);
   const canManageStripeBilling =
     accessReady && hasManagedStripeSubscription(sourceEntitlement);
+  const isInternalAdmin =
+    accessReady &&
+    internalFullAccess === true &&
+    currentPlanId === SUBSCRIPTION_PLAN_IDS.ADMIN;
 
   const handlePlanAction = useCallback(
     async (action, planId) => {
@@ -207,7 +213,7 @@ export default function SubscriptionPage({ activeGrowCount = 0 }) {
         </section>
       ) : null}
 
-      {promotionalGrant?.status === "active" ? (
+      {!isInternalAdmin && promotionalGrant?.status === "active" ? (
         <section
           className="rounded-2xl border border-violet-200 bg-violet-50 p-4 text-sm text-violet-950 dark:border-violet-900/70 dark:bg-violet-950/30 dark:text-violet-100"
           data-testid="subscription-promotional-access"
@@ -240,16 +246,20 @@ export default function SubscriptionPage({ activeGrowCount = 0 }) {
             <h2 className="text-2xl font-bold">
               {loading || !accessReady
                 ? "Checking subscription access…"
-                : currentPlanId === "trial"
-                  ? `Trial with ${accessPlan?.label || "Lab"} access`
-                  : currentPlan.label}
+                : isInternalAdmin
+                  ? "Internal Admin — Full Access"
+                  : currentPlanId === "trial"
+                    ? `Trial with ${accessPlan?.label || "Lab"} access`
+                    : currentPlan.label}
             </h2>
             <p className="mt-2 max-w-2xl text-sm leading-6 text-slate-600 dark:text-slate-300">
               {loading || !accessReady
                 ? "Restricted actions stay safely unavailable while the app verifies the trusted entitlement record."
-                : currentPlanId === "trial"
-                  ? "Your fourteen-day trial includes the complete Lab feature set and unlimited active grows. Restricted features are enabled only after the trusted entitlement record resolves."
-                  : currentPlan.description}
+                : isInternalAdmin
+                  ? "This trusted internal account has permanent full access to current and future subscription-gated features. No paid subscription, trial renewal, or promotional grant is required."
+                  : currentPlanId === "trial"
+                    ? "Your fourteen-day trial includes the complete Lab feature set and unlimited active grows. Restricted features are enabled only after the trusted entitlement record resolves."
+                    : currentPlan.description}
             </p>
             {canManageStripeBilling ? (
               <button
@@ -261,7 +271,9 @@ export default function SubscriptionPage({ activeGrowCount = 0 }) {
               >
                 {billingBusy && billingAction?.kind === "portal"
                   ? "Opening secure billing…"
-                  : "Manage billing"}
+                  : isInternalAdmin
+                    ? "Manage existing billing"
+                    : "Manage billing"}
               </button>
             ) : null}
           </div>
@@ -269,12 +281,16 @@ export default function SubscriptionPage({ activeGrowCount = 0 }) {
           <dl className="grid min-w-64 grid-cols-2 gap-3 rounded-xl border border-zinc-200 bg-white p-4 text-sm dark:border-zinc-800 dark:bg-zinc-900">
             <div>
               <dt className="text-slate-500 dark:text-slate-400">Status</dt>
-              <dd className="font-semibold capitalize">{summary.status}</dd>
+              <dd className="font-semibold capitalize">
+                {isInternalAdmin ? "Active" : summary.status}
+              </dd>
             </div>
             <div>
               <dt className="text-slate-500 dark:text-slate-400">Source</dt>
               <dd className="font-semibold capitalize">
-                {summary.source.replaceAll("_", " ")}
+                {isInternalAdmin
+                  ? "Internal admin"
+                  : summary.source.replaceAll("_", " ")}
               </dd>
             </div>
             <div>
@@ -290,15 +306,34 @@ export default function SubscriptionPage({ activeGrowCount = 0 }) {
               <dd className="font-semibold">
                 {loading || !accessReady
                   ? "Checking"
-                  : error
-                    ? "Free safety fallback"
-                    : entitlementExists
-                      ? "Connected"
-                      : "Trial default"}
+                  : isInternalAdmin
+                    ? "Permanent internal access"
+                    : error
+                      ? "Free safety fallback"
+                      : entitlementExists
+                        ? "Connected"
+                        : "Trial default"}
               </dd>
             </div>
           </dl>
         </div>
+
+        {isInternalAdmin ? (
+          <div className="mt-4 rounded-xl border border-violet-200 bg-violet-50 p-4 text-sm text-violet-950 dark:border-violet-900/70 dark:bg-violet-950/30 dark:text-violet-100">
+            <p className="font-semibold">Permanent internal access</p>
+            <p className="mt-1">
+              Subscription purchases are not required for this account. The
+              server-trusted internal Admin entitlement automatically includes
+              every subscription feature and unlimited active grows.
+            </p>
+            {canManageStripeBilling ? (
+              <p className="mt-1 text-xs opacity-80">
+                A Stripe subscription is still attached to this account. It is
+                not required for access and can be managed above.
+              </p>
+            ) : null}
+          </div>
+        ) : null}
 
         {loading || !accessReady ? (
           <div className="mt-4 rounded-xl border border-sky-200 bg-sky-50 p-4 text-sm text-sky-900 dark:border-sky-900/70 dark:bg-sky-950/30 dark:text-sky-100">
@@ -310,7 +345,7 @@ export default function SubscriptionPage({ activeGrowCount = 0 }) {
           </div>
         ) : null}
 
-        {accessReady && currentPlanId === "trial" ? (
+        {accessReady && !isInternalAdmin && currentPlanId === "trial" ? (
           <div className="mt-4 rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900 dark:border-amber-900/70 dark:bg-amber-950/30 dark:text-amber-100">
             <p className="font-semibold">
               {summary.trialDaysRemaining} day
@@ -330,7 +365,7 @@ export default function SubscriptionPage({ activeGrowCount = 0 }) {
           </p>
         ) : null}
 
-        {accessReady && summary.inPastDueGrace ? (
+        {accessReady && !isInternalAdmin && summary.inPastDueGrace ? (
           <div className="mt-4 rounded-xl border border-amber-300 bg-amber-50 p-4 text-sm text-amber-900 dark:border-amber-800 dark:bg-amber-950/30 dark:text-amber-100">
             <p className="font-semibold">
               Payment past due — {summary.graceDaysRemaining} day
@@ -345,6 +380,7 @@ export default function SubscriptionPage({ activeGrowCount = 0 }) {
         ) : null}
 
         {accessReady &&
+        !isInternalAdmin &&
         !summary.inPastDueGrace &&
         ["past_due", "canceled", "expired"].includes(summary.sourceStatus) ? (
           <div className="mt-4 rounded-xl border border-rose-200 bg-rose-50 p-4 text-sm text-rose-900 dark:border-rose-900/70 dark:bg-rose-950/30 dark:text-rose-100">
@@ -359,9 +395,9 @@ export default function SubscriptionPage({ activeGrowCount = 0 }) {
         ) : null}
 
         <p className="mt-3 text-xs text-slate-500 dark:text-slate-400">
-          Runtime resolution: {resolution}. Checkout and billing management use
-          authenticated Firebase callables; plan access changes only after trusted
-          Stripe webhook processing.
+          {isInternalAdmin
+            ? `Runtime resolution: ${resolution}. Internal full access is authorized by the server-side UID allowlist and does not depend on Stripe, Trial, or promotional access.`
+            : `Runtime resolution: ${resolution}. Checkout and billing management use authenticated Firebase callables; plan access changes only after trusted Stripe webhook processing.`}
         </p>
       </section>
 
@@ -369,9 +405,9 @@ export default function SubscriptionPage({ activeGrowCount = 0 }) {
         <div className="mb-4">
           <h2 className="text-xl font-semibold">Compare plans</h2>
           <p className="mt-1 text-sm text-slate-500 dark:text-slate-400">
-            Free, Hobby, Cultivator, and Lab use the current configuration below.
-            Final paid pricing, taxes, and available payment methods are shown in
-            secure Stripe Checkout before purchase.
+            {isInternalAdmin
+              ? "All public-plan features below are already included with this permanent internal account. No purchase is required."
+              : "Free, Hobby, Cultivator, and Lab use the current configuration below. Final paid pricing, taxes, and available payment methods are shown in secure Stripe Checkout before purchase."}
           </p>
         </div>
 
@@ -383,13 +419,19 @@ export default function SubscriptionPage({ activeGrowCount = 0 }) {
             const isCurrent = isCurrentPublicPlan && currentPlanId === plan.id;
             const isTrialAccess =
               currentPlanId === "trial" && accessPlanId === plan.id;
-            const action = getSubscriptionPlanBillingAction({
-              planId: plan.id,
-              currentPlanId,
-              sourceEntitlement,
-              accessReady,
-              billingBusy,
-            });
+            const action = isInternalAdmin
+              ? {
+                  kind: "internal",
+                  label: "Included",
+                  disabled: true,
+                }
+              : getSubscriptionPlanBillingAction({
+                  planId: plan.id,
+                  currentPlanId,
+                  sourceEntitlement,
+                  accessReady,
+                  billingBusy,
+                });
             const actionIsBusy =
               billingBusy &&
               (billingAction?.kind === action.kind || action.disabled);
