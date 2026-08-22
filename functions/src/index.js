@@ -9,6 +9,7 @@ import { getApps, initializeApp } from "firebase-admin/app";
 import { getAuth } from "firebase-admin/auth";
 import { getFirestore } from "firebase-admin/firestore";
 import {
+  ADMIN_CONFIG_SECRET_NAME,
   ENTITLEMENT_RECONCILE_SCHEDULE,
   STRIPE_CONFIG_SECRET_NAME,
   SUBSCRIPTION_BACKEND_REGION,
@@ -34,11 +35,23 @@ import {
   processStripeBillingEvent,
   verifyStripeWebhookSignature,
 } from "./billingService.js";
+import {
+  AdminServiceError,
+  grantPromotionalAccess,
+  isAuthorizedAdminUid,
+  parseAdminConfig,
+  revokePromotionalAccess,
+} from "./adminService.js";
 
 const stripeSecretBindings =
   String(process.env.FUNCTIONS_EMULATOR || "").toLowerCase() === "true"
     ? []
     : [STRIPE_CONFIG_SECRET_NAME];
+
+const adminSecretBindings =
+  String(process.env.FUNCTIONS_EMULATOR || "").toLowerCase() === "true"
+    ? []
+    : [ADMIN_CONFIG_SECRET_NAME];
 
 let db = null;
 
@@ -68,7 +81,8 @@ function callableError(error) {
     error instanceof EntitlementServiceError ||
     error instanceof EntitlementValidationError ||
     error instanceof GrowServiceError ||
-    error instanceof BillingServiceError
+    error instanceof BillingServiceError ||
+    error instanceof AdminServiceError
       ? error.code
       : "internal";
 
@@ -126,6 +140,10 @@ function stripeClientFromConfig(config) {
     secretKey: config.secretKey,
     apiVersion: config.apiVersion,
   });
+}
+
+function adminConfigFromEnvironment() {
+  return parseAdminConfig(process.env[ADMIN_CONFIG_SECRET_NAME]);
 }
 
 export const provisionSubscriptionEntitlementOnCreate = functionsV1
@@ -283,6 +301,120 @@ export const reactivateGrowBatch = onCall(
         uid: request.auth.uid,
         code: error?.code || "unknown",
         message: error?.message || "Unknown trusted grow reactivation error",
+      });
+      throw callableError(error);
+    }
+  }
+);
+
+
+export const getMyAdminAccess = onCall(
+  {
+    region: SUBSCRIPTION_BACKEND_REGION,
+    secrets: adminSecretBindings,
+  },
+  async (request) => {
+    if (!request.auth?.uid) {
+      return { authorized: false };
+    }
+
+    try {
+      const config = adminConfigFromEnvironment();
+      return {
+        authorized: isAuthorizedAdminUid(request.auth.uid, config),
+      };
+    } catch (error) {
+      logger.error("getMyAdminAccess failed", {
+        uid: request.auth.uid,
+        code: error?.code || "unknown",
+        message: error?.message || "Unknown admin-access error",
+      });
+      throw callableError(error);
+    }
+  }
+);
+
+export const adminGrantPromotionalAccess = onCall(
+  {
+    region: SUBSCRIPTION_BACKEND_REGION,
+    secrets: adminSecretBindings,
+  },
+  async (request) => {
+    if (!request.auth?.uid) {
+      throw new HttpsError("unauthenticated", "Sign in is required.");
+    }
+
+    try {
+      const result = await grantPromotionalAccess({
+        db: initializeBackend(),
+        actorUid: request.auth.uid,
+        targetUid: request.data?.targetUid,
+        planId: request.data?.planId,
+        durationDays: request.data?.durationDays,
+        reason: request.data?.reason,
+        campaign: request.data?.campaign,
+        eventId: request.data?.requestId,
+        adminConfig: adminConfigFromEnvironment(),
+        now: new Date(),
+      });
+
+      logger.info("Promotional subscription access granted.", {
+        actorUid: request.auth.uid,
+        targetUid: request.data?.targetUid || null,
+        planId: result.grant?.planId || null,
+        endsAt: result.grant?.endsAt || null,
+        applied: result.applied,
+        idempotent: result.idempotent,
+      });
+
+      return result;
+    } catch (error) {
+      logger.warn("adminGrantPromotionalAccess rejected", {
+        actorUid: request.auth.uid,
+        targetUid: request.data?.targetUid || null,
+        code: error?.code || "unknown",
+        message: error?.message || "Unknown admin promotion error",
+      });
+      throw callableError(error);
+    }
+  }
+);
+
+export const adminRevokePromotionalAccess = onCall(
+  {
+    region: SUBSCRIPTION_BACKEND_REGION,
+    secrets: adminSecretBindings,
+  },
+  async (request) => {
+    if (!request.auth?.uid) {
+      throw new HttpsError("unauthenticated", "Sign in is required.");
+    }
+
+    try {
+      const result = await revokePromotionalAccess({
+        db: initializeBackend(),
+        actorUid: request.auth.uid,
+        targetUid: request.data?.targetUid,
+        reason: request.data?.reason,
+        eventId: request.data?.requestId,
+        adminConfig: adminConfigFromEnvironment(),
+        now: new Date(),
+      });
+
+      logger.info("Promotional subscription access revoked.", {
+        actorUid: request.auth.uid,
+        targetUid: request.data?.targetUid || null,
+        applied: result.applied,
+        idempotent: result.idempotent,
+      });
+
+      return result;
+    } catch (error) {
+      logger.warn("adminRevokePromotionalAccess rejected", {
+        actorUid: request.auth.uid,
+        targetUid: request.data?.targetUid || null,
+        code: error?.code || "unknown",
+        message: error?.message || "Unknown admin promotion revocation error",
       });
       throw callableError(error);
     }

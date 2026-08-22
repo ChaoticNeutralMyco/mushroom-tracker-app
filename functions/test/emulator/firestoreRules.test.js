@@ -156,6 +156,17 @@ async function seedEntitlement(uid) {
   });
 }
 
+async function seedAdminGrant(uid) {
+  await db.doc(`users/${uid}/billing/adminGrant`).set({
+    planId: "lab",
+    status: "active",
+    startsAt: Timestamp.fromDate(new Date("2026-08-01T00:00:00.000Z")),
+    endsAt: Timestamp.fromDate(new Date("2026-09-01T00:00:00.000Z")),
+    reason: "Trusted promotion",
+    revision: 1,
+  });
+}
+
 before(async () => {
   if (!firestoreHost || !authHost) {
     throw new Error(
@@ -179,8 +190,9 @@ after(async () => {
   if (app) await deleteApp(app);
 });
 
-test("an owner can read their entitlement and immutable audit events", async () => {
+test("an owner can read their entitlement, promotion, and immutable audit events", async () => {
   await seedEntitlement(owner.uid);
+  await seedAdminGrant(owner.uid);
 
   const entitlement = await firestoreRequest({
     path: `users/${owner.uid}/billing/entitlement`,
@@ -193,6 +205,12 @@ test("an owner can read their entitlement and immutable audit events", async () 
     token: owner.idToken,
   });
   assert.equal(event.status, 200, event.body);
+
+  const promotion = await firestoreRequest({
+    path: `users/${owner.uid}/billing/adminGrant`,
+    token: owner.idToken,
+  });
+  assert.equal(promotion.status, 200, promotion.body);
 });
 
 test("browser clients cannot create, update, delete, or append billing data", async () => {
@@ -228,6 +246,18 @@ test("browser clients cannot create, update, delete, or append billing data", as
     body: firestoreFields({ status: "active" }),
   });
   assertDenied(createOtherBillingDoc, "Billing document creation");
+
+  const forgePromotion = await firestoreRequest({
+    method: "PATCH",
+    path: `users/${owner.uid}/billing/adminGrant`,
+    token: owner.idToken,
+    body: firestoreFields({
+      planId: "lab",
+      status: "active",
+      reason: "forged browser promotion",
+    }),
+  });
+  assertDenied(forgePromotion, "Promotional grant creation");
 });
 
 test("other users and signed-out clients cannot read an entitlement", async () => {
@@ -309,6 +339,34 @@ test("owners retain normal read and write access outside billing", async () => {
     token: otherUser.idToken,
   });
   assertDenied(otherRead, "Cross-account task read");
+});
+
+test("internal admin audit data is invisible to every browser account", async () => {
+  await db.doc("internalAdminAudit/trusted-admin-event").set({
+    action: "promotional_access_granted",
+    actorUid: "primary-admin",
+    targetUid: owner.uid,
+  });
+
+  const ownerRead = await firestoreRequest({
+    path: "internalAdminAudit/trusted-admin-event",
+    token: owner.idToken,
+  });
+  assertDenied(ownerRead, "Internal admin audit owner read");
+
+  const otherRead = await firestoreRequest({
+    path: "internalAdminAudit/trusted-admin-event",
+    token: otherUser.idToken,
+  });
+  assertDenied(otherRead, "Internal admin audit cross-account read");
+
+  const write = await firestoreRequest({
+    method: "PATCH",
+    path: "internalAdminAudit/browser-forged",
+    token: owner.idToken,
+    body: firestoreFields({ action: "forged" }),
+  });
+  assertDenied(write, "Internal admin audit browser write");
 });
 
 test("public reference documents are readable but remain server-write-only", async () => {

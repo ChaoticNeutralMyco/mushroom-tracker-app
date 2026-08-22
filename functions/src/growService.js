@@ -7,10 +7,12 @@ import {
 } from "firebase-admin/firestore";
 import {
   ACTIVE_GROW_LIMIT_KEY,
+  ADMIN_GRANT_DOCUMENT_ID,
   BILLING_COLLECTION_ID,
   ENTITLEMENT_DOCUMENT_ID,
   GROW_CAPACITY_DOCUMENT_ID,
   MAX_TRUSTED_GROW_BATCH_SIZE,
+  SUBSCRIPTION_ACCESS_RANKS,
   SUBSCRIPTION_ACTIVE_GROW_LIMITS,
   SUBSCRIPTION_DAY_MS,
   SUBSCRIPTION_PAST_DUE_GRACE_DAYS,
@@ -133,6 +135,14 @@ function entitlementRef(db, uid) {
     .doc(requireUid(uid))
     .collection(BILLING_COLLECTION_ID)
     .doc(ENTITLEMENT_DOCUMENT_ID);
+}
+
+function adminGrantRef(db, uid) {
+  return db
+    .collection("users")
+    .doc(requireUid(uid))
+    .collection(BILLING_COLLECTION_ID)
+    .doc(ADMIN_GRANT_DOCUMENT_ID);
 }
 
 function capacityRef(db, uid) {
@@ -276,11 +286,57 @@ export function resolveEffectiveGrowAccessPlan(
   };
 }
 
+function accessRank(planId) {
+  return Number(SUBSCRIPTION_ACCESS_RANKS[planId] ?? -1);
+}
+
+function isPromotionalGrowGrantActive(grant, now) {
+  if (!grant || normalizeText(grant.status) !== "active") return false;
+
+  const startsAt = asValidDate(grant.startsAt);
+  const endsAt = asValidDate(grant.endsAt);
+  const planId = normalizeText(grant.planId);
+
+  if (
+    !startsAt ||
+    !endsAt ||
+    !Object.prototype.hasOwnProperty.call(
+      SUBSCRIPTION_ACTIVE_GROW_LIMITS,
+      planId
+    )
+  ) {
+    return false;
+  }
+
+  return (
+    startsAt.getTime() <= now.getTime() &&
+    endsAt.getTime() > now.getTime()
+  );
+}
+
 export function resolveEffectiveActiveGrowLimit(
   entitlement = null,
-  now = new Date()
+  now = new Date(),
+  promotionalGrant = null
 ) {
-  const access = resolveEffectiveGrowAccessPlan(entitlement, now);
+  const currentDate = asValidDate(now) || new Date();
+  const access = resolveEffectiveGrowAccessPlan(entitlement, currentDate);
+
+  if (isPromotionalGrowGrantActive(promotionalGrant, currentDate)) {
+    const promoPlanId = normalizeText(promotionalGrant.planId);
+
+    if (accessRank(promoPlanId) > accessRank(access.planId)) {
+      return {
+        planId: promoPlanId,
+        useOverrides: false,
+        resolution: "admin-promotion",
+        limit: normalizeLimit(
+          SUBSCRIPTION_ACTIVE_GROW_LIMITS[promoPlanId]
+        ),
+        source: "admin-promotion",
+      };
+    }
+  }
   const overrideMap =
     entitlement?.limitOverrides &&
     typeof entitlement.limitOverrides === "object" &&
@@ -629,18 +685,27 @@ export async function createGrowBatchWithEntitlement({
   const collectionRef = growsRef(db, safeUid);
   const newRefs = payloads.map(() => collectionRef.doc());
   const entRef = entitlementRef(db, safeUid);
+  const grantRef = adminGrantRef(db, safeUid);
   const lockRef = capacityRef(db, safeUid);
   const currentDate = asValidDate(now) || new Date();
 
   return db.runTransaction(async (transaction) => {
     const entitlementSnapshot = await transaction.get(entRef);
+    const grantSnapshot = await transaction.get(grantRef);
     const lockSnapshot = await transaction.get(lockRef);
     const existingGrows = await transaction.get(collectionRef);
 
     const entitlement = entitlementSnapshot.exists
       ? entitlementSnapshot.data()
       : null;
-    const access = resolveEffectiveActiveGrowLimit(entitlement, currentDate);
+    const promotionalGrant = grantSnapshot.exists
+      ? grantSnapshot.data()
+      : null;
+    const access = resolveEffectiveActiveGrowLimit(
+      entitlement,
+      currentDate,
+      promotionalGrant
+    );
     const usage = countActiveGrows(existingGrows);
     const requested = rawPayloads.reduce(
       (count, payload) =>
@@ -709,11 +774,13 @@ export async function reactivateGrowBatchWithEntitlement({
 
   const collectionRef = growsRef(db, safeUid);
   const entRef = entitlementRef(db, safeUid);
+  const grantRef = adminGrantRef(db, safeUid);
   const lockRef = capacityRef(db, safeUid);
   const currentDate = asValidDate(now) || new Date();
 
   return db.runTransaction(async (transaction) => {
     const entitlementSnapshot = await transaction.get(entRef);
+    const grantSnapshot = await transaction.get(grantRef);
     const lockSnapshot = await transaction.get(lockRef);
     const existingGrows = await transaction.get(collectionRef);
 
@@ -724,7 +791,14 @@ export async function reactivateGrowBatchWithEntitlement({
     const entitlement = entitlementSnapshot.exists
       ? entitlementSnapshot.data()
       : null;
-    const access = resolveEffectiveActiveGrowLimit(entitlement, currentDate);
+    const promotionalGrant = grantSnapshot.exists
+      ? grantSnapshot.data()
+      : null;
+    const access = resolveEffectiveActiveGrowLimit(
+      entitlement,
+      currentDate,
+      promotionalGrant
+    );
     const usage = countActiveGrows(existingGrows);
 
     let nextUsage = usage;

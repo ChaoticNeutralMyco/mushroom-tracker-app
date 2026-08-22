@@ -72,9 +72,10 @@ service cloud.firestore {
     match /users/{uid} {
       allow read, create, update, delete: if isOwner(uid);
 
-      // Subscription entitlements, the grow-capacity serialization lock, and
-      // their audit records are readable by the owner but writable only by
-      // trusted Firebase Admin backend code.
+      // Subscription entitlements, promotional access grants, the
+      // grow-capacity serialization lock, and their user-visible records are
+      // readable by the owner but writable only by trusted Firebase Admin
+      // backend code.
       match /billing/{document=**} {
         allow read: if isOwner(uid);
         allow create, update, delete: if false;
@@ -111,6 +112,13 @@ service cloud.firestore {
     // Tester codes and redemption records are private backend data. Browser
     // clients cannot enumerate, read, create, update, or delete them.
     match /testerCodes/{document=**} {
+      allow read, write: if false;
+    }
+
+    // Internal administrative audit history is backend-only. Even authorized
+    // dashboard accounts use trusted Cloud Functions instead of direct client
+    // reads or writes to this collection.
+    match /internalAdminAudit/{document=**} {
       allow read, write: if false;
     }
 
