@@ -5,6 +5,10 @@ import { functions } from "../firebase-config.js";
 
 const getMyAdminAccessCallable = httpsCallable(functions, "getMyAdminAccess");
 const adminListAccountsCallable = httpsCallable(functions, "adminListAccounts");
+const adminExportMarketingSubscribersCallable = httpsCallable(
+  functions,
+  "adminExportMarketingSubscribers"
+);
 const adminGrantPromotionalAccessCallable = httpsCallable(
   functions,
   "adminGrantPromotionalAccess"
@@ -90,6 +94,17 @@ export async function listAdminAccounts({
     accounts: Array.isArray(data.accounts) ? data.accounts : [],
     nextPageToken: normalizeText(data.nextPageToken) || null,
     pageSize: Number(data.pageSize || pageSize),
+  };
+}
+
+export async function exportAdminMarketingSubscribers() {
+  const response = await adminExportMarketingSubscribersCallable({});
+  const data = response?.data || {};
+
+  return {
+    subscribers: Array.isArray(data.subscribers) ? data.subscribers : [],
+    generatedAt: normalizeText(data.generatedAt) || null,
+    count: Number(data.count || 0),
   };
 }
 

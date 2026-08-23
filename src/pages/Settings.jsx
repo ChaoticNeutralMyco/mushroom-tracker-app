@@ -6,7 +6,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import SubscriptionPage from "./SubscriptionPage.jsx";
 import { auth, db } from "../firebase-config";
-import { doc, getDoc, setDoc } from "firebase/firestore";
+import { doc, getDoc, serverTimestamp, setDoc } from "firebase/firestore";
 import { deleteAllUserData, clearAllLocalCaches, deleteGrowDataOnly } from "../lib/delete-all";
 import {
   buildUserDataBackup,
@@ -19,6 +19,7 @@ import {
   requestNotificationPermission,
 } from "../lib/reminder-utils";
 import { TOUR_CONTROL_EVENT } from "../utils/tourSteps";
+import { APP_VERSION, WHATS_NEW_EVENT } from "../lib/whatsNew.js";
 import {
   DEFAULT_ACCENT,
   DEFAULT_APP_PREFERENCES,
@@ -33,6 +34,13 @@ import {
   normalizeEnvironmentTargets,
   temperatureToFahrenheit,
 } from "../lib/environmentTargets";
+import {
+  authenticateBiometricUnlock,
+  getBiometricErrorMessage,
+  getBiometricStatus,
+  isBiometricUnlockEnabled,
+  setBiometricUnlockEnabled,
+} from "../lib/biometricUnlock.js";
 
 /** Accent palette */
 const ACCENTS = [
@@ -137,6 +145,22 @@ export default function Settings({
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState(null);
   const uid = auth.currentUser?.uid || null;
+  const [biometricBusy, setBiometricBusy] = useState(false);
+  const [biometricEnabled, setBiometricEnabledState] = useState(() =>
+    isBiometricUnlockEnabled(uid)
+  );
+  const [biometricStatus, setBiometricStatus] = useState({
+    checking: true,
+    supported: false,
+    available: false,
+    error: "",
+  });
+  const [marketingConsent, setMarketingConsent] = useState({
+    loading: true,
+    optedIn: false,
+    stale: false,
+  });
+  const [marketingBusy, setMarketingBusy] = useState(false);
   const confirm = useConfirm();
   const importInputRef = useRef(null);
   const [dataProgress, setDataProgress] = useState("");
@@ -154,6 +178,170 @@ export default function Settings({
   const pushNotice = useCallback((message, tone = "success") => {
     setNotice({ message, tone });
   }, []);
+
+  const refreshBiometricStatus = useCallback(async () => {
+    setBiometricEnabledState(isBiometricUnlockEnabled(uid));
+    setBiometricStatus((current) => ({ ...current, checking: true }));
+
+    const status = await getBiometricStatus();
+    setBiometricStatus({
+      checking: false,
+      supported: status.supported === true,
+      available: status.available === true,
+      biometryType: status.biometryType || null,
+      error: status.error || "",
+    });
+    return status;
+  }, [uid]);
+
+  useEffect(() => {
+    refreshBiometricStatus();
+  }, [refreshBiometricStatus]);
+
+  const refreshMarketingConsent = useCallback(async () => {
+    if (!uid) {
+      setMarketingConsent({ loading: false, optedIn: false, stale: false });
+      return { optedIn: false, stale: false };
+    }
+
+    setMarketingConsent((current) => ({ ...current, loading: true }));
+
+    try {
+      const snap = await getDoc(
+        doc(db, "users", uid, "communications", "marketing")
+      );
+      const data = snap.exists() ? snap.data() || {} : {};
+      const currentEmail = String(auth.currentUser?.email || "")
+        .trim()
+        .toLowerCase();
+      const consentEmail = String(data.email || "").trim().toLowerCase();
+      const recordedOptIn = data.marketingEmailOptIn === true;
+      const consentVersion = Number(data.consentVersion || 0);
+      const optedIn = Boolean(
+        recordedOptIn &&
+          consentVersion === 1 &&
+          currentEmail &&
+          consentEmail === currentEmail
+      );
+      const stale = Boolean(recordedOptIn && !optedIn);
+
+      setMarketingConsent({ loading: false, optedIn, stale });
+      return { optedIn, stale };
+    } catch (error) {
+      console.warn("Marketing consent could not be loaded:", error);
+      setMarketingConsent({ loading: false, optedIn: false, stale: false });
+      return { optedIn: false, stale: false };
+    }
+  }, [uid]);
+
+  useEffect(() => {
+    refreshMarketingConsent();
+  }, [refreshMarketingConsent]);
+
+  const setMarketingEmailConsent = async (enabled) => {
+    if (!uid) {
+      pushNotice("You must be signed in to change email preferences.", "warning");
+      return;
+    }
+
+    const currentEmail = String(auth.currentUser?.email || "").trim();
+    if (!currentEmail) {
+      pushNotice(
+        "Add an email address to your account before opting into email updates.",
+        "warning"
+      );
+      return;
+    }
+
+    setMarketingBusy(true);
+    try {
+      const ref = doc(db, "users", uid, "communications", "marketing");
+      const payload = {
+        marketingEmailOptIn: enabled === true,
+        email: currentEmail,
+        consentVersion: 1,
+        updatedAt: serverTimestamp(),
+      };
+
+      if (enabled) {
+        payload.optedInAt = serverTimestamp();
+        payload.optedOutAt = null;
+      } else {
+        payload.optedOutAt = serverTimestamp();
+      }
+
+      await setDoc(ref, payload, { merge: true });
+      setMarketingConsent({
+        loading: false,
+        optedIn: enabled === true,
+        stale: false,
+      });
+      pushNotice(
+        enabled
+          ? "Email updates enabled. You can opt out here at any time."
+          : "Email updates disabled.",
+        "success"
+      );
+    } catch (error) {
+      console.error("Marketing consent update failed:", error);
+      pushNotice("Email preferences could not be saved.", "error");
+    } finally {
+      setMarketingBusy(false);
+    }
+  };
+
+  const enableBiometricUnlock = async () => {
+    if (!uid) {
+      pushNotice("You must be signed in to enable device unlock.", "warning");
+      return;
+    }
+
+    setBiometricBusy(true);
+    try {
+      const status = await refreshBiometricStatus();
+      if (!status.supported) {
+        pushNotice("Device unlock is available in the installed Android app.", "info");
+        return;
+      }
+      if (!status.available) {
+        pushNotice(
+          status.error || "Set up fingerprint, face, or a device credential in Android first.",
+          "warning"
+        );
+        return;
+      }
+
+      await authenticateBiometricUnlock(
+        "Confirm device security to enable Myco Tracker unlock"
+      );
+      setBiometricUnlockEnabled(uid, true);
+      setBiometricEnabledState(true);
+      pushNotice("Biometric/device unlock enabled on this device.", "success");
+    } catch (error) {
+      pushNotice(getBiometricErrorMessage(error), "warning");
+    } finally {
+      setBiometricBusy(false);
+    }
+  };
+
+  const disableBiometricUnlock = () => {
+    if (!uid) return;
+    setBiometricUnlockEnabled(uid, false);
+    setBiometricEnabledState(false);
+    pushNotice("Biometric/device unlock disabled on this device.", "success");
+  };
+
+  const testBiometricUnlock = async () => {
+    setBiometricBusy(true);
+    try {
+      await authenticateBiometricUnlock("Test Myco Tracker device unlock");
+      pushNotice("Device authentication succeeded.", "success");
+    } catch (error) {
+      pushNotice(getBiometricErrorMessage(error), "warning");
+    } finally {
+      setBiometricBusy(false);
+    }
+  };
 
   // Delete-all confirmation modal state
   const [showDeleteAllModal, setShowDeleteAllModal] = useState(false);
@@ -558,6 +746,14 @@ export default function Settings({
     );
   };
 
+  const openWhatsNew = () => {
+    window.dispatchEvent(
+      new CustomEvent(WHATS_NEW_EVENT, {
+        detail: { source: "settings" },
+      })
+    );
+  };
+
   // ---- JSON export/import ----
   const downloadBackup = useCallback((backup) => {
     const blob = new Blob([JSON.stringify(backup, null, 2)], {
@@ -934,6 +1130,146 @@ export default function Settings({
             </dl>
           </div>
 
+          <div
+            data-testid="settings-marketing-consent"
+            className="rounded-2xl border border-zinc-200 dark:border-zinc-800 p-4"
+          >
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div className="max-w-2xl">
+                <h2 className="text-lg font-medium">Email Updates &amp; Marketing</h2>
+                <p className="mt-1 text-sm text-slate-500 dark:text-slate-400">
+                  Choose whether Chaotic Neutral Myco Tracker may send this account occasional product updates, feature announcements, and promotional offers. This is optional and separate from whether your sign-in email is verified.
+                </p>
+              </div>
+              <span className={`chip ${marketingConsent.optedIn ? "chip--active" : ""}`}>
+                {marketingConsent.loading
+                  ? "Checking…"
+                  : marketingConsent.optedIn
+                    ? "Opted in"
+                    : "Not opted in"}
+              </span>
+            </div>
+
+            {marketingConsent.stale ? (
+              <p className="mt-3 text-sm text-amber-700 dark:text-amber-300">
+                Your account email changed after the previous consent was recorded. Opt in again to authorize marketing email at the current address.
+              </p>
+            ) : null}
+
+            <div className="mt-4 flex flex-wrap gap-2">
+              {marketingConsent.optedIn ? (
+                <button
+                  type="button"
+                  className="btn-outline"
+                  onClick={() => setMarketingEmailConsent(false)}
+                  disabled={marketingBusy || marketingConsent.loading}
+                >
+                  {marketingBusy ? "Saving…" : "Opt out of email updates"}
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  className="btn btn-accent"
+                  onClick={() => setMarketingEmailConsent(true)}
+                  disabled={
+                    marketingBusy ||
+                    marketingConsent.loading ||
+                    !auth.currentUser?.email
+                  }
+                >
+                  {marketingBusy ? "Saving…" : "Opt in to email updates"}
+                </button>
+              )}
+              <button
+                type="button"
+                className="btn-outline"
+                onClick={refreshMarketingConsent}
+                disabled={marketingBusy || marketingConsent.loading}
+              >
+                Refresh email preference
+              </button>
+            </div>
+
+            <p className="mt-3 text-xs text-slate-500 dark:text-slate-400">
+              Default is off. Email verification does not count as marketing consent, and opting out does not affect your account, subscription, or transactional service messages.
+            </p>
+          </div>
+
+          <div
+            data-testid="settings-biometric-unlock"
+            className="rounded-2xl border border-zinc-200 dark:border-zinc-800 p-4"
+          >
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div className="max-w-2xl">
+                <h2 className="text-lg font-medium">Biometric / Device Unlock</h2>
+                <p className="mt-1 text-sm text-slate-500 dark:text-slate-400">
+                  In the installed Android app, use your fingerprint, face, or Android device credential to unlock an already signed-in Firebase session. Your Firebase password is never saved for this feature.
+                </p>
+              </div>
+              <span className={`chip ${biometricEnabled ? "chip--active" : ""}`}>
+                {biometricEnabled ? "Enabled on this device" : "Off on this device"}
+              </span>
+            </div>
+
+            <div className="mt-3 text-sm">
+              {biometricStatus.checking ? (
+                <span className="text-slate-500 dark:text-slate-400">Checking device support…</span>
+              ) : biometricStatus.available ? (
+                <span className="text-emerald-700 dark:text-emerald-300">Device authentication is available.</span>
+              ) : (
+                <span className="text-slate-500 dark:text-slate-400">
+                  {biometricStatus.error || "Device authentication is not available here."}
+                </span>
+              )}
+            </div>
+
+            <div className="mt-4 flex flex-wrap gap-2">
+              {!biometricEnabled ? (
+                <button
+                  type="button"
+                  className="btn btn-accent"
+                  onClick={enableBiometricUnlock}
+                  disabled={biometricBusy || biometricStatus.checking || !biometricStatus.available}
+                >
+                  {biometricBusy ? "Authenticating…" : "Enable on this device"}
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  className="btn-outline"
+                  onClick={disableBiometricUnlock}
+                  disabled={biometricBusy}
+                >
+                  Disable on this device
+                </button>
+              )}
+
+              {biometricStatus.available ? (
+                <button
+                  type="button"
+                  className="btn-outline"
+                  onClick={testBiometricUnlock}
+                  disabled={biometricBusy}
+                >
+                  Test device unlock
+                </button>
+              ) : null}
+
+              <button
+                type="button"
+                className="btn-outline"
+                onClick={refreshBiometricStatus}
+                disabled={biometricBusy || biometricStatus.checking}
+              >
+                Recheck support
+              </button>
+            </div>
+
+            <p className="mt-3 text-xs text-slate-500 dark:text-slate-400">
+              When enabled, the Android app locks again after being in the background for 30 seconds. Signing out still requires normal account sign-in next time.
+            </p>
+          </div>
+
           <div>
             <h2 className="text-lg font-medium mb-3">Theme Mode</h2>
             <div className="flex flex-wrap gap-2">
@@ -1103,6 +1439,31 @@ export default function Settings({
             <p className="text-sm text-slate-500 dark:text-slate-400 mt-2">
               When Off, the bottom-left help button is hidden and page tours do not auto-open.
             </p>
+          </div>
+
+          <div
+            data-testid="settings-whats-new"
+            className="rounded-2xl border border-zinc-200 dark:border-zinc-800 p-4"
+          >
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div className="max-w-2xl">
+                <h2 className="text-lg font-medium">What’s New</h2>
+                <p className="mt-1 text-sm text-slate-500 dark:text-slate-400">
+                  Review the release notes for the version currently installed. The app shows each version once automatically, and you can reopen it here at any time.
+                </p>
+              </div>
+              <span className="chip">Version {APP_VERSION}</span>
+            </div>
+
+            <div className="mt-4">
+              <button
+                type="button"
+                className="btn-outline"
+                onClick={openWhatsNew}
+              >
+                View What’s New
+              </button>
+            </div>
           </div>
 
           <div data-testid="settings-startup-workflow">

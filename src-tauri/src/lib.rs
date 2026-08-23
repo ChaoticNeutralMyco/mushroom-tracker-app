@@ -4,8 +4,11 @@
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn main() {
     tauri::Builder::default()
-        .setup(|_app| {
-            // You can register commands/plugins here if needed for mobile.
+        .setup(|app| {
+            #[cfg(target_os = "android")]
+            app.handle()
+                .plugin(tauri_plugin_biometric::Builder::new().build())?;
+
             Ok(())
         })
         .run(tauri::generate_context!())

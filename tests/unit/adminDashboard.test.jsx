@@ -13,6 +13,8 @@ const apiSource = readSource("../../src/lib/adminApi.js");
 const providerSource = readSource(
   "../../src/providers/SubscriptionProvider.jsx"
 );
+const backendIndexSource = readSource("../../functions/src/index.js");
+const backendAdminSource = readSource("../../functions/src/adminService.js");
 
 describe("private admin dashboard wiring", () => {
   it("renders the Admin tab and dashboard only after trusted authorization", () => {
@@ -28,9 +30,38 @@ describe("private admin dashboard wiring", () => {
   it("uses trusted callables instead of direct cross-account Firestore access", () => {
     expect(apiSource).toContain('"getMyAdminAccess"');
     expect(apiSource).toContain('"adminListAccounts"');
+    expect(apiSource).toContain('"adminExportMarketingSubscribers"');
     expect(apiSource).toContain('"adminGrantPromotionalAccess"');
     expect(apiSource).toContain('"adminRevokePromotionalAccess"');
+    expect(backendIndexSource).toContain("adminExportMarketingSubscribers");
+    expect(backendAdminSource).toContain("exportMarketingSubscribers");
+    expect(backendAdminSource).toContain("isMarketingConsentEligible");
     expect(dashboardSource).not.toContain('collection(db, "users"');
+  });
+
+  it("shows email verification separately from explicit marketing consent", () => {
+    expect(dashboardSource).toContain("Email verified");
+    expect(dashboardSource).toContain("Email not verified");
+    expect(dashboardSource).toContain("Marketing opt-in");
+    expect(dashboardSource).toContain("No marketing opt-in");
+    expect(dashboardSource).toContain('data-testid="admin-marketing-export"');
+    expect(dashboardSource).toContain("Download opted-in CSV");
+    expect(dashboardSource).toContain(
+      "Email verification is reported separately and never counts as consent."
+    );
+  });
+
+  it("neutralizes spreadsheet formulas in exported marketing CSV cells", () => {
+    expect(dashboardSource).toContain(
+      "function neutralizeSpreadsheetFormula(value)"
+    );
+    expect(dashboardSource).toContain(
+      "/^[\\s\\uFEFF]*[=+\\-@]/u.test(text)"
+    );
+    expect(dashboardSource).toContain(
+      "const text = neutralizeSpreadsheetFormula(value);"
+    );
+    expect(dashboardSource).toContain("return `'${text}`;");
   });
 
   it("does not hardcode administrator email identities in client source", () => {

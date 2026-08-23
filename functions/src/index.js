@@ -38,6 +38,7 @@ import {
 } from "./billingService.js";
 import {
   AdminServiceError,
+  exportMarketingSubscribers,
   grantPromotionalAccess,
   hasInternalAdminFullAccess,
   isAuthorizedAdminUid,
@@ -411,6 +412,47 @@ export const adminListAccounts = onCall(
         actorUid: request.auth.uid,
         code: error?.code || "unknown",
         message: error?.message || "Unknown admin account-list error",
+      });
+      throw callableError(error);
+    }
+  }
+);
+
+
+export const adminExportMarketingSubscribers = onCall(
+  {
+    region: SUBSCRIPTION_BACKEND_REGION,
+    secrets: adminSecretBindings,
+  },
+  async (request) => {
+    if (!request.auth?.uid) {
+      throw new HttpsError("unauthenticated", "Sign in is required.");
+    }
+
+    try {
+      const result = await exportMarketingSubscribers({
+        db: initializeBackend(),
+        auth: getAuth(),
+        actorUid: request.auth.uid,
+        adminConfig: adminConfigFromEnvironment(),
+        now: new Date(),
+      });
+
+      logger.info("Admin marketing subscriber export prepared.", {
+        actorUid: request.auth.uid,
+        count: result.count,
+      });
+
+      return {
+        subscribers: result.subscribers,
+        generatedAt: result.generatedAt,
+        count: result.count,
+      };
+    } catch (error) {
+      logger.warn("adminExportMarketingSubscribers rejected", {
+        actorUid: request.auth.uid,
+        code: error?.code || "unknown",
+        message: error?.message || "Unknown admin marketing export error",
       });
       throw callableError(error);
     }

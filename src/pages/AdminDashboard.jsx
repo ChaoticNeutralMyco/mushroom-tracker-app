@@ -2,6 +2,7 @@
 
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import {
+  exportAdminMarketingSubscribers,
   grantAdminPromotionalAccess,
   listAdminAccounts,
   normalizeAdminRequestError,
@@ -62,6 +63,8 @@ function accountSearchText(account) {
     account?.effectivePlanId,
     account?.entitlement?.planId,
     account?.entitlement?.source,
+    account?.emailVerified ? "verified" : "not verified",
+    account?.marketingEmailOptIn ? "marketing opted in" : "marketing not opted in",
     promoState(account),
   ]
     .filter(Boolean)
@@ -75,6 +78,46 @@ function upsertAccounts(current, incoming) {
     if (account?.uid) byUid.set(account.uid, account);
   }
   return Array.from(byUid.values());
+}
+
+function neutralizeSpreadsheetFormula(value) {
+  const text = value === null || value === undefined ? "" : String(value);
+
+  if (/^[\s\uFEFF]*[=+\-@]/u.test(text)) {
+    return `'${text}`;
+  }
+
+  return text;
+}
+
+function csvCell(value) {
+  const text = neutralizeSpreadsheetFormula(value);
+  return `"${text.replaceAll('"', '""')}"`;
+}
+
+function downloadMarketingCsv(subscribers = []) {
+  const rows = [
+    ["Email", "Display Name", "Email Verified", "Opted In At", "Consent Version"],
+    ...subscribers.map((subscriber) => [
+      subscriber.email || "",
+      subscriber.displayName || "",
+      subscriber.emailVerified === true ? "Yes" : "No",
+      subscriber.optedInAt || "",
+      subscriber.consentVersion || "",
+    ]),
+  ];
+  const csv = rows.map((row) => row.map(csvCell).join(",")).join("\r\n");
+  const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = `cnm-marketing-subscribers-${new Date()
+    .toISOString()
+    .slice(0, 10)}.csv`;
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  URL.revokeObjectURL(url);
 }
 
 export default function AdminDashboard() {
@@ -164,6 +207,9 @@ export default function AdminDashboard() {
       if (planFilter === "stripe") {
         return account?.entitlement?.stripeManaged === true;
       }
+      if (planFilter === "marketing") {
+        return account?.marketingEmailOptIn === true;
+      }
 
       return account?.effectivePlanId === planFilter;
     });
@@ -177,6 +223,34 @@ export default function AdminDashboard() {
   const refreshAfterMutation = useCallback(async () => {
     await loadAccounts({ append: false });
   }, [loadAccounts]);
+
+  const handleMarketingExport = useCallback(async () => {
+    setBusyAction("marketing-export");
+    setError("");
+    setNotice("");
+
+    try {
+      const result = await exportAdminMarketingSubscribers();
+      const subscribers = Array.isArray(result?.subscribers)
+        ? result.subscribers
+        : [];
+      downloadMarketingCsv(subscribers);
+      setNotice(
+        `Downloaded ${subscribers.length} explicitly opted-in marketing subscriber${
+          subscribers.length === 1 ? "" : "s"
+        }. Email verification is included as a separate CSV field and is not treated as consent.`
+      );
+    } catch (requestError) {
+      setError(
+        normalizeAdminRequestError(
+          requestError,
+          "The marketing subscriber list could not be downloaded."
+        )
+      );
+    } finally {
+      setBusyAction("");
+    }
+  }, []);
 
   const handleGrant = useCallback(async () => {
     if (!selectedAccount) return;
@@ -355,6 +429,7 @@ export default function AdminDashboard() {
               <option value="all">All accounts</option>
               <option value="stripe">Stripe managed</option>
               <option value="promo">Promo active/scheduled</option>
+              <option value="marketing">Marketing opted in</option>
               <option value="free">Effective Free</option>
               <option value="trial">Effective Trial</option>
               <option value="hobby">Effective Hobby</option>
@@ -369,6 +444,10 @@ export default function AdminDashboard() {
           <span>{accounts.length} account(s) loaded</span>
           <span>•</span>
           <span>{filteredAccounts.length} shown</span>
+          <span>•</span>
+          <span>
+            {accounts.filter((account) => account.marketingEmailOptIn === true).length} marketing opt-in(s) loaded
+          </span>
           {nextPageToken ? (
             <>
               <span>•</span>
@@ -382,6 +461,26 @@ export default function AdminDashboard() {
               </button>
             </>
           ) : null}
+        </div>
+
+        <div className="mt-4 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-zinc-200 p-3 dark:border-zinc-800">
+          <div>
+            <div className="text-sm font-semibold">Marketing distribution list</div>
+            <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
+              Downloads only accounts with explicit current-email marketing consent. Email verification is reported separately and never counts as consent.
+            </p>
+          </div>
+          <button
+            type="button"
+            data-testid="admin-marketing-export"
+            className="btn-outline"
+            disabled={Boolean(busyAction)}
+            onClick={handleMarketingExport}
+          >
+            {busyAction === "marketing-export"
+              ? "Preparing CSV…"
+              : "Download opted-in CSV"}
+          </button>
         </div>
       </section>
 
@@ -435,6 +534,28 @@ export default function AdminDashboard() {
                                 Authorized admin
                               </span>
                             ) : null}
+                            <span
+                              className={`rounded-full border px-2 py-0.5 text-[10px] font-semibold ${
+                                account.emailVerified
+                                  ? "border-emerald-300 text-emerald-700 dark:border-emerald-700 dark:text-emerald-300"
+                                  : "border-amber-300 text-amber-700 dark:border-amber-700 dark:text-amber-300"
+                              }`}
+                            >
+                              {account.emailVerified ? "Email verified" : "Email not verified"}
+                            </span>
+                            <span
+                              className={`rounded-full border px-2 py-0.5 text-[10px] font-semibold ${
+                                account.marketingEmailOptIn
+                                  ? "border-sky-300 text-sky-700 dark:border-sky-700 dark:text-sky-300"
+                                  : "border-zinc-300 text-zinc-600 dark:border-zinc-700 dark:text-zinc-300"
+                              }`}
+                            >
+                              {account.marketingEmailOptIn
+                                ? "Marketing opt-in"
+                                : account.marketingConsentStale
+                                  ? "Marketing re-confirm required"
+                                  : "No marketing opt-in"}
+                            </span>
                             {account.disabled ? (
                               <span className="rounded-full border border-rose-300 px-2 py-0.5 text-[10px] font-semibold text-rose-700 dark:border-rose-700 dark:text-rose-300">
                                 Disabled
@@ -547,6 +668,26 @@ export default function AdminDashboard() {
                     {formatDate(selectedAccount.lastSignInAt, {
                       includeTime: true,
                     })}
+                  </dd>
+                </div>
+                <div>
+                  <dt className="text-xs text-slate-500 dark:text-slate-400">
+                    Email
+                  </dt>
+                  <dd className="font-semibold">
+                    {selectedAccount.emailVerified ? "Verified" : "Not verified"}
+                  </dd>
+                </div>
+                <div>
+                  <dt className="text-xs text-slate-500 dark:text-slate-400">
+                    Marketing
+                  </dt>
+                  <dd className="font-semibold">
+                    {selectedAccount.marketingEmailOptIn
+                      ? "Opted in"
+                      : selectedAccount.marketingConsentStale
+                        ? "Re-confirm required"
+                        : "Not opted in"}
                   </dd>
                 </div>
                 <div>

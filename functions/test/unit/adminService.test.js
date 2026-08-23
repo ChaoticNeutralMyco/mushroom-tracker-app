@@ -6,6 +6,7 @@ import {
   AdminServiceError,
   assertAuthorizedAdminUid,
   isAuthorizedAdminUid,
+  isMarketingConsentEligible,
   isPromotionalGrantActive,
   parseAdminConfig,
   resolveEffectiveSubscriptionPlanId,
@@ -125,5 +126,46 @@ test("effective access uses the higher of trusted base access and active promoti
       now,
     }),
     "lab"
+  );
+});
+
+
+test("marketing eligibility requires explicit current-email consent", () => {
+  const consent = {
+    marketingEmailOptIn: true,
+    email: "Grower@Example.com",
+    consentVersion: 1,
+  };
+
+  assert.equal(
+    isMarketingConsentEligible({
+      consent,
+      userEmail: "grower@example.com",
+    }),
+    true
+  );
+
+  assert.equal(
+    isMarketingConsentEligible({
+      consent: { ...consent, marketingEmailOptIn: false },
+      userEmail: "grower@example.com",
+    }),
+    false
+  );
+
+  assert.equal(
+    isMarketingConsentEligible({
+      consent,
+      userEmail: "new-address@example.com",
+    }),
+    false
+  );
+
+  assert.equal(
+    isMarketingConsentEligible({
+      consent: { ...consent, consentVersion: 0 },
+      userEmail: "grower@example.com",
+    }),
+    false
   );
 });

@@ -74,6 +74,7 @@ function BrandLogo() {
     </svg>
   );
 }
+
 export default function Auth() {
   const [mode, setMode] = useState("signin"); // signin | signup | reset
   const [email, setEmail] = useState("");
@@ -143,6 +144,23 @@ export default function Auth() {
     }
   };
 
+  const submitAuth = async (event) => {
+    event.preventDefault();
+    if (busy) return;
+
+    if (mode === "signin") {
+      await signIn();
+      return;
+    }
+
+    if (mode === "signup") {
+      await signUp();
+      return;
+    }
+
+    await reset();
+  };
+
   return (
     <div className="min-h-screen grid place-items-center bg-zinc-100 dark:bg-zinc-950 text-zinc-900 dark:text-white px-4">
       <div className="w-full max-w-md">
@@ -160,108 +178,114 @@ export default function Auth() {
             <div className="mb-3 rounded-lg border border-[rgba(var(--_accent-rgb),0.35)] bg-[rgba(var(--_accent-rgb),0.10)] px-3 py-2 text-sm text-zinc-800 dark:text-zinc-100">{notice}</div>
           )}
 
-          {mode !== "reset" && (
-            <>
-              <label className="block mb-3 text-sm">
-                <div className="mb-1 opacity-80">Email</div>
-                <input
-                  type="email"
-                  value={email}
-                  onChange={(e) => setEmail(e.target.value)}
-                  className="w-full rounded-lg border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-800 px-3 py-2"
-                  autoComplete="email"
-                />
-              </label>
-              <label className="block mb-4 text-sm">
-                <div className="mb-1 opacity-80">Password</div>
-                <input
-                  type="password"
-                  value={password}
-                  onChange={(e) => setPassword(e.target.value)}
-                  className="w-full rounded-lg border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-800 px-3 py-2"
-                  autoComplete={mode === "signup" ? "new-password" : "current-password"}
-                />
-              </label>
+          <form onSubmit={submitAuth}>
+            {mode !== "reset" && (
+              <>
+                <label className="block mb-3 text-sm">
+                  <div className="mb-1 opacity-80">Email</div>
+                  <input
+                    type="email"
+                    value={email}
+                    onChange={(e) => setEmail(e.target.value)}
+                    className="w-full rounded-lg border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-800 px-3 py-2"
+                    autoComplete="email"
+                  />
+                </label>
+                <label className="block mb-4 text-sm">
+                  <div className="mb-1 opacity-80">Password</div>
+                  <input
+                    type="password"
+                    value={password}
+                    onChange={(e) => setPassword(e.target.value)}
+                    className="w-full rounded-lg border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-800 px-3 py-2"
+                    autoComplete={mode === "signup" ? "new-password" : "current-password"}
+                  />
+                </label>
 
-              {mode === "signin" ? (
+                {mode === "signin" ? (
+                  <button
+                    type="submit"
+                    disabled={busy}
+                    className="w-full px-4 py-2 rounded-lg accent-bg disabled:opacity-60"
+                  >
+                    {busy ? "Signing in…" : "Sign in"}
+                  </button>
+                ) : (
+                  <button
+                    type="submit"
+                    disabled={busy}
+                    className="w-full px-4 py-2 rounded-lg accent-bg disabled:opacity-60"
+                  >
+                    {busy ? "Creating account…" : "Create account"}
+                  </button>
+                )}
+
+                <div className="mt-3 grid grid-cols-2 gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setMode(mode === "signin" ? "signup" : "signin")}
+                    className="px-3 py-2 rounded-lg bg-zinc-200 dark:bg-zinc-800 hover:bg-zinc-300 dark:hover:bg-zinc-700 text-sm"
+                    disabled={busy}
+                  >
+                    {mode === "signin" ? "Need an account?" : "Have an account?"}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setMode("reset")}
+                    className="px-3 py-2 rounded-lg bg-zinc-200 dark:bg-zinc-800 hover:bg-zinc-300 dark:hover:bg-zinc-700 text-sm"
+                    disabled={busy}
+                  >
+                    Forgot password
+                  </button>
+                </div>
+
+                <div className="my-4 flex items-center gap-3">
+                  <div className="h-px flex-1 bg-zinc-200 dark:bg-zinc-800" />
+                  <div className="text-xs opacity-60">or</div>
+                  <div className="h-px flex-1 bg-zinc-200 dark:bg-zinc-800" />
+                </div>
+
                 <button
-                  onClick={signIn}
+                  type="button"
+                  onClick={google}
+                  disabled={busy}
+                  className="w-full px-4 py-2 rounded-lg border border-zinc-300 dark:border-zinc-700 hover:bg-zinc-50 dark:hover:bg-zinc-800 text-sm disabled:opacity-60"
+                >
+                  Continue with Google
+                </button>
+              </>
+            )}
+
+            {mode === "reset" && (
+              <>
+                <label className="block mb-4 text-sm">
+                  <div className="mb-1 opacity-80">Email</div>
+                  <input
+                    type="email"
+                    value={email}
+                    onChange={(e) => setEmail(e.target.value)}
+                    className="w-full rounded-lg border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-800 px-3 py-2"
+                    autoComplete="email"
+                  />
+                </label>
+                <button
+                  type="submit"
                   disabled={busy}
                   className="w-full px-4 py-2 rounded-lg accent-bg disabled:opacity-60"
                 >
-                  {busy ? "Signing in…" : "Sign in"}
-                </button>
-              ) : (
-                <button
-                  onClick={signUp}
-                  disabled={busy}
-                  className="w-full px-4 py-2 rounded-lg accent-bg disabled:opacity-60"
-                >
-                  {busy ? "Creating account…" : "Create account"}
-                </button>
-              )}
-
-              <div className="mt-3 grid grid-cols-2 gap-2">
-                <button
-                  onClick={() => setMode(mode === "signin" ? "signup" : "signin")}
-                  className="px-3 py-2 rounded-lg bg-zinc-200 dark:bg-zinc-800 hover:bg-zinc-300 dark:hover:bg-zinc-700 text-sm"
-                  disabled={busy}
-                >
-                  {mode === "signin" ? "Need an account?" : "Have an account?"}
+                  {busy ? "Sending…" : "Send reset link"}
                 </button>
                 <button
-                  onClick={() => setMode("reset")}
-                  className="px-3 py-2 rounded-lg bg-zinc-200 dark:bg-zinc-800 hover:bg-zinc-300 dark:hover:bg-zinc-700 text-sm"
+                  type="button"
+                  onClick={() => setMode("signin")}
+                  className="mt-3 w-full px-4 py-2 rounded-lg bg-zinc-200 dark:bg-zinc-800 hover:bg-zinc-300 dark:hover:bg-zinc-700 text-sm"
                   disabled={busy}
                 >
-                  Forgot password
+                  Back to sign in
                 </button>
-              </div>
-
-              <div className="my-4 flex items-center gap-3">
-                <div className="h-px flex-1 bg-zinc-200 dark:bg-zinc-800" />
-                <div className="text-xs opacity-60">or</div>
-                <div className="h-px flex-1 bg-zinc-200 dark:bg-zinc-800" />
-              </div>
-
-              <button
-                onClick={google}
-                disabled={busy}
-                className="w-full px-4 py-2 rounded-lg border border-zinc-300 dark:border-zinc-700 hover:bg-zinc-50 dark:hover:bg-zinc-800 text-sm disabled:opacity-60"
-              >
-                Continue with Google
-              </button>
-            </>
-          )}
-
-          {mode === "reset" && (
-            <>
-              <label className="block mb-4 text-sm">
-                <div className="mb-1 opacity-80">Email</div>
-                <input
-                  type="email"
-                  value={email}
-                  onChange={(e) => setEmail(e.target.value)}
-                  className="w-full rounded-lg border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-800 px-3 py-2"
-                  autoComplete="email"
-                />
-              </label>
-              <button
-                onClick={reset}
-                disabled={busy}
-                className="w-full px-4 py-2 rounded-lg accent-bg disabled:opacity-60"
-              >
-                {busy ? "Sending…" : "Send reset link"}
-              </button>
-              <button
-                onClick={() => setMode("signin")}
-                className="mt-3 w-full px-4 py-2 rounded-lg bg-zinc-200 dark:bg-zinc-800 hover:bg-zinc-300 dark:hover:bg-zinc-700 text-sm"
-                disabled={busy}
-              >
-                Back to sign in
-              </button>
-            </>
-          )}
+              </>
+            )}
+          </form>
         </div>
 
         <div className="text-center text-xs opacity-60 mt-4">

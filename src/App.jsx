@@ -72,6 +72,7 @@ import OnboardingCoach from "./utils/OnboardingCoach";
 import TrialExpirationNotice from "./components/ui/TrialExpirationNotice.jsx";
 import ActiveGrowLimitNotice from "./components/ui/ActiveGrowLimitNotice.jsx";
 import SubscriptionFeatureNotice from "./components/ui/SubscriptionFeatureNotice.jsx";
+import WhatsNewNotice from "./components/ui/WhatsNewNotice.jsx";
 import { useSubscription } from "./providers/SubscriptionProvider.jsx";
 import {
   getSubscriptionFeatureGateState,
@@ -79,6 +80,14 @@ import {
 import {
   getMyAdminAccess as fetchMyAdminAccess,
 } from "./lib/adminApi.js";
+import {
+  authenticateBiometricUnlock,
+  getBiometricErrorMessage,
+  getBiometricStatus,
+  isBiometricUnlockEnabled,
+  isTauriMobileRuntime,
+  setBiometricUnlockEnabled,
+} from "./lib/biometricUnlock.js";
 import { ConfirmProvider } from "./components/ui/ConfirmDialog";
 import {
   DEFAULT_ACCENT,
@@ -273,6 +282,47 @@ const SettingsSkeleton = () => (
   </CardShell>
 );
 
+function BiometricUnlockScreen({ email, prompting, error, onRetry, onUseAccountSignIn }) {
+  return (
+    <div className="min-h-screen grid place-items-center bg-zinc-100 dark:bg-zinc-950 text-zinc-900 dark:text-white px-4">
+      <div className="w-full max-w-md rounded-2xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 p-6 shadow">
+        <h1 className="text-xl font-semibold">Device unlock required</h1>
+        <p className="mt-2 text-sm text-slate-600 dark:text-slate-300">
+          {email ? `Unlock ${email} with your device security.` : "Unlock your signed-in account with your device security."}
+        </p>
+        <p className="mt-2 text-xs text-slate-500 dark:text-slate-400">
+          Your Firebase password is not stored for this feature. Android handles the fingerprint, face, or device credential prompt.
+        </p>
+
+        {error ? (
+          <div className="mt-4 rounded-lg border border-amber-200 dark:border-amber-900/60 bg-amber-50 dark:bg-amber-950/30 px-3 py-2 text-sm text-amber-800 dark:text-amber-200">
+            {error}
+          </div>
+        ) : null}
+
+        <div className="mt-5 space-y-2">
+          <button
+            type="button"
+            className="w-full rounded-lg px-4 py-2 accent-bg disabled:opacity-60"
+            disabled={prompting}
+            onClick={onRetry}
+          >
+            {prompting ? "Authenticating…" : "Unlock with device"}
+          </button>
+          <button
+            type="button"
+            className="w-full rounded-lg bg-zinc-200 dark:bg-zinc-800 hover:bg-zinc-300 dark:hover:bg-zinc-700 px-4 py-2 text-sm disabled:opacity-60"
+            disabled={prompting}
+            onClick={onUseAccountSignIn}
+          >
+            Sign out and use account sign-in
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function App() {
   const subscription = useSubscription();
   const [user, setUser] = useState(null);
@@ -280,6 +330,14 @@ export default function App() {
     ready: false,
     authorized: false,
   });
+
+  const [biometricGate, setBiometricGate] = useState({
+    unlockedUid: null,
+    prompting: false,
+    error: "",
+  });
+  const biometricPromptRef = useRef(false);
+  const biometricHiddenAtRef = useRef(null);
 
   const [rawGrows, setRawGrows] = useState(undefined);
   const [recipes, setRecipes] = useState(undefined);
@@ -307,6 +365,89 @@ export default function App() {
     setOpenLibraryItemId(null);
     scanParamRef.current.libKey = null;
   };
+
+  const runBiometricUnlock = React.useCallback(async (uid) => {
+    if (!uid) return false;
+
+    if (!isTauriMobileRuntime() || !isBiometricUnlockEnabled(uid)) {
+      setBiometricGate({ unlockedUid: uid, prompting: false, error: "" });
+      return true;
+    }
+
+    if (biometricPromptRef.current) return false;
+    biometricPromptRef.current = true;
+    setBiometricGate((current) => ({
+      ...current,
+      unlockedUid: current.unlockedUid === uid ? uid : null,
+      prompting: true,
+      error: "",
+    }));
+
+    try {
+      const status = await getBiometricStatus();
+      if (!status.available) {
+        throw new Error(
+          status.error || "Device authentication is not currently available."
+        );
+      }
+
+      await authenticateBiometricUnlock();
+      setBiometricGate({ unlockedUid: uid, prompting: false, error: "" });
+      return true;
+    } catch (error) {
+      setBiometricGate({
+        unlockedUid: null,
+        prompting: false,
+        error: getBiometricErrorMessage(error),
+      });
+      return false;
+    } finally {
+      biometricPromptRef.current = false;
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!user?.uid) {
+      setBiometricGate({ unlockedUid: null, prompting: false, error: "" });
+      return;
+    }
+
+    if (!isTauriMobileRuntime() || !isBiometricUnlockEnabled(user.uid)) {
+      setBiometricGate({ unlockedUid: user.uid, prompting: false, error: "" });
+      return;
+    }
+
+    setBiometricGate({ unlockedUid: null, prompting: false, error: "" });
+    runBiometricUnlock(user.uid);
+  }, [runBiometricUnlock, user?.uid]);
+
+  useEffect(() => {
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === "hidden") {
+        biometricHiddenAtRef.current = Date.now();
+        return;
+      }
+
+      const hiddenAt = biometricHiddenAtRef.current;
+      biometricHiddenAtRef.current = null;
+
+      if (
+        document.visibilityState === "visible" &&
+        user?.uid &&
+        hiddenAt &&
+        Date.now() - hiddenAt >= 30000 &&
+        isTauriMobileRuntime() &&
+        isBiometricUnlockEnabled(user.uid)
+      ) {
+        setBiometricGate({ unlockedUid: null, prompting: false, error: "" });
+        runBiometricUnlock(user.uid);
+      }
+    };
+
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+    return () =>
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+  }, [runBiometricUnlock, user?.uid]);
 
   useEffect(() => {
     try {
@@ -730,6 +871,14 @@ export default function App() {
   }, []);
 
   const handleSignOut = async () => {
+    await signOut(auth);
+  };
+
+  const handleBiometricAccountFallback = async () => {
+    if (user?.uid) {
+      setBiometricUnlockEnabled(user.uid, false);
+    }
+    setBiometricGate({ unlockedUid: null, prompting: false, error: "" });
     await signOut(auth);
   };
 
@@ -1357,6 +1506,25 @@ export default function App() {
   if (showSplash) return <SplashScreen />;
   if (!user) return <Auth setUser={setUser} />;
 
+  const biometricUnlockRequired = Boolean(
+    user?.uid &&
+      isTauriMobileRuntime() &&
+      isBiometricUnlockEnabled(user.uid) &&
+      biometricGate.unlockedUid !== user.uid
+  );
+
+  if (biometricUnlockRequired) {
+    return (
+      <BiometricUnlockScreen
+        email={user.email || ""}
+        prompting={biometricGate.prompting}
+        error={biometricGate.error}
+        onRetry={() => runBiometricUnlock(user.uid)}
+        onUseAccountSignIn={handleBiometricAccountFallback}
+      />
+    );
+  }
+
   const isEditingExisting = editingGrow && editingGrow.id;
   const isAddingNew = editingGrow && !editingGrow.id;
 
@@ -1840,6 +2008,8 @@ export default function App() {
           }, 0);
         }}
       />
+
+      <WhatsNewNotice uid={user.uid} />
 
       <OnboardingCoach pageKey={activeTab} enabled={prefs.guideEnabled !== false} />
     </ConfirmProvider>

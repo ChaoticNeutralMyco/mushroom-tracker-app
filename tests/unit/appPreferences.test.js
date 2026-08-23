@@ -18,6 +18,10 @@ const localRemindersSource = readFileSync(
   fileURLToPath(new URL("../../src/components/ui/LocalReminders.jsx", import.meta.url)),
   "utf8"
 );
+const firestoreRulesSource = readFileSync(
+  fileURLToPath(new URL("../../firestore.rules", import.meta.url)),
+  "utf8"
+);
 
 describe("app preference normalization", () => {
   it("migrates legacy appearance and stage reminder fields", () => {
@@ -117,6 +121,18 @@ describe("Settings control-center integration", () => {
     expect(settingsSource).toContain('data-testid="settings-storage-overview"');
     expect(settingsSource).toContain("Automatically stamp stage dates");
     expect(settingsSource).toContain("Reset App Preferences");
+  });
+
+  it("keeps marketing consent explicit and separate from app preferences", () => {
+    expect(settingsSource).toContain('data-testid="settings-marketing-consent"');
+    expect(settingsSource).toContain('doc(db, "users", uid, "communications", "marketing")');
+    expect(settingsSource).toContain("marketingEmailOptIn");
+    expect(settingsSource).toContain("Email verification does not count as marketing consent");
+    expect(settingsSource).not.toContain("savePrefs({ marketingEmailOptIn");
+
+    expect(firestoreRulesSource).toContain("match /communications/{documentId}");
+    expect(firestoreRulesSource).toContain("isValidMarketingConsent(request.resource.data)");
+    expect(firestoreRulesSource).toContain("collectionId != 'communications'");
   });
 
   it("uses the corrected grow-stage reminder preference name", () => {

@@ -69,6 +69,36 @@ service cloud.firestore {
       return !isActiveGrow(resource.data) && isActiveGrow(request.resource.data);
     }
 
+    function isValidMarketingConsent(data) {
+      return
+        data.keys().hasOnly([
+          "marketingEmailOptIn",
+          "email",
+          "consentVersion",
+          "updatedAt",
+          "optedInAt",
+          "optedOutAt"
+        ]) &&
+        data.keys().hasAll([
+          "marketingEmailOptIn",
+          "email",
+          "consentVersion",
+          "updatedAt"
+        ]) &&
+        data.marketingEmailOptIn is bool &&
+        data.email is string &&
+        data.email.size() >= 3 &&
+        data.email.size() <= 320 &&
+        data.consentVersion == 1 &&
+        data.updatedAt is timestamp &&
+        (!hasField(data, "optedInAt") ||
+          data.optedInAt == null ||
+          data.optedInAt is timestamp) &&
+        (!hasField(data, "optedOutAt") ||
+          data.optedOutAt == null ||
+          data.optedOutAt is timestamp);
+    }
+
     match /users/{uid} {
       allow read, create, update, delete: if isOwner(uid);
 
@@ -79,6 +109,19 @@ service cloud.firestore {
       match /billing/{document=**} {
         allow read: if isOwner(uid);
         allow create, update, delete: if false;
+      }
+
+      // Marketing/newsletter consent is user-owned and defaults to absent/off.
+      // It is intentionally separate from account email verification and from
+      // general app preferences. Cross-account/admin access goes through
+      // trusted Cloud Functions instead of browser Firestore reads.
+      match /communications/{documentId} {
+        allow read: if isOwner(uid) && documentId == 'marketing';
+        allow create, update:
+          if isOwner(uid) &&
+             documentId == 'marketing' &&
+             isValidMarketingConsent(request.resource.data);
+        allow delete: if isOwner(uid) && documentId == 'marketing';
       }
 
       // All grow creation is trusted-backend-only so browser clients cannot
@@ -105,7 +148,8 @@ service cloud.firestore {
         allow read, create, update, delete:
           if isOwner(uid) &&
              collectionId != 'billing' &&
-             collectionId != 'grows';
+             collectionId != 'grows' &&
+             collectionId != 'communications';
       }
     }
 

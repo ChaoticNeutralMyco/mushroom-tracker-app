@@ -1,0 +1,8 @@
+{
+  "$schema": "../gen/schemas/mobile-schema.json",
+  "identifier": "mobile-biometric",
+  "description": "Allows the main Android window to check and prompt for device authentication.",
+  "windows": ["main"],
+  "platforms": ["android"],
+  "permissions": ["biometric:default"]
+}

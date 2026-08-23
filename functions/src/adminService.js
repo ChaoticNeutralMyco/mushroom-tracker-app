@@ -33,6 +33,9 @@ import {
 } from "./growService.js";
 
 const PROMOTIONAL_PLAN_SET = new Set(PROMOTIONAL_SUBSCRIPTION_PLAN_IDS);
+const MARKETING_COLLECTION_ID = "communications";
+const MARKETING_DOCUMENT_ID = "marketing";
+const MARKETING_CONSENT_VERSION = 1;
 
 export class AdminServiceError extends Error {
   constructor(message, code = "failed-precondition", details = null) {
@@ -228,6 +231,14 @@ function adminGrantRef(db, uid) {
     .doc(ADMIN_GRANT_DOCUMENT_ID);
 }
 
+function marketingConsentRef(db, uid) {
+  return db
+    .collection("users")
+    .doc(requireUid(uid))
+    .collection(MARKETING_COLLECTION_ID)
+    .doc(MARKETING_DOCUMENT_ID);
+}
+
 function adminAuditRef(db, eventId) {
   return db
     .collection(INTERNAL_ADMIN_AUDIT_COLLECTION_ID)
@@ -256,6 +267,44 @@ function serializeGrant(grant) {
     lastActionId: normalizeText(grant.lastActionId) || null,
     revokedAt: serializeDate(grant.revokedAt),
   };
+}
+
+function serializeMarketingConsent(consent) {
+  if (!consent || typeof consent !== "object") {
+    return {
+      marketingEmailOptIn: false,
+      consentVersion: null,
+      email: null,
+      optedInAt: null,
+      optedOutAt: null,
+      updatedAt: null,
+    };
+  }
+
+  return {
+    marketingEmailOptIn: consent.marketingEmailOptIn === true,
+    consentVersion: Number(consent.consentVersion || 0) || null,
+    email: normalizeText(consent.email).toLowerCase() || null,
+    optedInAt: serializeDate(consent.optedInAt),
+    optedOutAt: serializeDate(consent.optedOutAt),
+    updatedAt: serializeDate(consent.updatedAt),
+  };
+}
+
+export function isMarketingConsentEligible({
+  consent = null,
+  userEmail = null,
+} = {}) {
+  const email = normalizeText(userEmail).toLowerCase();
+  if (!email || !consent || consent.marketingEmailOptIn !== true) return false;
+
+  const consentEmail = normalizeText(consent.email).toLowerCase();
+  const consentVersion = Number(consent.consentVersion || 0);
+
+  return (
+    consentVersion === MARKETING_CONSENT_VERSION &&
+    consentEmail === email
+  );
 }
 
 export function isPromotionalGrantActive(grant, now = new Date()) {
@@ -731,9 +780,15 @@ async function buildAdminAccountRecord({
   now,
 }) {
   const uid = requireUid(userRecord?.uid);
-  const [entitlementSnapshot, grantSnapshot, growsSnapshot] = await Promise.all([
+  const [
+    entitlementSnapshot,
+    grantSnapshot,
+    marketingSnapshot,
+    growsSnapshot,
+  ] = await Promise.all([
     entitlementRef(db, uid).get(),
     adminGrantRef(db, uid).get(),
+    marketingConsentRef(db, uid).get(),
     db.collection("users").doc(uid).collection("grows").get(),
   ]);
 
@@ -741,6 +796,14 @@ async function buildAdminAccountRecord({
     ? entitlementSnapshot.data()
     : null;
   const grant = grantSnapshot.exists ? grantSnapshot.data() : null;
+  const marketingConsent = marketingSnapshot.exists
+    ? marketingSnapshot.data()
+    : null;
+  const marketing = serializeMarketingConsent(marketingConsent);
+  const marketingEmailOptIn = isMarketingConsentEligible({
+    consent: marketingConsent,
+    userEmail: userRecord.email,
+  });
   const baseAccess = resolveEffectiveGrowAccessPlan(entitlement, now);
   const internalFullAccess = hasInternalAdminFullAccess(uid, adminConfig);
   const effectivePlanId = resolveEffectiveSubscriptionPlanId({
@@ -761,6 +824,10 @@ async function buildAdminAccountRecord({
     email: normalizeText(userRecord.email) || null,
     displayName: normalizeText(userRecord.displayName) || null,
     emailVerified: userRecord.emailVerified === true,
+    marketingEmailOptIn,
+    marketingConsentStale:
+      marketing.marketingEmailOptIn === true && !marketingEmailOptIn,
+    marketing,
     disabled: userRecord.disabled === true,
     createdAt: serializeDate(userRecord.metadata?.creationTime),
     lastSignInAt: serializeDate(userRecord.metadata?.lastSignInTime),
@@ -823,6 +890,81 @@ export async function listAdminAccounts({
     accounts,
     nextPageToken: normalizeText(listed.pageToken) || null,
     pageSize: safePageSize,
+  };
+}
+
+export async function exportMarketingSubscribers({
+  db = getFirestore(),
+  auth = getAuth(),
+  actorUid,
+  adminConfig,
+  now = new Date(),
+} = {}) {
+  const safeActorUid = assertAuthorizedAdminUid(actorUid, adminConfig);
+  const currentDate = asValidDate(now) || new Date();
+  const subscribers = [];
+  let pageToken = undefined;
+
+  do {
+    let listed;
+    try {
+      listed = await auth.listUsers(500, pageToken);
+    } catch (error) {
+      throw new AdminServiceError(
+        "The marketing subscriber list could not be loaded.",
+        "unavailable",
+        {
+          cause: normalizeText(error?.code) || "auth-list-users-failed",
+        }
+      );
+    }
+
+    const consentSnapshots = await Promise.all(
+      listed.users.map((userRecord) =>
+        marketingConsentRef(db, userRecord.uid).get()
+      )
+    );
+
+    listed.users.forEach((userRecord, index) => {
+      const consentSnapshot = consentSnapshots[index];
+      const consent = consentSnapshot?.exists
+        ? consentSnapshot.data()
+        : null;
+
+      if (
+        !isMarketingConsentEligible({
+          consent,
+          userEmail: userRecord.email,
+        })
+      ) {
+        return;
+      }
+
+      const marketing = serializeMarketingConsent(consent);
+      subscribers.push({
+        uid: requireUid(userRecord.uid),
+        email: normalizeText(userRecord.email).toLowerCase(),
+        displayName: normalizeText(userRecord.displayName) || null,
+        emailVerified: userRecord.emailVerified === true,
+        optedInAt: marketing.optedInAt,
+        consentVersion: marketing.consentVersion,
+      });
+    });
+
+    pageToken = normalizeText(listed.pageToken) || undefined;
+  } while (pageToken);
+
+  subscribers.sort((left, right) =>
+    String(left.email).localeCompare(String(right.email), "en", {
+      sensitivity: "base",
+    })
+  );
+
+  return {
+    actorUid: safeActorUid,
+    generatedAt: currentDate.toISOString(),
+    count: subscribers.length,
+    subscribers,
   };
 }
 

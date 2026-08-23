@@ -1,17 +1,20 @@
 // src/utils/tourSteps.js
 /**
  * Steps map: routeKey -> array of steps.
- * If selector is present and found, it gets a spotlight; otherwise the tooltip centers.
- * Bump TOUR_VERSION whenever steps change to reset stale seen flags.
+ * If selector is present and found, it gets a spotlight; otherwise the tooltip
+ * stays usable in the center of the screen.
+ *
+ * Bump TOUR_VERSION whenever tour copy, ordering, or behavior changes so each
+ * page can be shown once again for the new guide version.
  */
-export const TOUR_VERSION = 3;
+export const TOUR_VERSION = 4;
 export const TOUR_CONTROL_EVENT = "cnm:tour-control";
 
 const steps = {
   dashboard: [
     {
       title: "Dashboard overview",
-      body: "See active cultivation records, current type and stage counts, cost summaries, and the records that need attention.",
+      body: "This is the daily cultivation view. See active records, current type and stage counts, cost summaries, and the grows that need attention.",
     },
     {
       title: "Create a cultivation record",
@@ -38,7 +41,7 @@ const steps = {
   tasks: [
     {
       title: "Tasks and SOP follow-ups",
-      body: "Manage manual tasks and tasks generated from SOP workflows. Due dates, completion, recurrence, and grow links stay attached to each task.",
+      body: "Manage manual tasks and tasks generated from SOP workflows. Due dates, completion, recurrence, reminders, and grow links stay attached to each task.",
       selector: '[data-tour="tasks-root"]',
     },
     {
@@ -70,7 +73,7 @@ const steps = {
     },
     {
       title: "Export analytics",
-      body: "Export the current analytics data as CSV or JSON. Full account backups remain under Settings → Data.",
+      body: "Export the current analytics data as CSV or JSON when your plan includes exports. Full account backups remain under Settings → Data.",
       selector: '[data-tour="analytics-export"]',
     },
   ],
@@ -86,67 +89,130 @@ const steps = {
       selector: '[data-tour="calendar-filters"]',
     },
     {
-      title: "Open the source record",
-      body: "Select a task to open it in Tasks, or select a grow milestone to open that grow record.",
+      title: "Use the calendar as a navigator",
+      body: "Open a task from the calendar to continue it in Tasks. Grow milestones keep cultivation timing visible alongside scheduled work.",
     },
   ],
 
   timeline: [
     {
       title: "Grow timeline",
-      body: "Review stage changes, notes, and stage photos across cultivation records in chronological context.",
+      body: "Use Timeline when you want chronological context instead of the dashboard's current-state view.",
+    },
+    {
+      title: "Follow stage history",
+      body: "Review stage changes across cultivation records so you can see how each grow progressed over time.",
+    },
+    {
+      title: "Keep documentation in context",
+      body: "Notes and stage photos stay part of the grow history, helping you compare what happened around each stage transition.",
     },
   ],
 
   postprocess: [
     {
       title: "Post Processing",
-      body: "Follow material from harvested grows through dry lots, extraction, manufacturing, finished inventory, sales, and retained history.",
+      body: "Follow harvested material through dry lots, extraction, manufacturing, finished inventory, sales, and retained history.",
     },
     {
       title: "Workflow sections",
       body: "Use these sections to move between active material, production work, finished inventory, outbound sales, and historical records.",
       selector: '[data-tour="postprocess-tabs"]',
     },
+    {
+      title: "Keep the chain traceable",
+      body: "Post-processing records are designed to preserve the relationship between source material, production work, package runs, inventory, and final disposition.",
+    },
   ],
 
   cog: [
     {
       title: "Cost of Goods",
-      body: "Track supplies and costs that feed recipes, SOP runs, grow estimates, and analytics.",
+      body: "Use COG to maintain the supplies and costs that feed recipes, SOP runs, grow estimates, and analytics.",
       selector: '[data-tour="cog-root"]',
+    },
+    {
+      title: "Keep costs current",
+      body: "Accurate supply costs make downstream recipe, grow, and production estimates more useful.",
     },
   ],
 
   recipes: [
     {
       title: "Recipes and SOP workflows",
-      body: "Manage recipe versions and SOP workflows, then start traceable grows and generated tasks from approved templates.",
+      body: "Use Recipes to keep repeatable process instructions and recipe versions in one place.",
+    },
+    {
+      title: "Start traceable work",
+      body: "Eligible SOP workflows can start new grows from approved templates instead of re-entering the same setup each time.",
+    },
+    {
+      title: "Carry the workflow forward",
+      body: "When an SOP includes generated tasks, the follow-up work stays connected to the process instead of living in a separate checklist.",
     },
   ],
 
   strains: [
     {
       title: "Strains and culture library",
-      body: "Manage strain identity, aliases, images, notes, stored culture records, and linked grow history.",
+      body: "Keep strain identity, aliases, images, notes, stored culture records, and linked grow history together.",
+    },
+    {
+      title: "Separate identity from individual grows",
+      body: "A strain record is the reusable library entry; cultivation records track the individual grow work created from it.",
+    },
+    {
+      title: "Use the library for continuity",
+      body: "Stored culture information and linked grow history make it easier to trace what material you still have and where it has been used.",
     },
   ],
 
   labels: [
     {
       title: "Packaging labels",
-      body: "Preview and print labels from current product, package/SKU, strain, and batch data. Label design settings remain under Settings.",
+      body: "Use Labels to preview and print from current product, package/SKU, strain, and batch data.",
+    },
+    {
+      title: "Labels follow tracked data",
+      body: "Verify the underlying batch and package information before printing so the label stays consistent with the records in the app.",
+    },
+    {
+      title: "Label defaults live in Settings",
+      body: "Printing happens here; reusable label defaults and presentation options remain under Settings → Labels.",
     },
   ],
 
   archive: [
     {
       title: "Archive and history",
-      body: "Review contaminated or consumed grows, depleted or archived material lots, completed process batches, and finished inventory history without deleting traceability.",
+      body: "Archive keeps completed, contaminated, consumed, depleted, or otherwise historical records available without crowding active work.",
+    },
+    {
+      title: "Traceability stays intact",
+      body: "Historical grow and post-processing records remain available for review instead of being treated like disposable data.",
+    },
+  ],
+
+  admin: [
+    {
+      title: "Private administration",
+      body: "The Admin workspace is available only to trusted internal administrator accounts and uses backend-authorized account data.",
+    },
+    {
+      title: "Account status",
+      body: "Review effective access, base billing, email verification, and explicit marketing consent as separate account states.",
+    },
+    {
+      title: "Promotional access",
+      body: "Administrative promotions can add temporary access without replacing Stripe as the authority for purchased subscriptions.",
     },
   ],
 
   settings: [
+    {
+      title: "Account and sync",
+      body: "Start here for account identity, email verification, device unlock, and communication preferences.",
+    },
     {
       title: "Appearance",
       body: "Choose the display mode, theme style, and accent used by the application.",
@@ -166,6 +232,10 @@ const steps = {
       title: "Reminders",
       body: "Configure task reminders, grow-stage reminders, browser permission, reminder time, and stage windows.",
       selector: '[data-tour="reminders-block"]',
+    },
+    {
+      title: "Subscription, labels, and data",
+      body: "The remaining Settings tabs contain subscription management, label defaults, backup and restore, storage information, and advanced controls.",
     },
   ],
 };
