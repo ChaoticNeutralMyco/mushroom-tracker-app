@@ -69,42 +69,153 @@ function tabNameMatcher(tabName: string) {
   return new RegExp(`^${escapeRegExp(tabName)}$`, "i");
 }
 
-async function markGuideToursSeen(page: Page) {
-  await page
-    .evaluate(() => {
-      const routeKeys = [
-        "dashboard",
-        "tasks",
-        "analytics",
-        "calendar",
-        "timeline",
-        "postprocess",
-        "cog",
-        "recipes",
-        "strains",
-        "labels",
-        "archive",
-        "settings",
-      ];
+async function markGuideToursSeen(page: Page, timeoutMs = 10_000) {
+  const startedAt = Date.now();
+  let lastError = "No guide metadata was returned.";
 
-      for (const routeKey of routeKeys) {
-        localStorage.setItem(`tour.seen:${routeKey}`, "1");
+  while (Date.now() - startedAt < timeoutMs) {
+    try {
+      const result = await page.evaluate(async () => {
+        const mod = await import("/src/utils/tourSteps.js");
+        const version = Number(mod.TOUR_VERSION || 0);
+        const routeKeys = Object.keys(mod.default || {});
+
+        if (!Number.isFinite(version) || version <= 0 || routeKeys.length === 0) {
+          throw new Error("Guide metadata is unavailable.");
+        }
+
+        localStorage.setItem("tour.version", String(version));
+
+        for (const routeKey of routeKeys) {
+          localStorage.setItem(`tour.seen:v${version}:${routeKey}`, "1");
+        }
+
+        return {
+          version,
+          routeKeys,
+        };
+      });
+
+      if (result.version > 0 && result.routeKeys.length > 0) {
+        return result;
       }
-    })
-    .catch(() => {});
+
+      lastError = "Guide metadata was incomplete.";
+    } catch (error) {
+      lastError = String((error as any)?.message || error || "Unknown error");
+    }
+
+    await page.waitForTimeout(100);
+  }
+
+  throw new Error(
+    `Could not mark current-version guide tours as seen within ${timeoutMs}ms. Last error: ${lastError}`
+  );
 }
 
-async function dismissTutorialIfPresent(page: Page) {
-  const guideDialog = page
-    .getByRole("dialog")
-    .filter({ has: page.getByRole("button", { name: /^Skip$/i }) })
-    .last();
+async function markWhatsNewSeenForCurrentUser(page: Page, timeoutMs = 10_000) {
+  const startedAt = Date.now();
+  let lastError = "No authenticated user was available.";
+
+  while (Date.now() - startedAt < timeoutMs) {
+    try {
+      const result = await page.evaluate(async () => {
+        const firebase = await import("/src/firebase-config.js");
+        const whatsNew = await import("/src/lib/whatsNew.js");
+
+        await firebase.authReady;
+
+        if (typeof firebase.auth.authStateReady === "function") {
+          await firebase.auth.authStateReady();
+        }
+
+        const uid = String(firebase.auth.currentUser?.uid || "");
+        if (!uid) {
+          throw new Error("No authenticated Firebase user found.");
+        }
+
+        const marked = whatsNew.markWhatsNewSeen({
+          uid,
+          version: whatsNew.APP_VERSION,
+        });
+
+        return {
+          uid,
+          version: String(whatsNew.APP_VERSION || ""),
+          marked,
+        };
+      });
+
+      if (result.uid && result.version && result.marked) {
+        return result;
+      }
+
+      lastError = "What’s New state was not persisted.";
+    } catch (error) {
+      lastError = String((error as any)?.message || error || "Unknown error");
+    }
+
+    await page.waitForTimeout(100);
+  }
+
+  throw new Error(
+    `Could not mark What’s New as seen within ${timeoutMs}ms. Last error: ${lastError}`
+  );
+}
+
+async function dismissTutorialIfPresent(
+  page: Page,
+  { settleForScheduledOpen = false } = {}
+) {
+  if (settleForScheduledOpen) {
+    // OnboardingCoach schedules a first-visit guide 400ms after mount.
+    // Marking localStorage after mount does not cancel that already-created
+    // timer, so give it one chance to open and then close it.
+    await page.waitForTimeout(550);
+  }
+
+  const guideDialog = page.locator('.onb-overlay[role="dialog"]').last();
   const guideSkip = guideDialog.getByRole("button", { name: /^Skip$/i });
 
   if (await safeVisible(guideSkip)) {
     await guideSkip.click();
     await expect(guideDialog).toBeHidden({ timeout: 15_000 });
   }
+}
+
+async function dismissWhatsNewIfPresent(page: Page) {
+  const overlay = page.getByTestId("whats-new-overlay").last();
+  if (!(await safeVisible(overlay))) return;
+
+  const closeButton = overlay
+    .getByRole("button", {
+      name: /^(Got it|Close What.?s New)$/i,
+    })
+    .first();
+
+  if (await safeVisible(closeButton)) {
+    await closeButton.click();
+    await expect(overlay).toBeHidden({ timeout: 15_000 });
+  }
+}
+
+export async function suppressBlockingStartupNoticesForE2E(
+  page: Page,
+  { settleForScheduledTour = false } = {}
+) {
+  // Persist both notices before normal test interaction. What’s New re-checks
+  // its storage state before its 900ms auto-open; the tour does not re-check
+  // an already-scheduled 400ms timer, so that one also gets a focused dismiss.
+  await markGuideToursSeen(page);
+  await markWhatsNewSeenForCurrentUser(page);
+  await dismissTutorialIfPresent(page, {
+    settleForScheduledOpen: settleForScheduledTour,
+  });
+  await dismissWhatsNewIfPresent(page);
+
+  // Reassert the persisted state after any close handlers run.
+  await markGuideToursSeen(page);
+  await markWhatsNewSeenForCurrentUser(page);
 }
 
 async function readFirebaseAuthState(page: Page): Promise<FirebaseAuthState> {
@@ -164,6 +275,8 @@ async function shellOrAuthState(page: Page) {
   const signOutButton = page.getByRole("button", { name: /sign out/i });
   const dashboardTab = page.getByRole("tab", { name: /^Dashboard$/i });
   const tutorialHeading = page.getByText(/Welcome to your Dashboard/i);
+  const guideOverlay = page.locator('.onb-overlay[role="dialog"]').last();
+  const whatsNewOverlay = page.getByTestId("whats-new-overlay").last();
   const emailInput = page.locator('input[type="email"]').first();
   const passwordInput = page.locator('input[type="password"]').first();
   const signInButton = page.getByRole("button", { name: /^Sign in$/i });
@@ -171,7 +284,9 @@ async function shellOrAuthState(page: Page) {
   if (
     (await safeVisible(signOutButton)) ||
     (await safeVisible(dashboardTab)) ||
-    (await safeVisible(tutorialHeading))
+    (await safeVisible(tutorialHeading)) ||
+    (await safeVisible(guideOverlay)) ||
+    (await safeVisible(whatsNewOverlay))
   ) {
     return "shell" as const;
   }
@@ -277,8 +392,11 @@ export async function waitForAppShell(page: Page) {
   if (emulatorHarnessRequired()) {
     await waitForFirebaseAuthSession(page);
   }
-  await markGuideToursSeen(page);
-  await dismissTutorialIfPresent(page);
+
+  await suppressBlockingStartupNoticesForE2E(page, {
+    settleForScheduledTour: true,
+  });
+
   await expect(page.getByRole("tab", { name: /^Dashboard$/i })).toBeVisible({
     timeout: 15_000,
   });
@@ -300,12 +418,18 @@ export async function clickAppTab(page: Page, tabName: string) {
   }
 
   await expect(tab).toBeVisible({ timeout: 20_000 });
+
+  // Seed current-version tour and release-note state before route changes so
+  // the destination cannot schedule a first-visit blocking overlay.
+  await suppressBlockingStartupNoticesForE2E(page);
+
   await tab.click();
   await expect(tab).toHaveAttribute("aria-selected", "true", {
     timeout: 20_000,
   });
-  await markGuideToursSeen(page);
-  await dismissTutorialIfPresent(page);
+
+  // Guard against any overlay that was already scheduled before navigation.
+  await suppressBlockingStartupNoticesForE2E(page);
 }
 
 export async function confirmDialog(
