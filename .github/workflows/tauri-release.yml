@@ -40,7 +40,7 @@ jobs:
       - name: Install Tauri CLI for release action
         shell: pwsh
         run: |
-          npm install -g @tauri-apps/cli@2.8.4
+          npm install -g @tauri-apps/cli@2.11.4
           tauri --version
 
       - name: Setup Rust

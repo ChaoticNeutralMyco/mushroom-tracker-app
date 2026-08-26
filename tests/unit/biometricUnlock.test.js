@@ -16,8 +16,8 @@ describe("Android biometric/device unlock wiring", () => {
     const capability = read("src-tauri/capabilities/mobile-biometric.json");
     const pkg = JSON.parse(read("package.json"));
 
-    expect(pkg.dependencies["@tauri-apps/plugin-biometric"]).toBe("2.3.0");
-    expect(cargo).toContain("tauri-plugin-biometric = \"=2.3.0\"");
+    expect(pkg.dependencies["@tauri-apps/plugin-biometric"]).toBe("2.3.2");
+    expect(cargo).toContain("tauri-plugin-biometric = \"=2.3.2\"");
     expect(cargo).toContain("cfg(target_os = \"android\")");
     expect(lib).toContain("tauri_plugin_biometric::Builder::new().build()");
     expect(capability).toContain('"platforms": ["android"]');
