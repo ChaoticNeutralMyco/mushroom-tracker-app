@@ -760,18 +760,14 @@ async function createChildGrow(
   await openNewGrow(page);
 
   const form = growForm(page);
-  await selectOptionByText(
-    controlAfterLabel(form, "Parent grow", "select"),
-    options.parentMatcher
-  );
-
-  await page
-    .locator("label", { hasText: "Consume from Parent" })
-    .locator("xpath=following-sibling::div[1]//input[1]")
-    .fill(options.consume);
 
   await controlAfterLabel(form, "Grow Type", "select").selectOption(
     options.type
+  );
+
+  await selectOptionByText(
+    controlAfterLabel(form, "Parent grow", "select"),
+    options.parentMatcher
   );
 
   if (options.initialVolume) {
@@ -812,6 +808,23 @@ async function createChildGrow(
     controlAfterLabel(form, "Recipe", "select"),
     options.recipe
   );
+
+  const parentConsumeInput = page
+    .locator("label", { hasText: "Consume from Parent" })
+    .locator("xpath=following-sibling::div[1]//input[1]");
+
+  await fillControlledInput(parentConsumeInput, options.consume);
+
+  await expect
+    .poll(
+      async () => locatorValueMatches(parentConsumeInput, options.consume),
+      {
+        timeout: 10_000,
+        intervals: [100, 200, 300, 500],
+      }
+    )
+    .toBeTruthy();
+
   await form.getByRole("button", { name: /^Create$/i }).click();
   await expect(form).toBeHidden({ timeout: 20_000 });
 }
@@ -2452,18 +2465,13 @@ test("full generic grow lifecycle stays stable", async ({ page }) => {
         timeout: 20_000,
       });
 
-      await clickAppTab(page, "Post Processing");
+      await refreshPostProcessingSubtab(page, "Dry Material");
 
-      const dryLotsSection = sectionCard(page, "Existing dry-material lots");
-      await expect(dryLotsSection).toBeVisible({ timeout: 20_000 });
-
-      const dryLotsToggle = page.getByRole("button", {
-        name: /Expand Existing dry-material lots/i,
-      });
-
-      if (await safeIsVisible(dryLotsToggle)) {
-        await dryLotsToggle.click();
-      }
+      const dryLotsSection = await ensureSectionCardExpanded(
+        page,
+        "Existing dry-material lots",
+        20_000
+      );
 
       await expect(
         dryLotsSection.getByText(/E2E Golden Teacher/i).first()
