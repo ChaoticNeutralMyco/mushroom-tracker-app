@@ -19,6 +19,7 @@ export default defineConfig(async () => {
       target: "es2020",
       sourcemap: false,
       minify: "esbuild", // avoids requiring terser in Vercel/web builds
+      cssMinify: "esbuild", // preserve Vite 5 CSS minification until Tailwind arbitrary-value cleanup
       chunkSizeWarningLimit: 1500,
       // Let Rollup decide chunking; removing manualChunks/splitVendorChunk avoids bad init order
       commonjsOptions: { transformMixedEsModules: true },
