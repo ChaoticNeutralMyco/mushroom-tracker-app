@@ -7,7 +7,7 @@ import React, {
   useState,
 } from "react";
 import { createPortal } from "react-dom";
-import { useLocation } from "react-router-dom";
+import { useLocation } from "react-router";
 import stepsByRoute, { TOUR_CONTROL_EVENT, TOUR_VERSION } from "./tourSteps";
 
 const TOUR_VERSION_STORAGE_KEY = "tour.version";

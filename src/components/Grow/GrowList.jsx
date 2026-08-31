@@ -2,7 +2,7 @@
 // sop-v52-reconnect-workflow-toolkit
 
 import React, { useEffect, useMemo, useState, useCallback } from "react";
-import { Link } from "react-router-dom";
+import { Link } from "react-router";
 import { db, auth } from "../../firebase-config";
 import {
   updateDoc,

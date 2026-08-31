@@ -1,6 +1,6 @@
 // src/pages/QuickEdit.jsx
 import React, { useMemo, useState } from "react";
-import { useParams, Link } from "react-router-dom";
+import { useParams, Link } from "react-router";
 import { useConfirm } from "../components/ui/ConfirmDialog";
 import { sortPhotoRecordsNewestFirst } from "../lib/photo-storage";
 

@@ -38,7 +38,7 @@ import {
   ChevronRight,
   Spline,
 } from "lucide-react";
-import { useNavigate } from "react-router-dom";
+import { useNavigate } from "react-router";
 import GrowForm from "../components/Grow/GrowForm";
 import { useConfirm } from "../components/ui/ConfirmDialog";
 import { sortAlpha, alpha } from "../lib/sort";

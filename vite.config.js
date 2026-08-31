@@ -28,7 +28,7 @@ export default defineConfig(async () => {
     server: { strictPort: true },
 
     optimizeDeps: {
-      include: ["react", "react-dom", "react-router-dom"],
+      include: ["react", "react-dom", "react-router"],
     },
   };
 });

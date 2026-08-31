@@ -1,7 +1,7 @@
 // src/main.jsx
 import React from "react";
 import ReactDOM from "react-dom/client";
-import { BrowserRouter } from "react-router-dom";
+import { BrowserRouter } from "react-router";
 import App from "./App.jsx";
 import QueryProvider from "./providers/QueryProvider.jsx";
 import { SubscriptionProvider } from "./providers/SubscriptionProvider.jsx";

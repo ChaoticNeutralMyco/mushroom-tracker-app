@@ -1,7 +1,7 @@
 // src/App.jsx
 // release-v57-hardening
 import React, { useEffect, useMemo, useRef, useState, Suspense } from "react";
-import { Routes, Route, useLocation } from "react-router-dom";
+import { Routes, Route, useLocation } from "react-router";
 import {
   auth,
   db,

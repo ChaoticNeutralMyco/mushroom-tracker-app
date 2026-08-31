@@ -1,7 +1,7 @@
 // src/components/Grow/LabelPrintWrapper.jsx
 // labels-v48-packaged-sku-children-only
 import React, { useEffect, useMemo, useState } from "react";
-import { useLocation } from "react-router-dom";
+import { useLocation } from "react-router";
 import { auth, db } from "../../firebase-config";
 import { collection, onSnapshot } from "firebase/firestore";
 import { onAuthStateChanged } from "firebase/auth";

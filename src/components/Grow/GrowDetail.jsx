@@ -1,7 +1,7 @@
 // src/components/Grow/GrowDetail.jsx
 // environment-v54-global-stage-targets
 import React, { useEffect, useMemo, useState, useCallback, useRef } from "react";
-import { useParams, useNavigate, Link } from "react-router-dom";
+import { useParams, useNavigate, Link } from "react-router";
 import {
   doc,
   getDoc,

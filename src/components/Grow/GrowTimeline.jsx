@@ -1,6 +1,6 @@
 // src/components/Grow/GrowTimeline.jsx
 import React, { useMemo, useRef, useState, useCallback } from "react";
-import { Link } from "react-router-dom";
+import { Link } from "react-router";
 import { db, auth } from "../../firebase-config";
 import { doc, updateDoc, runTransaction, serverTimestamp } from "firebase/firestore";
 import { getGrowTypeIconPath } from "../../lib/grow-images";

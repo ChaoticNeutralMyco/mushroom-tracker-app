@@ -9,7 +9,7 @@
 // postprocess-v30-capsule-packaging-cards-and-costing
 // postprocess-v28-capsule-package-dose-clarity
 import React, { useEffect, useMemo, useState } from "react";
-import { Link, useLocation } from "react-router-dom";
+import { Link, useLocation } from "react-router";
 import { collection, doc, onSnapshot, updateDoc } from "firebase/firestore";
 import {
   Package,

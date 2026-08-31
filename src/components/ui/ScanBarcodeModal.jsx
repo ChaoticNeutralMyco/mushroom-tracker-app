@@ -2,7 +2,7 @@
 import React, { useEffect, useRef, useState } from "react";
 import { X } from "lucide-react";
 import { BrowserMultiFormatReader } from "@zxing/browser";
-import { useNavigate } from "react-router-dom";
+import { useNavigate } from "react-router";
 
 export default function ScanBarcodeModal({ open = true, onClose }) {
   const videoRef = useRef(null);
