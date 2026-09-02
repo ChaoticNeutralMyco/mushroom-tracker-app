@@ -40,7 +40,7 @@
     "test:subscription:backend": "npm run test:subscription:backend:unit && npm run test:subscription:backend:emulator"
   },
   "dependencies": {
-    "@capacitor/core": "7.6.8",
+    "@capacitor/core": "8.5.0",
     "@tanstack/query-sync-storage-persister": "5.102.1",
     "@tanstack/react-query": "5.102.1",
     "@tanstack/react-query-persist-client": "5.102.1",
@@ -61,8 +61,8 @@
     "recharts": "2.15.4"
   },
   "devDependencies": {
-    "@capacitor/android": "7.6.8",
-    "@capacitor/cli": "7.6.8",
+    "@capacitor/android": "8.5.0",
+    "@capacitor/cli": "8.5.0",
     "@playwright/test": "1.62.1",
     "@tauri-apps/cli": "2.11.4",
     "@vitejs/plugin-react": "6.1.0",
