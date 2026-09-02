@@ -144,7 +144,7 @@ function SectionCard({
           <button
             type="button"
             onClick={() => setIsOpen((current) => !current)}
-            className="min-w-0 flex-1 text-left rounded-xl focus:outline-none focus:ring-2 focus:ring-purple-500/70"
+            className="min-w-0 flex-1 text-left rounded-xl focus:outline-hidden focus:ring-2 focus:ring-purple-500/70"
             aria-expanded={isOpen}
           >
             <div className="flex items-start gap-2">
@@ -335,7 +335,7 @@ function InlineDetails({ title = "Details", subtitle = "", children, defaultOpen
 function PostProcessDetailModal({ title, subtitle, onClose, children, maxWidth = "max-w-6xl" }) {
   return (
     <div
-      className="fixed inset-0 z-[100] p-3 sm:p-6 overflow-y-auto backdrop-blur-sm"
+      className="fixed inset-0 z-[100] p-3 sm:p-6 overflow-y-auto backdrop-blur-xs"
       role="presentation"
       style={{ backgroundColor: "rgba(0, 0, 0, 0.82)" }}
       onMouseDown={onClose}
@@ -382,7 +382,7 @@ function DetailNameButton({ children, onClick }) {
     <button
       type="button"
       onClick={onClick}
-      className="text-left text-lg font-semibold text-purple-700 dark:text-purple-300 hover:underline focus:outline-none focus:ring-2 focus:ring-purple-500/70 rounded-md"
+      className="text-left text-lg font-semibold text-purple-700 dark:text-purple-300 hover:underline focus:outline-hidden focus:ring-2 focus:ring-purple-500/70 rounded-md"
     >
       {children}
     </button>
@@ -6935,7 +6935,7 @@ export default function PostProcessManager({
 
             return (
               <div
-                className="fixed inset-0 z-[100] p-3 sm:p-6 overflow-y-auto backdrop-blur-sm"
+                className="fixed inset-0 z-[100] p-3 sm:p-6 overflow-y-auto backdrop-blur-xs"
                 role="presentation"
                 style={{ backgroundColor: "rgba(0, 0, 0, 0.82)" }}
                 onMouseDown={() => setSelectedFinishedLotId("")}

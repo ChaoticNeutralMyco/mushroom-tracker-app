@@ -526,12 +526,12 @@ function AnalyticsReportCard({
   return (
     <section
       data-testid={testId}
-      className="rounded-2xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 shadow-sm overflow-hidden"
+      className="rounded-2xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 shadow-xs overflow-hidden"
     >
       <button
         type="button"
         onClick={() => setIsOpen((current) => !current)}
-        className="w-full px-4 py-4 sm:px-5 text-left flex items-start justify-between gap-4 hover:bg-zinc-50 dark:hover:bg-zinc-800/60 focus:outline-none focus:ring-2 focus:ring-inset focus:ring-purple-500/70"
+        className="w-full px-4 py-4 sm:px-5 text-left flex items-start justify-between gap-4 hover:bg-zinc-50 dark:hover:bg-zinc-800/60 focus:outline-hidden focus:ring-2 focus:ring-inset focus:ring-purple-500/70"
         aria-expanded={isOpen}
       >
         <span className="min-w-0">
@@ -3113,8 +3113,8 @@ for (let i = weeksBack - 1; i >= 0; i--) {
   };
 
   return (
-    <div className="space-y-5 p-4 md:p-6 bg-white dark:bg-zinc-900 rounded-2xl border border-zinc-200 dark:border-zinc-800 shadow-sm">
-      <div className="rounded-2xl border border-purple-200/80 dark:border-purple-900/70 bg-gradient-to-br from-purple-50 via-white to-sky-50 dark:from-purple-950/30 dark:via-zinc-950 dark:to-sky-950/20 p-5">
+    <div className="space-y-5 p-4 md:p-6 bg-white dark:bg-zinc-900 rounded-2xl border border-zinc-200 dark:border-zinc-800 shadow-xs">
+      <div className="rounded-2xl border border-purple-200/80 dark:border-purple-900/70 bg-linear-to-br/srgb from-purple-50 via-white to-sky-50 dark:from-purple-950/30 dark:via-zinc-950 dark:to-sky-950/20 p-5">
         <div className="flex flex-wrap items-start justify-between gap-4">
           <div className="max-w-3xl">
             <div className="text-xs font-semibold uppercase tracking-[0.2em] text-purple-700 dark:text-purple-300">Chaotic Neutral Intelligence</div>
@@ -3148,7 +3148,7 @@ for (let i = weeksBack - 1; i >= 0; i--) {
               role="tab"
               aria-selected={active}
               onClick={() => setActiveSection(section.id)}
-              className={`rounded-xl px-3.5 py-2 text-sm font-medium transition ${active ? "bg-purple-600 text-white shadow-sm" : "text-zinc-700 dark:text-zinc-300 hover:bg-white dark:hover:bg-zinc-800"}`}
+              className={`rounded-xl px-3.5 py-2 text-sm font-medium transition ${active ? "bg-purple-600 text-white shadow-xs" : "text-zinc-700 dark:text-zinc-300 hover:bg-white dark:hover:bg-zinc-800"}`}
             >
               {section.label}
               {reportCount > 0 ? <span className={`ml-2 text-xs ${active ? "text-purple-100" : "text-zinc-400"}`}>{reportCount}</span> : null}
@@ -3377,7 +3377,7 @@ for (let i = weeksBack - 1; i >= 0; i--) {
                 const sectionFeatureKey = getAnalyticsSectionFeatureKey(section.id);
                 const sectionAllowed = hasAnalyticsFeature(sectionFeatureKey);
                 return (
-                  <button key={section.id} type="button" onClick={() => setActiveSection(section.id)} className="rounded-2xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 p-4 text-left hover:border-purple-400 dark:hover:border-purple-700 hover:shadow-sm transition">
+                  <button key={section.id} type="button" onClick={() => setActiveSection(section.id)} className="rounded-2xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 p-4 text-left hover:border-purple-400 dark:hover:border-purple-700 hover:shadow-xs transition">
                     <div className="flex items-center justify-between gap-3">
                       <div className="font-semibold text-zinc-900 dark:text-zinc-100">{section.label}</div>
                       <div className={`rounded-full px-2 py-0.5 text-xs ${sectionAllowed ? "bg-purple-100 text-purple-700 dark:bg-purple-950/60 dark:text-purple-300" : "bg-violet-100 text-violet-700 dark:bg-violet-950/60 dark:text-violet-300"}`}>
@@ -3457,7 +3457,7 @@ for (let i = weeksBack - 1; i >= 0; i--) {
               {canUseLabAnalytics ? (
                 <StatCard label="Packaging shortages" value={ppSummary.packagingShortages} />
               ) : (
-                <div className="rounded-2xl border border-violet-200 bg-violet-50/80 p-4 text-violet-950 shadow-sm dark:border-violet-900/60 dark:bg-violet-950/25 dark:text-violet-100">
+                <div className="rounded-2xl border border-violet-200 bg-violet-50/80 p-4 text-violet-950 shadow-xs dark:border-violet-900/60 dark:bg-violet-950/25 dark:text-violet-100">
                   <div className="text-sm text-violet-700 dark:text-violet-300">Packaging analytics</div>
                   <div className="mt-1 text-lg font-semibold">{labAnalyticsGate.minimumPlanLabel}</div>
                 </div>
@@ -3502,7 +3502,7 @@ for (let i = weeksBack - 1; i >= 0; i--) {
 
 function StatCard({ label, value, hint = "" }) {
   return (
-    <div className="rounded-2xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 p-4 shadow-sm min-w-0">
+    <div className="rounded-2xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 p-4 shadow-xs min-w-0">
       <div className="text-sm text-zinc-500 dark:text-zinc-400 break-words">{label}</div>
       <div className="text-2xl font-semibold mt-1 text-zinc-950 dark:text-white break-words">{value}</div>
       {hint ? <div className="mt-1 text-xs text-zinc-500 dark:text-zinc-400 break-words">{hint}</div> : null}

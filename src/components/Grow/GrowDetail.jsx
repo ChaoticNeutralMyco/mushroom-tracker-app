@@ -1167,7 +1167,7 @@ export default function GrowDetail({
 
         <button
           type="button"
-          className="rounded-full px-4 py-2 bg-red-600 text-white hover:bg-red-700 focus:outline-none focus:ring-2 focus:ring-red-400"
+          className="rounded-full px-4 py-2 bg-red-600 text-white hover:bg-red-700 focus:outline-hidden focus:ring-2 focus:ring-red-400"
           onClick={handleDeleteGrow}
           title="Delete grow"
         >
@@ -1491,7 +1491,7 @@ export default function GrowDetail({
                     Reset
                   </button>
                   <button
-                    className="rounded-full px-4 py-2 bg-red-600 text-white hover:bg-red-700 focus:outline-none focus:ring-2 focus:ring-red-400"
+                    className="rounded-full px-4 py-2 bg-red-600 text-white hover:bg-red-700 focus:outline-hidden focus:ring-2 focus:ring-red-400"
                     disabled={!isHarvesting || isArchived}
                     onClick={() => deleteFlushAt(idx)}
                     title="Delete this flush"
@@ -1714,7 +1714,7 @@ export default function GrowDetail({
                     <button className="chip" onClick={() => beginEditNote(i, n.text)}>
                       Edit
                     </button>
-                    <button className="rounded-full px-4 py-2 bg-red-600 text-white hover:bg-red-700 focus:outline-none focus:ring-2 focus:ring-red-400" onClick={() => deleteNoteAt(i)}>
+                    <button className="rounded-full px-4 py-2 bg-red-600 text-white hover:bg-red-700 focus:outline-hidden focus:ring-2 focus:ring-red-400" onClick={() => deleteNoteAt(i)}>
                       Delete
                     </button>
                   </div>
@@ -1786,7 +1786,7 @@ export default function GrowDetail({
                       href={p.url}
                       target="_blank"
                       rel="noreferrer"
-                      className="block focus:outline-none focus:ring-2 focus:ring-[var(--accent-400)]"
+                      className="block focus:outline-hidden focus:ring-2 focus:ring-[var(--accent-400)]"
                     >
                       <img src={p.url} alt={p.caption || "Grow photo"} className="w-full h-40 object-cover" />
                     </a>
@@ -1808,7 +1808,7 @@ export default function GrowDetail({
                       {!isCover && (
                         <button
                           onClick={() => handleSetCoverPhoto(p)}
-                          className="rounded-md accent-bg px-2 py-1 text-xs text-white hover:opacity-90 focus:outline-none focus:ring-2 focus:ring-[var(--accent-400)]"
+                          className="rounded-md accent-bg px-2 py-1 text-xs text-white hover:opacity-90 focus:outline-hidden focus:ring-2 focus:ring-[var(--accent-400)]"
                           title="Set as cover photo"
                         >
                           Set Cover
@@ -1816,7 +1816,7 @@ export default function GrowDetail({
                       )}
                       <button
                         onClick={() => handleDeletePhoto(p)}
-                        className="rounded-md bg-red-600/90 px-2 py-1 text-xs text-white hover:bg-red-600 focus:outline-none focus:ring-2 focus:ring-red-400"
+                        className="rounded-md bg-red-600/90 px-2 py-1 text-xs text-white hover:bg-red-600 focus:outline-hidden focus:ring-2 focus:ring-red-400"
                         aria-label="Delete photo"
                         title="Delete photo"
                       >
@@ -2073,7 +2073,7 @@ export default function GrowDetail({
                           Edit
                         </button>
                         <button
-                          className="rounded-full px-4 py-2 bg-red-600 text-white hover:bg-red-700 focus:outline-none focus:ring-2 focus:ring-red-400"
+                          className="rounded-full px-4 py-2 bg-red-600 text-white hover:bg-red-700 focus:outline-hidden focus:ring-2 focus:ring-red-400"
                           onClick={() => deleteEnvLog(log)}
                         >
                           Delete

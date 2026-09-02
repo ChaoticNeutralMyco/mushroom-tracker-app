@@ -581,7 +581,7 @@ export default function RecipeManager({
 
   return (
     <div className="p-4 max-w-6xl mx-auto space-y-6 text-gray-900 dark:text-white">
-      <div className="bg-white dark:bg-zinc-900 p-4 md:p-5 rounded-2xl border border-zinc-200 dark:border-zinc-800 shadow-sm space-y-4">
+      <div className="bg-white dark:bg-zinc-900 p-4 md:p-5 rounded-2xl border border-zinc-200 dark:border-zinc-800 shadow-xs space-y-4">
         <div className="flex flex-col lg:flex-row lg:items-start lg:justify-between gap-4">
           <div>
             <h2 className="text-2xl font-bold">📖 Recipes</h2>

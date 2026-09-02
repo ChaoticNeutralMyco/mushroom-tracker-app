@@ -565,7 +565,7 @@ export default function SopWorkflowToolkit({
 
   return (
     <>
-      <div data-testid="sop-workflow-toolkit" className="bg-white dark:bg-zinc-900 p-4 md:p-5 rounded-2xl border border-zinc-200 dark:border-zinc-800 shadow-sm space-y-4">
+      <div data-testid="sop-workflow-toolkit" className="bg-white dark:bg-zinc-900 p-4 md:p-5 rounded-2xl border border-zinc-200 dark:border-zinc-800 shadow-xs space-y-4">
         <button
           type="button"
           data-testid="sop-toolkit-toggle"

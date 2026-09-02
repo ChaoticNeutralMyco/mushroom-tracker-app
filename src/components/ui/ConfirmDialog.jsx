@@ -150,7 +150,7 @@ export function ConfirmProvider({ children }) {
             >
               <div
                 ref={panelRef}
-                className="w-full max-w-md rounded-2xl bg-white dark:bg-zinc-900 shadow-xl outline-none ring-1 ring-zinc-200 dark:ring-zinc-800"
+                className="w-full max-w-md rounded-2xl bg-white dark:bg-zinc-900 shadow-xl outline-hidden ring-1 ring-zinc-200 dark:ring-zinc-800"
                 tabIndex={-1}
               >
                 <div className="px-5 py-4 border-b border-zinc-200 dark:border-zinc-800">
@@ -182,8 +182,8 @@ export function ConfirmProvider({ children }) {
                     type="button"
                     className={
                       opts.tone === "danger"
-                        ? "rounded-full px-4 py-2 bg-red-600 text-white hover:bg-red-700 focus:outline-none focus:ring-2 focus:ring-red-400"
-                        : "rounded-full px-4 py-2 accent-bg text-white hover:opacity-90 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-current"
+                        ? "rounded-full px-4 py-2 bg-red-600 text-white hover:bg-red-700 focus:outline-hidden focus:ring-2 focus:ring-red-400"
+                        : "rounded-full px-4 py-2 accent-bg text-white hover:opacity-90 focus:outline-hidden focus:ring-2 focus:ring-offset-2 focus:ring-current"
                     }
                     onClick={onConfirm}
                   >

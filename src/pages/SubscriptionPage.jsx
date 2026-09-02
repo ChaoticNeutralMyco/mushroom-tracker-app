@@ -467,7 +467,7 @@ export default function SubscriptionPage({ activeGrowCount = 0 }) {
             return (
               <article
                 key={plan.id}
-                className={`flex flex-col rounded-2xl border bg-white p-5 shadow-sm dark:bg-zinc-950 ${
+                className={`flex flex-col rounded-2xl border bg-white p-5 shadow-xs dark:bg-zinc-950 ${
                   isCurrent || isTrialAccess
                     ? "border-[rgb(var(--_accent-rgb))] ring-1 ring-[rgb(var(--_accent-rgb))]"
                     : "border-zinc-200 dark:border-zinc-800"

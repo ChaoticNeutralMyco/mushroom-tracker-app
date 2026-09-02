@@ -247,7 +247,7 @@ function UnarchiveModal({ grow, onClose, onSubmit }) {
 
   return (
     <div
-      className="fixed inset-0 z-[70] bg-black/40 backdrop-blur-sm flex items-center justify-center p-4"
+      className="fixed inset-0 z-[70] bg-black/40 backdrop-blur-xs flex items-center justify-center p-4"
       role="dialog"
       aria-modal="true"
       onClick={onClose}
@@ -753,7 +753,7 @@ export default function Archive({ grows: growsProp, onUpdateGrow }) {
         <SummaryCard label="Rework batches" value={String(archivedReworkSummary?.totalBatches || 0)} hint={`${archivedReworkSummary?.totalOutputCount || 0} output · ${archivedReworkSummary?.totalWasteQuantity || 0} waste`} icon={GitBranch} />
       </div>
 
-      <div className="bg-white dark:bg-zinc-900 rounded-2xl border border-zinc-200 dark:border-zinc-800 shadow-sm overflow-hidden">
+      <div className="bg-white dark:bg-zinc-900 rounded-2xl border border-zinc-200 dark:border-zinc-800 shadow-xs overflow-hidden">
         <SectionHeader title="Archived Grows" count={`${archivedGrows.length} archived/consumed grows`} icon={Recycle} />
 
         {archivedGrows.length === 0 ? (
@@ -790,7 +790,7 @@ export default function Archive({ grows: growsProp, onUpdateGrow }) {
         )}
       </div>
 
-      <div className="bg-white dark:bg-zinc-900 rounded-2xl border border-zinc-200 dark:border-zinc-800 shadow-sm overflow-hidden">
+      <div className="bg-white dark:bg-zinc-900 rounded-2xl border border-zinc-200 dark:border-zinc-800 shadow-xs overflow-hidden">
         <SectionHeader title="Archived Dry Lots" count={`${archivedDryLots.length} lots`} icon={Package} />
         {archivedDryLots.length === 0 ? (
           <EmptyState text="No archived or depleted dry lots." />
@@ -799,7 +799,7 @@ export default function Archive({ grows: growsProp, onUpdateGrow }) {
         )}
       </div>
 
-      <div className="bg-white dark:bg-zinc-900 rounded-2xl border border-zinc-200 dark:border-zinc-800 shadow-sm overflow-hidden">
+      <div className="bg-white dark:bg-zinc-900 rounded-2xl border border-zinc-200 dark:border-zinc-800 shadow-xs overflow-hidden">
         <SectionHeader title="Archived Extract Lots" count={`${archivedExtractLots.length} lots`} icon={FlaskConical} />
         {archivedExtractLots.length === 0 ? (
           <EmptyState text="No archived or depleted extract lots." />
@@ -808,7 +808,7 @@ export default function Archive({ grows: growsProp, onUpdateGrow }) {
         )}
       </div>
 
-      <div className="bg-white dark:bg-zinc-900 rounded-2xl border border-zinc-200 dark:border-zinc-800 shadow-sm overflow-hidden">
+      <div className="bg-white dark:bg-zinc-900 rounded-2xl border border-zinc-200 dark:border-zinc-800 shadow-xs overflow-hidden">
         <SectionHeader title="Archived Finished Inventory" count={`${archivedFinishedLots.length} lots`} icon={Tag} />
         {archivedFinishedLots.length === 0 ? (
           <EmptyState text="No archived or depleted finished inventory lots." />
@@ -820,7 +820,7 @@ export default function Archive({ grows: growsProp, onUpdateGrow }) {
         )}
       </div>
 
-      <div className="bg-white dark:bg-zinc-900 rounded-2xl border border-zinc-200 dark:border-zinc-800 shadow-sm overflow-hidden">
+      <div className="bg-white dark:bg-zinc-900 rounded-2xl border border-zinc-200 dark:border-zinc-800 shadow-xs overflow-hidden">
         <SectionHeader title="Archived Extraction Batches" count={`${archivedExtractionBatches.length} batches`} icon={FlaskConical} />
         {archivedExtractionBatches.length === 0 ? (
           <EmptyState text="No archived or completed extraction batches." />
@@ -829,7 +829,7 @@ export default function Archive({ grows: growsProp, onUpdateGrow }) {
         )}
       </div>
 
-      <div className="bg-white dark:bg-zinc-900 rounded-2xl border border-zinc-200 dark:border-zinc-800 shadow-sm overflow-hidden">
+      <div className="bg-white dark:bg-zinc-900 rounded-2xl border border-zinc-200 dark:border-zinc-800 shadow-xs overflow-hidden">
         <SectionHeader title="Archived Production Batches" count={`${archivedProductionBatches.length} batches`} icon={Factory} />
         {archivedProductionBatches.length === 0 ? (
           <EmptyState text="No archived or completed production batches." />
@@ -838,7 +838,7 @@ export default function Archive({ grows: growsProp, onUpdateGrow }) {
         )}
       </div>
 
-      <div className="bg-white dark:bg-zinc-900 rounded-2xl border border-zinc-200 dark:border-zinc-800 shadow-sm overflow-hidden">
+      <div className="bg-white dark:bg-zinc-900 rounded-2xl border border-zinc-200 dark:border-zinc-800 shadow-xs overflow-hidden">
         <SectionHeader title="Archived Rework Batches" count={`${archivedReworkBatches.length} batches`} icon={GitBranch} />
         {archivedReworkBatches.length === 0 ? (
           <EmptyState text="No archived rework or repurpose batches." />

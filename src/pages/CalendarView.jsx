@@ -433,7 +433,7 @@ export default function CalendarView({ grows = [], tasks = [], onOpenTask }) {
   const resetFilters = () => setFilters({ ...DEFAULT_CALENDAR_FILTERS });
 
   return (
-    <div className="p-6 md:p-8 bg-white dark:bg-zinc-900 text-zinc-900 dark:text-white rounded-2xl border border-zinc-200 dark:border-zinc-800 shadow-sm space-y-4 max-w-6xl mx-auto">
+    <div className="p-6 md:p-8 bg-white dark:bg-zinc-900 text-zinc-900 dark:text-white rounded-2xl border border-zinc-200 dark:border-zinc-800 shadow-xs space-y-4 max-w-6xl mx-auto">
       <style dangerouslySetInnerHTML={{ __html: RBC_DARK_CSS }} />
 
       <div className="space-y-1">

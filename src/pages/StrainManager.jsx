@@ -1835,7 +1835,7 @@ export default function StrainManager(props) {
               {depth > 0 && (
                 <div className="w-px h-3 bg-zinc-300 dark:bg-zinc-700" />
               )}
-              <div className="w-2.5 h-2.5 rounded-full accent-bg shadow-sm" />
+              <div className="w-2.5 h-2.5 rounded-full accent-bg shadow-xs" />
               {children.length > 0 && (
                 <div className="w-px flex-1 bg-zinc-300 dark:bg-zinc-700" />
               )}
@@ -2185,7 +2185,7 @@ export default function StrainManager(props) {
 
       return (
         <div
-          className="absolute w-[200px] rounded-xl border border-zinc-200 dark:border-zinc-800 bg-white/95 dark:bg-zinc-900/95 shadow-sm px-3 py-2 cursor-pointer hover:shadow-md hover:border-indigo-400/80 dark:hover:border-indigo-400/80 transition"
+          className="absolute w-[200px] rounded-xl border border-zinc-200 dark:border-zinc-800 bg-white/95 dark:bg-zinc-900/95 shadow-xs px-3 py-2 cursor-pointer hover:shadow-md hover:border-indigo-400/80 dark:hover:border-indigo-400/80 transition"
           style={{ left, top }}
           onClick={() => navigate(`/grow/${id}`)}
           title="Open grow"
@@ -2606,7 +2606,7 @@ export default function StrainManager(props) {
           <button
             type="submit"
             data-testid="strain-library-submit"
-            className="inline-flex items-center justify-center gap-2 px-4 py-2 rounded-full accent-bg text-white shadow-sm md:col-span-2"
+            className="inline-flex items-center justify-center gap-2 px-4 py-2 rounded-full accent-bg text-white shadow-xs md:col-span-2"
             title="Add to Library"
           >
             <PlusCircle className="h-4 w-4" />
@@ -2718,7 +2718,7 @@ export default function StrainManager(props) {
                     <div className="flex items-center gap-2 shrink-0">
                       <button
                         type="button"
-                        className="inline-flex items-center gap-2 px-3 py-1.5 min-w-[110px] rounded-full accent-bg text-white shadow-sm"
+                        className="inline-flex items-center gap-2 px-3 py-1.5 min-w-[110px] rounded-full accent-bg text-white shadow-xs"
                         title="Start a new grow using this library item"
                         onClick={() => startGrowFromLibrary(it)}
                       >
@@ -3082,7 +3082,7 @@ export default function StrainManager(props) {
                 </div>
 
                 <div className="grid grid-cols-1 lg:grid-cols-[320px_minmax(0,1fr)] gap-4 items-start">
-                  <div className="rounded-2xl overflow-hidden border border-zinc-200 dark:border-zinc-800 bg-zinc-900 shadow-sm aspect-[2/3]">
+                  <div className="rounded-2xl overflow-hidden border border-zinc-200 dark:border-zinc-800 bg-zinc-900 shadow-xs aspect-[2/3]">
                     <StrainCardFrontBuilder
                       strain={{
                         name: form.name,
@@ -3316,7 +3316,7 @@ export default function StrainManager(props) {
               <button
                 type="submit"
                 disabled={saving}
-                className="flex items-center gap-2 accent-bg text-white px-4 py-2 rounded-full hover:opacity-90 disabled:opacity-60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:ring-current"
+                className="flex items-center gap-2 accent-bg text-white px-4 py-2 rounded-full hover:opacity-90 disabled:opacity-60 focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:ring-current"
                 aria-busy={saving ? "true" : "false"}
               >
                 <UploadCloud className="w-4 h-4" />
@@ -3332,7 +3332,7 @@ export default function StrainManager(props) {
 
       {viewStrain && (
         <div
-          className="fixed inset-0 z-[60] bg-black/40 backdrop-blur-sm flex items-center justify-center p-4"
+          className="fixed inset-0 z-[60] bg-black/40 backdrop-blur-xs flex items-center justify-center p-4"
           onClick={() => setViewStrain(null)}
           role="dialog"
           aria-modal="true"
@@ -3706,7 +3706,7 @@ export default function StrainManager(props) {
                               href={p.url}
                               target="_blank"
                               rel="noreferrer"
-                              className="block focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                              className="block focus:outline-hidden focus:ring-2 focus:ring-indigo-500"
                             >
                               <img
                                 src={p.url}
@@ -3757,7 +3757,7 @@ export default function StrainManager(props) {
                                     window.alert(error?.message || "Photo deletion failed.");
                                   }
                                 }}
-                                className="absolute right-2 top-2 z-20 rounded-md bg-red-600/90 px-2 py-1 text-xs text-white hover:bg-red-600 focus:outline-none focus:ring-2 focus:ring-red-400"
+                                className="absolute right-2 top-2 z-20 rounded-md bg-red-600/90 px-2 py-1 text-xs text-white hover:bg-red-600 focus:outline-hidden focus:ring-2 focus:ring-red-400"
                                 aria-label="Delete photo"
                                 title="Delete photo"
                               >
@@ -3993,7 +3993,7 @@ export default function StrainManager(props) {
 
       {inlineGrow && (
         <div
-          className="fixed inset-0 z-[70] bg-black/40 backdrop-blur-sm flex items-center justify-center p-4"
+          className="fixed inset-0 z-[70] bg-black/40 backdrop-blur-xs flex items-center justify-center p-4"
           onClick={() => setInlineGrow(null)}
           role="dialog"
           aria-modal="true"

@@ -561,7 +561,7 @@ export default function COGManager() {
   }, [supplies, lowItems.length, emptyItems.length]);
 
   return (
-    <div className="p-4 md:p-6 bg-white dark:bg-zinc-900 text-zinc-900 dark:text-white rounded-2xl border border-zinc-200 dark:border-zinc-800 shadow-sm max-w-7xl mx-auto space-y-6">
+    <div className="p-4 md:p-6 bg-white dark:bg-zinc-900 text-zinc-900 dark:text-white rounded-2xl border border-zinc-200 dark:border-zinc-800 shadow-xs max-w-7xl mx-auto space-y-6">
       <div className="space-y-3">
         <h2 className="text-2xl font-bold">💰 Supplies / Cost of Goods</h2>
         <p className="text-sm text-zinc-600 dark:text-zinc-400 max-w-4xl">

@@ -395,7 +395,7 @@ export default function TaskManager(props) {
 
   return (
     <div
-      className="max-w-7xl mx-auto rounded-2xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 p-4 md:p-6 shadow-sm space-y-6"
+      className="max-w-7xl mx-auto rounded-2xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 p-4 md:p-6 shadow-xs space-y-6"
       data-tour="tasks-root"
     >
       {/* Header: filters + export + analytics */}
