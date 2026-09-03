@@ -15,6 +15,20 @@ const packagingLabelSource = readFileSync(
   "utf8"
 );
 
+const labelPrintWrapperSource = readFileSync(
+  fileURLToPath(
+    new URL("../../src/components/Grow/LabelPrintWrapper.jsx", import.meta.url)
+  ),
+  "utf8"
+);
+
+const labelPrintSource = readFileSync(
+  fileURLToPath(
+    new URL("../../src/components/Grow/LabelPrint.jsx", import.meta.url)
+  ),
+  "utf8"
+);
+
 const expectSourceMatch = (pattern) => {
   expect(packagingLabelSource).toMatch(pattern);
 };
@@ -151,6 +165,46 @@ describe("packaging label font parity", () => {
     });
 
     expect(result.match(/@font-face/g)).toHaveLength(1);
+  });
+});
+
+describe("packaged SKU label eligibility regression", () => {
+  it("keeps the approved package SKU types limited to retail, sample, promo, and internal", () => {
+    expect(labelPrintWrapperSource).toContain(
+      'const PACKAGED_SKU_TYPES = new Set(["retail", "sample", "promo", "internal"]);'
+    );
+  });
+
+  it("requires packaged-child identity, package-run identity, valid SKU type, package size, and available packages", () => {
+    [
+      "hasChildRelationship",
+      "hasPackageRunIdentity",
+      "hasValidSkuType",
+      "hasPackageSize",
+      "hasAvailablePackages",
+    ].forEach((guard) => expect(labelPrintWrapperSource).toContain(guard));
+
+    expect(labelPrintWrapperSource).toMatch(
+      /hasChildRelationship\s*&&\s*hasPackageRunIdentity\s*&&\s*hasValidSkuType\s*&&\s*hasPackageSize\s*&&\s*hasAvailablePackages/
+    );
+  });
+
+  it("feeds Avery 5659 only from printable finished lots that pass the packaged-child SKU guard", () => {
+    expect(labelPrintWrapperSource).toMatch(
+      /finishedGoodsBuckets\.printable\.filter\(isPackagedSkuChildLot\)/
+    );
+    expect(labelPrintWrapperSource).toContain(
+      "Parent finished batches never appear here."
+    );
+  });
+
+  it("keeps blocked finished inventory out of the standard finished-label source as a second safety layer", () => {
+    expect(labelPrintSource).toContain(
+      'if (source === "finished_goods") return finishedGoodsBuckets.printable;'
+    );
+    expect(labelPrintSource).toContain(
+      "const eligibility = getFinishedLabelEligibility(lot);"
+    );
   });
 });
 
