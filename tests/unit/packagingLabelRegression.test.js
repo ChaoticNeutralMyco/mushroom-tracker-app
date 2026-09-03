@@ -38,6 +38,23 @@ const expectSourceMatch = (pattern) => {
   expect(packagingLabelSource).toMatch(pattern);
 };
 
+const getLegacyLabelTemplateBlock = (templateId) => {
+  const start = labelPrintSource.indexOf(`"${templateId}": {`);
+  if (start < 0) return "";
+
+  const end =
+    templateId === "5160"
+      ? labelPrintSource.indexOf('"5167": {', start)
+      : labelPrintSource.indexOf("\n};", start);
+
+  return end > start ? labelPrintSource.slice(start, end) : "";
+};
+
+const readTemplateInches = (block, key) => {
+  const match = block.match(new RegExp(`${key}:\\s*"([0-9.]+)in"`));
+  return match ? Number(match[1]) : Number.NaN;
+};
+
 describe("packaging label data contract", () => {
   it("normalizes display values and dates without inventing baked-in artwork fields", () => {
     const result = normalizePackagingLabelData({
@@ -170,6 +187,71 @@ describe("packaging label font parity", () => {
     });
 
     expect(result.match(/@font-face/g)).toHaveLength(1);
+  });
+});
+
+describe("Avery cultivation label sheet geometry regression", () => {
+  it("locks Avery 5160 / 8160 to the physical 3x10 sheet geometry", () => {
+    const block = getLegacyLabelTemplateBlock("5160");
+
+    expect(block).toContain("cols: 3");
+    expect(block).toContain("rows: 10");
+    expect(block).toContain('labelW: "2.625in"');
+    expect(block).toContain('labelH: "1in"');
+    expect(block).toContain('gapX: "0.125in"');
+    expect(block).toContain('gapY: "0in"');
+    expect(block).toContain('padX: "0.1875in"');
+    expect(block).toContain('padY: "0.5in"');
+
+    const width =
+      2 * readTemplateInches(block, "padX") +
+      3 * readTemplateInches(block, "labelW") +
+      2 * readTemplateInches(block, "gapX");
+    const height =
+      2 * readTemplateInches(block, "padY") +
+      10 * readTemplateInches(block, "labelH") +
+      9 * readTemplateInches(block, "gapY");
+
+    expect(width).toBeCloseTo(8.5, 6);
+    expect(height).toBeCloseTo(11, 6);
+  });
+
+  it("locks Avery 5167 to the physical 4x20 sheet geometry", () => {
+    const block = getLegacyLabelTemplateBlock("5167");
+
+    expect(block).toContain("cols: 4");
+    expect(block).toContain("rows: 20");
+    expect(block).toContain('labelW: "1.75in"');
+    expect(block).toContain('labelH: "0.5in"');
+    expect(block).toContain('gapX: "0.3125in"');
+    expect(block).toContain('gapY: "0in"');
+    expect(block).toContain('padX: "0.28125in"');
+    expect(block).toContain('padY: "0.5in"');
+
+    const width =
+      2 * readTemplateInches(block, "padX") +
+      4 * readTemplateInches(block, "labelW") +
+      3 * readTemplateInches(block, "gapX");
+    const height =
+      2 * readTemplateInches(block, "padY") +
+      20 * readTemplateInches(block, "labelH") +
+      19 * readTemplateInches(block, "gapY");
+
+    expect(width).toBeCloseTo(8.5, 6);
+    expect(height).toBeCloseTo(11, 6);
+  });
+
+  it("uses the same template margins and gaps for preview and standalone print output", () => {
+    expect(labelPrintSource).toContain("paddingLeft: template.padX");
+    expect(labelPrintSource).toContain("paddingRight: template.padX");
+    expect(labelPrintSource).toContain("columnGap: template.gapX");
+    expect(labelPrintSource).toContain("rowGap: template.gapY");
+    expect(labelPrintSource).toContain(
+      ".sheet { width: ${template.sheetW}; height: ${template.sheetH}; padding: ${template.padY} ${template.padX};"
+    );
+    expect(labelPrintSource).toContain(
+      "column-gap: ${template.gapX}; row-gap: ${template.gapY};"
+    );
   });
 });
 
