@@ -25,6 +25,11 @@ const postprocessLibSource = readFileSync(
   "utf8"
 );
 
+const growLifecycleSource = readFileSync(
+  new URL("../e2e/grow-lifecycle.spec.ts", import.meta.url),
+  "utf8"
+);
+
 function activeLot(overrides = {}) {
   return {
     id: "lot-1",
@@ -246,6 +251,54 @@ describe("post-processing packaged sales regression", () => {
     );
     expect(postprocessLibSource).toContain(
       'processType: "finished_inventory"'
+    );
+  });
+});
+
+describe("packaged sales lifecycle E2E contract", () => {
+  it("creates a retail package child before recording the sale", () => {
+    const packageStep = growLifecycleSource.indexOf(
+      "create a released retail package child from finished inventory"
+    );
+    const saleStep = growLifecycleSource.indexOf(
+      "record a packaged retail sale and verify parent-child inventory tracking"
+    );
+
+    expect(packageStep).toBeGreaterThan(-1);
+    expect(saleStep).toBeGreaterThan(packageStep);
+    expect(growLifecycleSource).toContain(
+      "postprocess.createPackagedFinishedLot({"
+    );
+    expect(growLifecycleSource).toContain(
+      "findPackagedRetailSaleLot(lots)"
+    );
+  });
+
+  it("locks the lifecycle fixture to a packaged retail SKU instead of selling the parent batch", () => {
+    expect(growLifecycleSource).toContain('skuType: "retail"');
+    expect(growLifecycleSource).toContain('packageSize: "10"');
+    expect(growLifecycleSource).toContain('packageSizeUnit: "capsules"');
+    expect(growLifecycleSource).toContain('packageCount: "10"');
+    expect(growLifecycleSource).toContain('sourceQuantity: "100"');
+    expect(growLifecycleSource).toContain('capsulesPerPackage: "10"');
+    expect(growLifecycleSource).toContain('remainingAfterSale: "7"');
+  });
+
+  it("releases the parent before packaging and preserves the parent-child relationship through sale verification", () => {
+    expect(growLifecycleSource).toContain(
+      'releaseStatus: "released"'
+    );
+    expect(growLifecycleSource).toContain(
+      'qc: {'
+    );
+    expect(growLifecycleSource).toContain(
+      'status: "pass"'
+    );
+    expect(growLifecycleSource).toContain(
+      "parentRemainingAfterPackaging"
+    );
+    expect(growLifecycleSource).toContain(
+      'String(lot?.parentLotId || lot?.sourceLotId || "")'
     );
   });
 });

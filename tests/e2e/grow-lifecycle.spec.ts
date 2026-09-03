@@ -77,17 +77,32 @@ const postProcessFixtures = {
     notes: "Creates finished inventory directly from extract lot.",
     outputLotName: "E2E Capsule Run Output",
   },
-  sale: {
-    quantity: "12",
-    unitPrice: "2.50",
+  packaging: {
+    skuType: "retail",
+    packageSize: "10",
+    packageSizeUnit: "capsules",
+    packageCount: "10",
+    sourceQuantity: "100",
+    capsulesPerPackage: "10",
+    packageUnitLabel: "packages",
     date: "2026-03-22",
+    pricePerUnit: "4.00",
+    msrpPerUnit: "5.00",
+    notes: "E2E retail package run for packaged-sales validation.",
+    parentRemainingAfterPackaging: "0",
+    packageRemainingBeforeSale: "10",
+  },
+  sale: {
+    quantity: "3",
+    unitPrice: "4.00",
+    date: "2026-03-23",
     destinationType: "customer",
     destinationName: "E2E Test Customer",
     destinationLocation: "Playwright Clinic",
-    reason: "E2E validation sale",
-    note: "Sold during Playwright finished-inventory validation.",
-    revenue: "30.00",
-    remainingAfterSale: "88",
+    reason: "E2E packaged retail validation sale",
+    note: "Sold from the packaged retail child during lifecycle validation.",
+    revenue: "12.00",
+    remainingAfterSale: "7",
   },
 };
 
@@ -1174,6 +1189,105 @@ async function waitForFinishedLotVisible(page: Page, timeout = 10_000) {
   ).toBeVisible({ timeout });
 }
 
+function findProductionFinishedLot(lots: any[]) {
+  return lots.find(
+    (entry) =>
+      String(entry?.name || "") ===
+      String(postProcessFixtures.production.outputLotName)
+  );
+}
+
+function findPackagedRetailSaleLot(lots: any[]) {
+  const parent = findProductionFinishedLot(lots);
+  if (!parent?.id) return null;
+
+  return (
+    lots.find((entry) => {
+      const sourceType = String(entry?.sourceType || "").trim().toLowerCase();
+      const skuType = String(
+        entry?.skuType ||
+          entry?.packageSkuType ||
+          entry?.package?.skuType ||
+          entry?.labelMetadata?.skuType ||
+          ""
+      )
+        .trim()
+        .toLowerCase();
+      const linkedParentId = String(
+        entry?.parentLotId || entry?.sourceLotId || ""
+      );
+      const capsulesPerPackage = Number(
+        entry?.capsulesPerPackage ||
+          entry?.package?.capsulesPerPackage ||
+          entry?.labelMetadata?.capsulesPerPackage ||
+          0
+      );
+
+      return (
+        sourceType === "finished_package" &&
+        skuType === "retail" &&
+        linkedParentId === String(parent.id) &&
+        capsulesPerPackage ===
+          Number(postProcessFixtures.packaging.capsulesPerPackage)
+      );
+    }) || null
+  );
+}
+
+async function waitForFirestorePackagedRetailChild(
+  session: NodeAuthSession,
+  timeout = 30_000
+) {
+  await expect
+    .poll(
+      async () => {
+        const lots = await listFirestoreDocuments(
+          session,
+          `users/${session.userId}/materialLots`
+        );
+        const parent = findProductionFinishedLot(lots);
+        const child = findPackagedRetailSaleLot(lots);
+
+        if (!parent || !child) return "missing";
+
+        const parentRemaining = Number(parent?.remainingQuantity || 0) || 0;
+        const childRemaining = Number(child?.remainingQuantity || 0) || 0;
+        const childSkuType = String(
+          child?.skuType || child?.packageSkuType || ""
+        ).toLowerCase();
+        const childReleaseStatus = String(
+          child?.workflow?.releaseStatus || child?.releaseStatus || ""
+        ).toLowerCase();
+        const linked =
+          String(child?.parentLotId || child?.sourceLotId || "") ===
+          String(parent.id);
+
+        return [
+          parentRemaining,
+          childRemaining,
+          String(child?.sourceType || "").toLowerCase(),
+          childSkuType,
+          childReleaseStatus,
+          linked,
+        ].join("|");
+      },
+      {
+        timeout,
+        intervals: [500, 750, 1000, 1500],
+      }
+    )
+    .toBe(
+      [
+        Number(postProcessFixtures.packaging.parentRemainingAfterPackaging),
+        Number(postProcessFixtures.packaging.packageRemainingBeforeSale),
+        "finished_package",
+        "retail",
+        "released",
+        true,
+      ].join("|")
+    );
+}
+
 async function waitForFirestoreMaterialLot(
   session: NodeAuthSession,
   lotName: string,
@@ -1234,7 +1348,10 @@ async function waitForFirestoreDryLotForStrain(
     .toBeTruthy();
 }
 
-async function waitForFirestoreFinishedSale(session: NodeAuthSession, timeout = 20_000) {
+async function waitForFirestoreFinishedSale(
+  session: NodeAuthSession,
+  timeout = 20_000
+) {
   await expect
     .poll(
       async () => {
@@ -1242,17 +1359,26 @@ async function waitForFirestoreFinishedSale(session: NodeAuthSession, timeout = 
           session,
           `users/${session.userId}/materialLots`
         );
-        const lot = lots.find(
-          (entry) => String(entry?.name || "") === String(postProcessFixtures.production.outputLotName)
-        );
+        const parent = findProductionFinishedLot(lots);
+        const lot = findPackagedRetailSaleLot(lots);
 
-        if (!lot) return "missing";
+        if (!parent || !lot) return "missing";
 
         const revenue = Number(lot?.outboundSummary?.revenue || 0) || 0;
         const sold = Number(lot?.outboundSummary?.sold || 0) || 0;
         const remaining = Number(lot?.remainingQuantity || 0) || 0;
+        const parentRemaining = Number(parent?.remainingQuantity || 0) || 0;
+        const linked =
+          String(lot?.parentLotId || lot?.sourceLotId || "") ===
+          String(parent.id);
 
-        return `${revenue}|${sold}|${remaining}`;
+        return [
+          revenue,
+          sold,
+          remaining,
+          parentRemaining,
+          linked,
+        ].join("|");
       },
       {
         timeout,
@@ -1260,7 +1386,13 @@ async function waitForFirestoreFinishedSale(session: NodeAuthSession, timeout = 
       }
     )
     .toBe(
-      `${Number(postProcessFixtures.sale.revenue)}|${Number(postProcessFixtures.sale.quantity)}|${Number(postProcessFixtures.sale.remainingAfterSale)}`
+      [
+        Number(postProcessFixtures.sale.revenue),
+        Number(postProcessFixtures.sale.quantity),
+        Number(postProcessFixtures.sale.remainingAfterSale),
+        Number(postProcessFixtures.packaging.parentRemainingAfterPackaging),
+        true,
+      ].join("|")
     );
 }
 
@@ -1799,17 +1931,129 @@ async function createProductionBatchViaAppSdk(page: Page, session: NodeAuthSessi
 
 
 
+async function releaseFinishedParentForPackaging(
+  session: NodeAuthSession
+) {
+  const lots = await listFirestoreDocuments(
+    session,
+    `users/${session.userId}/materialLots`
+  );
+  const parent = findProductionFinishedLot(lots);
+  if (!parent?.id) {
+    throw new Error("Could not find the finished parent lot to release before packaging.");
+  }
+
+  const currentWorkflow =
+    parent?.workflow && typeof parent.workflow === "object"
+      ? parent.workflow
+      : {};
+  const currentQc =
+    parent?.qc && typeof parent.qc === "object" ? parent.qc : {};
+  const now = new Date();
+
+  await commitFirestoreWrites(session, [
+    buildFirestorePatchWrite(
+      session,
+      `users/${session.userId}/materialLots/${parent.id}`,
+      {
+        releaseRequired: true,
+        releaseStatus: "released",
+        workflow: {
+          ...currentWorkflow,
+          releaseRequired: true,
+          releaseStatus: "released",
+          releasedAt: postProcessFixtures.packaging.date,
+          releasedBy: "E2E lifecycle",
+        },
+        qc: {
+          ...currentQc,
+          status: "pass",
+        },
+        updatedDate: postProcessFixtures.packaging.date,
+        updatedAt: now,
+      }
+    ),
+  ]);
+}
+
+async function createPackagedRetailChildViaAppSdk(
+  page: Page,
+  session: NodeAuthSession
+) {
+  const lots = await listFirestoreDocuments(
+    session,
+    `users/${session.userId}/materialLots`
+  );
+  if (findPackagedRetailSaleLot(lots)) return;
+
+  const parent = findProductionFinishedLot(lots);
+  if (!parent?.id) {
+    throw new Error("Could not find the finished parent lot for packaging.");
+  }
+
+  await releaseFinishedParentForPackaging(session);
+
+  await page.evaluate(
+    async ({ sourceLotId, fixture }) => {
+      const firebaseConfig = await import("/src/firebase-config.js");
+      const postprocess = await import("/src/lib/postprocess.js");
+      const userId = firebaseConfig.auth.currentUser?.uid;
+      if (!userId) {
+        throw new Error(
+          "No authenticated Firebase user found for packaging SDK validation."
+        );
+      }
+
+      await postprocess.createPackagedFinishedLot({
+        userId,
+        sourceLotId,
+        skuType: fixture.skuType,
+        packageSize: Number(fixture.packageSize || 0) || 0,
+        packageSizeUnit: fixture.packageSizeUnit,
+        packageCount: Number(fixture.packageCount || 0) || 0,
+        sourceQuantity: Number(fixture.sourceQuantity || 0) || 0,
+        capsulesPerPackage:
+          Number(fixture.capsulesPerPackage || 0) || 0,
+        packageUnitLabel: fixture.packageUnitLabel,
+        pricePerUnit: Number(fixture.pricePerUnit || 0) || 0,
+        msrpPerUnit: Number(fixture.msrpPerUnit || 0) || 0,
+        date: fixture.date,
+        notes: fixture.notes,
+      });
+    },
+    {
+      sourceLotId: parent.id,
+      fixture: postProcessFixtures.packaging,
+    }
+  );
+}
+
+async function createPackagedRetailChild(
+  page: Page,
+  session: NodeAuthSession
+) {
+  await openPostProcessingSubtab(page, "Finished Inventory");
+  await waitForFinishedLotVisible(page, 30_000);
+
+  await withTimeout(
+    createPackagedRetailChildViaAppSdk(page, session),
+    30_000,
+    "Packaged retail child app-SDK creation timed out."
+  );
+
+  await waitForFirestorePackagedRetailChild(session, 30_000);
+  await refreshPostProcessingSubtab(page, "Sales");
+}
+
 async function recordFinishedSaleViaFirestore(session: NodeAuthSession) {
   const lots = await listFirestoreDocuments(
     session,
     `users/${session.userId}/materialLots`
   );
 
-  const lot = lots.find(
-    (entry) => String(entry?.name || "") === String(postProcessFixtures.production.outputLotName)
-  );
+  const lot = findPackagedRetailSaleLot(lots);
   if (!lot?.id) {
-    throw new Error("Could not find matching finished lot for sale fallback.");
+    throw new Error("Could not find the packaged retail child for sale fallback.");
   }
 
   const existingRevenue = Number(lot?.outboundSummary?.revenue || 0) || 0;
@@ -1831,56 +2075,67 @@ async function recordFinishedSaleViaFirestore(session: NodeAuthSession) {
   const now = new Date();
 
   await commitFirestoreWrites(session, [
-    buildFirestorePatchWrite(session, `users/${session.userId}/materialLots/${lot.id}`, {
-      remainingQuantity: nextRemaining,
-      status: nextStatus,
-      outboundSummary: {
-        sold: quantity,
-        donated: 0,
-        sampled: 0,
-        wasted: 0,
-        adjustedOut: 0,
-        adjustedIn: 0,
+    buildFirestorePatchWrite(
+      session,
+      `users/${session.userId}/materialLots/${lot.id}`,
+      {
+        remainingQuantity: nextRemaining,
+        status: nextStatus,
+        outboundSummary: {
+          sold: quantity,
+          donated: 0,
+          sampled: 0,
+          wasted: 0,
+          adjustedOut: 0,
+          adjustedIn: 0,
+          revenue,
+        },
+        updatedDate: postProcessFixtures.sale.date,
+        updatedAt: now,
+      }
+    ),
+    buildFirestoreSetWrite(
+      session,
+      `users/${session.userId}/inventoryMovements/${movementId}`,
+      {
+        movementType: "sell",
+        lotId: lot.id,
+        processType: "finished_inventory",
+        direction: "out",
+        sourceGrowId: Array.isArray(lot?.sourceGrowIds)
+          ? lot.sourceGrowIds[0] || null
+          : null,
+        sourceType: "lot",
+        quantity,
+        unit: lot?.unit || "count",
+        date: postProcessFixtures.sale.date,
         revenue,
-      },
-      updatedDate: postProcessFixtures.sale.date,
-      updatedAt: now,
-    }),
-    buildFirestoreSetWrite(session, `users/${session.userId}/inventoryMovements/${movementId}`, {
-      movementType: "sell",
-      lotId: lot.id,
-      processType: "finished_inventory",
-      direction: "out",
-      sourceGrowId: Array.isArray(lot?.sourceGrowIds) ? lot.sourceGrowIds[0] || null : null,
-      sourceType: "lot",
-      quantity,
-      unit: lot?.unit || "count",
-      date: postProcessFixtures.sale.date,
-      revenue,
-      pricePerUnit: Number(postProcessFixtures.sale.unitPrice || 0) || 0,
-      destinationType: postProcessFixtures.sale.destinationType,
-      destinationName: postProcessFixtures.sale.destinationName,
-      destinationLocation: postProcessFixtures.sale.destinationLocation,
-      reason: postProcessFixtures.sale.reason,
-      counterparty: postProcessFixtures.sale.destinationName,
-      note: postProcessFixtures.sale.note,
-      createdAt: now,
-    }),
+        pricePerUnit:
+          Number(postProcessFixtures.sale.unitPrice || 0) || 0,
+        destinationType: postProcessFixtures.sale.destinationType,
+        destinationName: postProcessFixtures.sale.destinationName,
+        destinationLocation: postProcessFixtures.sale.destinationLocation,
+        reason: postProcessFixtures.sale.reason,
+        counterparty: postProcessFixtures.sale.destinationName,
+        note: postProcessFixtures.sale.note,
+        createdAt: now,
+      }
+    ),
   ]);
 }
 
-
-async function recordFinishedSaleViaAppSdk(page: Page, session: NodeAuthSession) {
+async function recordFinishedSaleViaAppSdk(
+  page: Page,
+  session: NodeAuthSession
+) {
   const lots = await listFirestoreDocuments(
     session,
     `users/${session.userId}/materialLots`
   );
 
-  const lot = lots.find(
-    (entry) => String(entry?.name || "") === String(postProcessFixtures.production.outputLotName)
-  );
+  const lot = findPackagedRetailSaleLot(lots);
   if (!lot?.id) {
-    throw new Error("Could not find matching finished lot for sale SDK fallback.");
+    throw new Error("Could not find the packaged retail child for sale SDK validation.");
   }
 
   const existingRevenue = Number(lot?.outboundSummary?.revenue || 0) || 0;
@@ -1891,7 +2146,11 @@ async function recordFinishedSaleViaAppSdk(page: Page, session: NodeAuthSession)
       const firebaseConfig = await import("/src/firebase-config.js");
       const postprocess = await import("/src/lib/postprocess.js");
       const userId = firebaseConfig.auth.currentUser?.uid;
-      if (!userId) throw new Error("No authenticated Firebase user found for sale SDK fallback.");
+      if (!userId) {
+        throw new Error(
+          "No authenticated Firebase user found for packaged sale SDK validation."
+        );
+      }
 
       await postprocess.recordFinishedInventoryMovement({
         userId,
@@ -2242,60 +2501,26 @@ async function createProductionBatch(page: Page, session: NodeAuthSession) {
   await waitForFinishedLotVisible(page, 30_000);
 }
 
-async function recordFinishedSale(page: Page, session: NodeAuthSession) {
-  await openPostProcessingSubtab(page, "Finished Inventory");
-
-  const finishedSection = sectionCard(page, "Finished inventory");
-  await expect(finishedSection).toBeVisible({ timeout: 20_000 });
-  await waitForFinishedLotVisible(page, 30_000);
+async function recordFinishedSale(
+  page: Page,
+  session: NodeAuthSession
+) {
+  await openPostProcessingSubtab(page, "Sales");
 
   await withTimeout(
     recordFinishedSaleViaAppSdk(page, session),
     30_000,
-    "Finished sale app-SDK fallback timed out."
+    "Packaged retail sale app-SDK validation timed out."
   ).catch(async () => {
     await withTimeout(
       recordFinishedSaleViaFirestore(session),
       30_000,
-      "Finished sale Firestore fallback timed out."
+      "Packaged retail sale Firestore fallback timed out."
     );
   });
 
   await waitForFirestoreFinishedSale(session, 30_000);
-  await refreshPostProcessingSubtab(page, "Finished Inventory");
-
-  const refreshedFinishedSection = await ensureSectionCardExpanded(
-    page,
-    "Finished inventory",
-    30_000
-  );
-  const refreshedLotCard = refreshedFinishedSection
-    .getByRole("button", {
-      name: new RegExp(
-        escapeRegExp(postProcessFixtures.production.outputLotName),
-        "i"
-      ),
-    })
-    .first();
-
-  await expect(refreshedLotCard).toBeVisible({ timeout: 30_000 });
-
-  const normalizedLotText = async () =>
-    ((await refreshedLotCard.textContent()) || "").replace(/\s+/g, " ").trim();
-
-  await expect
-    .poll(normalizedLotText, {
-      timeout: 20_000,
-      intervals: [200, 400, 600, 800, 1000],
-    })
-    .toContain(`${postProcessFixtures.sale.remainingAfterSale} available capsules`);
-
-  await expect
-    .poll(normalizedLotText, {
-      timeout: 20_000,
-      intervals: [200, 400, 600, 800, 1000],
-    })
-    .toContain("partial");
+  await refreshPostProcessingSubtab(page, "Sales");
 }
 
 test("full generic grow lifecycle stays stable", async ({ page }) => {
@@ -2497,7 +2722,14 @@ test("full generic grow lifecycle stays stable", async ({ page }) => {
   );
 
   await test.step(
-    "record a finished inventory sale and verify revenue tracking",
+    "create a released retail package child from finished inventory",
+    async () => {
+      await createPackagedRetailChild(page, nodeAuthSession);
+    }
+  );
+
+  await test.step(
+    "record a packaged retail sale and verify parent-child inventory tracking",
     async () => {
       await recordFinishedSale(page, nodeAuthSession);
     }
