@@ -1,5 +1,5 @@
 // src/components/Grow/PackagingLabelPreview.jsx
-// labels-v47-avery-5659-and-streamlined-advisories
+// labels-v48-avery-5659-font-parity-hardening
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { Printer } from "lucide-react";
 
@@ -345,6 +345,72 @@ const escapeHtml = (value) =>
     .replaceAll(">", "&gt;")
     .replaceAll('"', "&quot;")
     .replaceAll("'", "&#039;");
+
+const resolveFontFaceUrls = (cssText, baseHref) => {
+  const source = toText(cssText);
+  if (!source || !baseHref || typeof URL !== "function") return source;
+
+  return source.replace(
+    /url\(\s*(['"]?)([^'"\)]+)\1\s*\)/gi,
+    (match, _quote, rawUrl) => {
+      const value = toText(rawUrl);
+      if (!value || /^(?:data:|blob:|https?:|file:|\/|#)/i.test(value)) return match;
+
+      try {
+        return `url("${new URL(value, baseHref).href.replaceAll('"', "%22")}")`;
+      } catch {
+        return match;
+      }
+    }
+  );
+};
+
+export const collectPackagingLabelFontFaceCss = (sourceDocument) => {
+  if (!sourceDocument?.styleSheets) return "";
+
+  const collected = [];
+  const seen = new Set();
+  const documentBase = toText(sourceDocument.baseURI);
+
+  const collectRules = (rules, baseHref) => {
+    for (const rule of Array.from(rules || [])) {
+      const cssText = toText(rule?.cssText);
+
+      if (rule?.type === 5 || /^@font-face\b/i.test(cssText)) {
+        const normalized = resolveFontFaceUrls(cssText, baseHref || documentBase);
+        if (normalized && !seen.has(normalized)) {
+          seen.add(normalized);
+          collected.push(normalized);
+        }
+        continue;
+      }
+
+      try {
+        if (rule?.styleSheet?.cssRules) {
+          collectRules(
+            rule.styleSheet.cssRules,
+            toText(rule.styleSheet.href) || baseHref || documentBase
+          );
+          continue;
+        }
+      } catch {}
+
+      try {
+        if (rule?.cssRules) collectRules(rule.cssRules, baseHref || documentBase);
+      } catch {}
+    }
+  };
+
+  for (const sheet of Array.from(sourceDocument.styleSheets || [])) {
+    try {
+      collectRules(sheet.cssRules, toText(sheet.href) || documentBase);
+    } catch {
+      // Cross-origin and restricted stylesheets are intentionally ignored.
+    }
+  }
+
+  return collected.join("\n");
+};
 
 const fitSize = (value, sizes) => {
   const length = toText(value).length;
@@ -1001,6 +1067,7 @@ const buildAveryPrintHtml = ({
   scalePct,
   offsetXmm,
   offsetYmm,
+  fontFaceCss = "",
 }) => {
   const pages = buildAveryPages(entries, startPosition);
   const sheetsHtml = pages
@@ -1074,6 +1141,7 @@ const buildAveryPrintHtml = ({
         transform: scale(${Math.max(90, Math.min(110, Number(scalePct) || 100)) / 100});
         transform-origin: center;
       }
+      ${fontFaceCss}
       ${cssForLabel({ print: true })}
     </style>
   </head>
@@ -1304,6 +1372,8 @@ export default function PackagingLabelPreview({
       return;
     }
 
+    const fontFaceCss = collectPackagingLabelFontFaceCss(document);
+
     doc.open();
     doc.write(
       buildAveryPrintHtml({
@@ -1312,6 +1382,7 @@ export default function PackagingLabelPreview({
         scalePct,
         offsetXmm,
         offsetYmm,
+        fontFaceCss,
       })
     );
     doc.close();
