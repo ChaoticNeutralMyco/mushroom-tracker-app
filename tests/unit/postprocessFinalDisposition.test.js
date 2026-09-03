@@ -1,4 +1,5 @@
 // tests/unit/postprocessFinalDisposition.test.js
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import {
   buildDryLotId,
@@ -8,10 +9,21 @@ import {
   getMaterialLotFinalDispositionState,
   isActiveProcessBatch,
   isArchivedProcessBatch,
+  isArchivedOrDepletedMaterialLot,
   isMaterialLotUsableForProcessing,
 } from "../../src/lib/postprocess";
 
 const AS_OF = "2026-07-26";
+
+const postProcessManagerSource = readFileSync(
+  new URL("../../src/components/postprocess/PostProcessManager.jsx", import.meta.url),
+  "utf8"
+);
+
+const postprocessLibSource = readFileSync(
+  new URL("../../src/lib/postprocess.js", import.meta.url),
+  "utf8"
+);
 
 function activeLot(overrides = {}) {
   return {
@@ -132,5 +144,108 @@ describe("post-processing final disposition", () => {
       expect(isActiveProcessBatch(batch)).toBe(false);
       expect(isArchivedProcessBatch(batch)).toBe(true);
     }
+  });
+});
+
+describe("post-processing packaged sales regression", () => {
+  it("keeps parent finished batches out of Sales until a package child exists", () => {
+    expect(postProcessManagerSource).toContain(
+      "activeFinishedGoodsLots.filter((lot) => isPackagedForSale(lot))"
+    );
+    expect(postProcessManagerSource).toContain(
+      ".filter((lot) => !isPackagedForSale(lot))"
+    );
+    expect(postProcessManagerSource).toContain(
+      'String(lot?.sourceType || "").trim().toLowerCase() === "finished_package"'
+    );
+    expect(postProcessManagerSource).toContain(
+      "lot?.packageRunId && (lot?.parentLotId || lot?.sourceLotId)"
+    );
+  });
+
+  it("groups Sales by product first and then exact SKU type plus package size", () => {
+    expect(postProcessManagerSource).toContain("function getSalesProductKey(lot = {})");
+    expect(postProcessManagerSource).toContain("function getSkuGroupKey(lot = {})");
+    expect(postProcessManagerSource).toContain(
+      "return [getSkuType(lot), getPackageSizeLabel(lot)]"
+    );
+    expect(postProcessManagerSource).toContain(
+      "const skuKey = getSkuGroupKey(lot);"
+    );
+  });
+
+  it("keeps sample, promo, and internal inventory separated from retail sales", () => {
+    expect(postProcessManagerSource).toContain(
+      'const retailSkus = activeSkus.filter((sku) => String(sku?.skuType || "retail") === "retail");'
+    );
+    expect(postProcessManagerSource).toContain(
+      'const sampleSkus = activeSkus.filter((sku) => String(sku?.skuType || "retail") !== "retail");'
+    );
+    expect(postProcessManagerSource).toContain(
+      '<option value="sample">Sample / not for sale</option>'
+    );
+    expect(postProcessManagerSource).toContain(
+      'if (skuType === "sample")'
+    );
+    expect(postProcessManagerSource).toContain(
+      'movementType: "sample", destinationType: "internal"'
+    );
+  });
+
+  it("uses FEFO inside the exact matching SKU and falls back to inventory age", () => {
+    expect(postProcessManagerSource).toContain(
+      "const bestByDifference = getLotBestByMs(a) - getLotBestByMs(b);"
+    );
+    expect(postProcessManagerSource).toContain(
+      "const ageDifference = getInventoryAgeMs(a) - getInventoryAgeMs(b);"
+    );
+    expect(postProcessManagerSource).toContain(
+      "getSalesSkuKey(candidate) === key"
+    );
+    expect(postProcessManagerSource).toContain(
+      "compareFefoPriority(candidate, lot) < 0"
+    );
+    expect(postProcessManagerSource).toContain(
+      "samples do not block retail packages"
+    );
+  });
+
+  it("removes depleted package lots from active Sales while preserving them for History", () => {
+    const depletedPackage = activeLot({
+      lotType: "capsules",
+      sourceType: "finished_package",
+      status: "depleted",
+      initialQuantity: 12,
+      remainingQuantity: 0,
+    });
+
+    expect(isArchivedOrDepletedMaterialLot(depletedPackage)).toBe(true);
+    expect(postProcessManagerSource).toContain(
+      "activeSkus: skus.filter((sku) => sku.activeLots.length > 0)"
+    );
+    expect(postProcessManagerSource).toContain(
+      ".filter((product) => product.activeLots.length > 0);"
+    );
+    expect(postProcessManagerSource).toContain(
+      'title="Depleted / archived lots"'
+    );
+  });
+
+  it("retains outbound movements in the auditable inventory ledger", () => {
+    expect(postProcessManagerSource).toContain(
+      'title="Inventory movement ledger"'
+    );
+    expect(postProcessManagerSource).toContain(
+      "movements.map((movement) =>"
+    );
+    expect(postProcessManagerSource).toContain(
+      "recordFinishedInventoryMovement({"
+    );
+    expect(postprocessLibSource).toContain(
+      "movementType: normalizedType"
+    );
+    expect(postprocessLibSource).toContain(
+      'processType: "finished_inventory"'
+    );
   });
 });
