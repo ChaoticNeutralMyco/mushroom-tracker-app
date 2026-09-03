@@ -255,6 +255,39 @@ describe("Avery cultivation label sheet geometry regression", () => {
   });
 });
 
+describe("legacy Avery print-scale safety", () => {
+  it("labels the scale control as preview-only so it is not mistaken for print calibration", () => {
+    expect(labelPrintSource).toContain(
+      '<span className="text-sm">Preview scale</span>'
+    );
+    expect(labelPrintSource).toContain(
+      "Preview scale is screen-only."
+    );
+  });
+
+  it("tells users to preserve physical Avery dimensions in the browser print dialog", () => {
+    expect(labelPrintSource).toContain(
+      "print on US Letter at 100% or Actual Size"
+    );
+    expect(labelPrintSource).toContain(
+      "with browser headers and footers disabled."
+    );
+  });
+
+  it("keeps preview scaling out of the standalone print HTML", () => {
+    const start = labelPrintSource.indexOf("const buildPrintHTML =");
+    const end = labelPrintSource.indexOf("const printNow =", start);
+    const printBuilder = labelPrintSource.slice(start, end);
+
+    expect(start).toBeGreaterThanOrEqual(0);
+    expect(end).toBeGreaterThan(start);
+    expect(labelPrintSource).toContain(
+      "transform: `scale(${scalePct / 100})`"
+    );
+    expect(printBuilder).not.toContain("scalePct");
+  });
+});
+
 describe("packaged SKU label eligibility regression", () => {
   it("keeps the approved package SKU types limited to retail, sample, promo, and internal", () => {
     expect(labelPrintWrapperSource).toContain(

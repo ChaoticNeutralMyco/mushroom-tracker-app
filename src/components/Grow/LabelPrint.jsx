@@ -1265,7 +1265,7 @@ function LabelPrint(props) {
           </label>
 
           <div className="inline-flex items-center gap-2">
-            <span className="text-sm">Scale</span>
+            <span className="text-sm">Preview scale</span>
             <input
               type="range"
               min={50}
@@ -1315,6 +1315,11 @@ function LabelPrint(props) {
             <Printer size={16} /> Print
           </button>
         </div>
+      </div>
+
+      <div className="mb-4 text-xs text-zinc-500 dark:text-zinc-400">
+        Preview scale is screen-only. For Avery sheets, print on US Letter at 100% or Actual Size
+        with browser headers and footers disabled.
       </div>
 
       {source === "finished_goods" && finishedGoodsBuckets.blocked.length > 0 ? (
