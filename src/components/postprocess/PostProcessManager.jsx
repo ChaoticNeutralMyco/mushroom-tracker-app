@@ -1,4 +1,5 @@
 // src/components/postprocess/PostProcessManager.jsx
+// postprocess-v45-qc-sale-readiness
 // postprocess-v44-harvest-closure-traceability
 // postprocess-v43-final-disposition-consistency
 // postprocess-v42-collapsible-postprocess-sales-focus
@@ -973,7 +974,11 @@ function getReleaseStateForSales(lot = {}) {
   };
 }
 
-function getSalesBlockReason(lot = {}, today = "") {
+function getPackageSaleEligibilityBlockReason(lot = {}, today = "") {
+  if (getSkuType(lot) !== "retail") {
+    return "Only retail package SKUs can be sold.";
+  }
+
   const workflow = lot?.workflow && typeof lot.workflow === "object" ? lot.workflow : {};
   const recalled = Boolean(workflow?.recalled ?? lot?.recalled);
   const quarantined = Boolean(workflow?.quarantined ?? lot?.quarantined);
@@ -982,13 +987,13 @@ function getSalesBlockReason(lot = {}, today = "") {
   if (quarantined) return "This package run is quarantined and cannot be sold.";
   if (qcHold) return "This package run is on QC hold and cannot be sold.";
 
-  const releaseState = getReleaseStateForSales(lot);
-  if (releaseState.blocked) {
-    return "This package run has not been released for sale.";
-  }
-
-  const qcStatus = String(lot?.qc?.status || lot?.qcStatus || "").trim().toLowerCase();
-  if (["fail", "failed", "rejected"].includes(qcStatus)) return "This package run failed QC and cannot be sold.";
+  const rawQcStatus = String(lot?.qc?.status || lot?.qcStatus || "").trim().toLowerCase();
+  const qcStatus = ["failed", "rejected"].includes(rawQcStatus)
+    ? "fail"
+    : normalizeQcStatus(rawQcStatus);
+  if (qcStatus === "fail") return "This package run failed QC and cannot be sold.";
+  if (qcStatus === "hold") return "This package run is on QC hold and cannot be sold.";
+  if (qcStatus !== "pass") return "This package run must pass QC before it can be sold.";
 
   const shelfLife = lot?.shelfLife && typeof lot.shelfLife === "object" ? lot.shelfLife : {};
   const bestBy = shelfLife?.bestBy || shelfLife?.expirationDate || lot?.bestBy || lot?.expirationDate || "";
@@ -1000,6 +1005,18 @@ function getSalesBlockReason(lot = {}, today = "") {
     target.setHours(0, 0, 0, 0);
     current.setHours(0, 0, 0, 0);
     if (target < current) return "This package run is past best-by date and cannot be sold.";
+  }
+
+  return "";
+}
+
+function getSalesBlockReason(lot = {}, today = "") {
+  const eligibilityBlockReason = getPackageSaleEligibilityBlockReason(lot, today);
+  if (eligibilityBlockReason) return eligibilityBlockReason;
+
+  const releaseState = getReleaseStateForSales(lot);
+  if (releaseState.blocked) {
+    return "This package run has not been released for sale.";
   }
 
   return "";
@@ -2407,14 +2424,22 @@ export default function PostProcessManager({
   );
 
 
-  const saleReadyFinishedGoodsLots = useMemo(
+  const activePackagedFinishedGoodsLots = useMemo(
     () => activeFinishedGoodsLots.filter((lot) => isPackagedForSale(lot)),
     [activeFinishedGoodsLots]
   );
 
+  const saleReadyFinishedGoodsLots = useMemo(
+    () =>
+      activePackagedFinishedGoodsLots.filter(
+        (lot) => getLotAvailableQuantity(lot) > 0 && !getSalesBlockReason(lot, today)
+      ),
+    [activePackagedFinishedGoodsLots, today]
+  );
+
   const salesExpiringSoonLots = useMemo(
-    () => saleReadyFinishedGoodsLots.filter((lot) => isExpiringSoonLot(lot)),
-    [saleReadyFinishedGoodsLots]
+    () => activePackagedFinishedGoodsLots.filter((lot) => isExpiringSoonLot(lot)),
+    [activePackagedFinishedGoodsLots]
   );
 
   const packageSourceLots = useMemo(
@@ -2852,7 +2877,7 @@ export default function PostProcessManager({
 
   const packageRunsBySourceLotId = useMemo(() => {
     const map = new Map();
-    saleReadyFinishedGoodsLots.forEach((lot) => {
+    activePackagedFinishedGoodsLots.forEach((lot) => {
       const sourceId = String(lot?.sourceLotId || lot?.parentLotId || lot?.package?.sourceLotId || "");
       if (!sourceId) return;
       if (!map.has(sourceId)) map.set(sourceId, []);
@@ -2860,7 +2885,7 @@ export default function PostProcessManager({
     });
     map.forEach((rows) => rows.sort(compareFefoPriority));
     return map;
-  }, [saleReadyFinishedGoodsLots]);
+  }, [activePackagedFinishedGoodsLots]);
 
   const salesProductGroups = useMemo(() => {
     const productMap = new Map();
@@ -3026,7 +3051,7 @@ export default function PostProcessManager({
       activeLabel: "active",
     }),
     sales: buildStageStatus({
-      activeCount: saleReadyFinishedGoodsLots.length,
+      activeCount: activePackagedFinishedGoodsLots.length,
       activeLabel: "active",
     }),
   };
@@ -3041,7 +3066,7 @@ export default function PostProcessManager({
           ? "production"
           : packageSourceLots.length > 0
             ? "finished"
-            : saleReadyFinishedGoodsLots.length > 0
+            : activePackagedFinishedGoodsLots.length > 0
               ? "sales"
               : null;
 
@@ -3985,25 +4010,10 @@ export default function PostProcessManager({
   async function handleReleasePackageForSale(lot) {
     if (!userId || !lot?.id) return;
 
-    const qcStatus = String(lot?.qc?.status || lot?.qcStatus || "").trim().toLowerCase();
-    if (["fail", "failed", "rejected"].includes(qcStatus)) {
-      setMessage("This package failed QC and cannot be released for sale.");
+    const eligibilityBlockReason = getPackageSaleEligibilityBlockReason(lot, today);
+    if (eligibilityBlockReason) {
+      setMessage(eligibilityBlockReason);
       return;
-    }
-
-    const shelfLife = lot?.shelfLife && typeof lot.shelfLife === "object" ? lot.shelfLife : {};
-    const bestBy = shelfLife?.bestBy || shelfLife?.expirationDate || lot?.bestBy || lot?.expirationDate || "";
-    const bestByDate = parseAnyDate(bestBy);
-    const todayDate = parseAnyDate(today);
-    if (bestByDate && todayDate) {
-      const target = new Date(bestByDate);
-      const current = new Date(todayDate);
-      target.setHours(0, 0, 0, 0);
-      current.setHours(0, 0, 0, 0);
-      if (target < current) {
-        setMessage("This package is past its best-by date and cannot be released for sale.");
-        return;
-      }
     }
 
     try {
@@ -4865,7 +4875,15 @@ export default function PostProcessManager({
     const retailSkus = activeSkus.filter((sku) => String(sku?.skuType || "retail") === "retail");
     const sampleSkus = activeSkus.filter((sku) => String(sku?.skuType || "retail") !== "retail");
     const visibleSkus = activeMode === "samples" ? sampleSkus : retailSkus;
-    const retailCount = retailSkus.reduce((sum, sku) => sum + sku.activeLots.reduce((lotSum, lot) => lotSum + getLotAvailableQuantity(lot), 0), 0);
+    const productSaleReadyLots = product.activeLots.filter((lot) => !getSalesBlockReason(lot, today));
+    const retailCount = retailSkus.reduce(
+      (sum, sku) =>
+        sum +
+        sku.activeLots
+          .filter((lot) => !getSalesBlockReason(lot, today))
+          .reduce((lotSum, lot) => lotSum + getLotAvailableQuantity(lot), 0),
+      0
+    );
     const sampleCount = sampleSkus.reduce((sum, sku) => sum + sku.activeLots.reduce((lotSum, lot) => lotSum + getLotAvailableQuantity(lot), 0), 0);
 
     return (
@@ -4873,7 +4891,7 @@ export default function PostProcessManager({
         <div className="grid grid-cols-2 xl:grid-cols-5 gap-3 text-sm">
           <DetailStat
             label="Available packages"
-            value={String(product.lots.reduce((sum, lot) => sum + getLotAvailableQuantity(lot), 0))}
+            value={String(productSaleReadyLots.reduce((sum, lot) => sum + getLotAvailableQuantity(lot), 0))}
           />
           <DetailStat
             label="Sold"
@@ -4889,7 +4907,7 @@ export default function PostProcessManager({
           />
           <DetailStat
             label="Remaining projection"
-            value={money(product.lots.reduce((sum, lot) => sum + getRemainingProjectedRevenue(lot), 0))}
+            value={money(productSaleReadyLots.reduce((sum, lot) => sum + getRemainingProjectedRevenue(lot), 0))}
           />
         </div>
 
@@ -4923,10 +4941,14 @@ export default function PostProcessManager({
         ) : null}
 
         {visibleSkus.map((sku) => {
-          const skuAvailable = sku.lots.reduce((sum, lot) => sum + getLotAvailableQuantity(lot), 0);
+          const skuSaleReadyLots = sku.activeLots.filter((lot) => !getSalesBlockReason(lot, today));
+          const skuAvailable =
+            String(sku?.skuType || "retail") === "retail"
+              ? skuSaleReadyLots.reduce((sum, lot) => sum + getLotAvailableQuantity(lot), 0)
+              : sku.activeLots.reduce((sum, lot) => sum + getLotAvailableQuantity(lot), 0);
           const skuSold = sku.lots.reduce((sum, lot) => sum + getOutboundQuantity(lot, "sold"), 0);
           const skuDestroyed = sku.lots.reduce((sum, lot) => sum + getOutboundQuantity(lot, "destroyed"), 0);
-          const skuProjectedRevenue = sku.lots.reduce((sum, lot) => sum + getRemainingProjectedRevenue(lot), 0);
+          const skuProjectedRevenue = skuSaleReadyLots.reduce((sum, lot) => sum + getRemainingProjectedRevenue(lot), 0);
           return (
             <div key={`sales-modal-sku-${product.key}-${sku.key}`} className="rounded-2xl border border-zinc-800 bg-zinc-950/40 p-4 space-y-3">
               <div className="flex flex-wrap items-center justify-between gap-3">
@@ -5439,7 +5461,7 @@ export default function PostProcessManager({
         <SummaryCard
           label="Packaged available"
           value={String(totalSaleReadyUnits)}
-          hint="Sellable package units on hand"
+          hint="Released retail packages that passed QC"
           icon={Tags}
         />
         <SummaryCard
@@ -5479,7 +5501,7 @@ export default function PostProcessManager({
             <SummaryCard
               label="Available packages"
               value={String(totalSaleReadyUnits)}
-              hint="Active packaged inventory"
+              hint="Released retail packages that passed QC"
               icon={Tags}
             />
             <SummaryCard
@@ -5515,7 +5537,7 @@ export default function PostProcessManager({
             <SummaryCard
               label="Remaining projection"
               value={money(totalProjectedRevenue)}
-              hint="Available packages at locked prices"
+              hint="Sellable retail packages at locked prices"
               icon={DollarSign}
             />
           </div>
@@ -6843,8 +6865,8 @@ export default function PostProcessManager({
               />
               <SummaryCard
                 label="Packaged lots"
-                value={String(saleReadyFinishedGoodsLots.length)}
-                hint="Ready for Sales and labels"
+                value={String(activePackagedFinishedGoodsLots.length)}
+                hint="Active packaged child SKUs"
                 icon={Tags}
               />
               <SummaryCard
@@ -7075,12 +7097,12 @@ export default function PostProcessManager({
           >
             <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
               <SummaryCard label="Products" value={String(salesProductGroups.length)} hint="Grouped product/batch cards" icon={Archive} />
-              <SummaryCard label="Available packages" value={String(totalSaleReadyUnits)} hint="Current packaged inventory" icon={Tags} />
+              <SummaryCard label="Available packages" value={String(totalSaleReadyUnits)} hint="Released retail packages that passed QC" icon={Tags} />
               <SummaryCard label="Units sold" value={String(totalSoldUnits)} hint="Completed sale quantity" icon={DollarSign} />
               <SummaryCard label="Units sampled" value={String(totalSampledUnits)} hint="Samples moved outbound" icon={Sparkles} />
               <SummaryCard label="Units destroyed" value={String(totalDestroyedUnits)} hint="Destroyed package quantity" icon={AlertTriangle} />
               <SummaryCard label="Realized revenue" value={money(totalRealizedRevenue)} hint="Revenue already recorded" icon={DollarSign} />
-              <SummaryCard label="Remaining projected revenue" value={money(totalProjectedRevenue)} hint="Available packages × locked price" icon={BadgeDollarSign} />
+              <SummaryCard label="Remaining projected revenue" value={money(totalProjectedRevenue)} hint="Sellable retail packages × locked price" icon={BadgeDollarSign} />
             </div>
 
             {salesProductGroups.length === 0 ? (
@@ -7091,11 +7113,12 @@ export default function PostProcessManager({
             ) : (
               <div className="space-y-5">
                 {salesProductGroups.map((product) => {
-                  const productAvailable = product.lots.reduce((sum, lot) => sum + getLotAvailableQuantity(lot), 0);
+                  const productSaleReadyLots = product.activeLots.filter((lot) => !getSalesBlockReason(lot, today));
+                  const productAvailable = productSaleReadyLots.reduce((sum, lot) => sum + getLotAvailableQuantity(lot), 0);
                   const productSold = product.lots.reduce((sum, lot) => sum + getOutboundQuantity(lot, "sold"), 0);
                   const productDestroyed = product.lots.reduce((sum, lot) => sum + getOutboundQuantity(lot, "destroyed"), 0);
                   const productRevenue = product.lots.reduce((sum, lot) => sum + (Number(lot?.outboundSummary?.revenue || 0) || 0), 0);
-                  const productProjectedRevenue = product.lots.reduce((sum, lot) => sum + getRemainingProjectedRevenue(lot), 0);
+                  const productProjectedRevenue = productSaleReadyLots.reduce((sum, lot) => sum + getRemainingProjectedRevenue(lot), 0);
                   return (
                     <button
                       key={`sales-product-${product.key}`}

@@ -253,6 +253,67 @@ describe("post-processing packaged sales regression", () => {
       'processType: "finished_inventory"'
     );
   });
+
+  it("requires a retail SKU with passed QC before any package can be sold", () => {
+    expect(postProcessManagerSource).toContain(
+      'if (getSkuType(lot) !== "retail")'
+    );
+    expect(postProcessManagerSource).toContain(
+      'return "Only retail package SKUs can be sold.";'
+    );
+    expect(postProcessManagerSource).toContain(
+      'if (qcStatus !== "pass") return "This package run must pass QC before it can be sold.";'
+    );
+  });
+
+  it("uses the same QC and SKU eligibility guard before manual sale release", () => {
+    const releaseHandlerStart = postProcessManagerSource.indexOf(
+      "async function handleReleasePackageForSale(lot)"
+    );
+    const releaseHandlerEnd = postProcessManagerSource.indexOf(
+      "async function handleSaveReservation(lot)",
+      releaseHandlerStart
+    );
+    const releaseHandler = postProcessManagerSource.slice(
+      releaseHandlerStart,
+      releaseHandlerEnd
+    );
+
+    expect(releaseHandler).toContain(
+      "getPackageSaleEligibilityBlockReason(lot, today)"
+    );
+    expect(releaseHandler).toContain("if (eligibilityBlockReason)");
+  });
+
+  it("separates active package runs from retail inventory that is actually sale-ready", () => {
+    expect(postProcessManagerSource).toContain(
+      "const activePackagedFinishedGoodsLots = useMemo("
+    );
+    expect(postProcessManagerSource).toContain(
+      "activePackagedFinishedGoodsLots.filter("
+    );
+    expect(postProcessManagerSource).toContain(
+      "(lot) => getLotAvailableQuantity(lot) > 0 && !getSalesBlockReason(lot, today)"
+    );
+    expect(postProcessManagerSource).toContain(
+      "activePackagedFinishedGoodsLots.forEach((lot) =>"
+    );
+  });
+
+  it("bases available-package and projected-revenue metrics on sale-ready retail lots", () => {
+    expect(postProcessManagerSource).toContain(
+      "const totalSaleReadyUnits = saleReadyFinishedGoodsLots.reduce("
+    );
+    expect(postProcessManagerSource).toContain(
+      "const productSaleReadyLots = product.activeLots.filter((lot) => !getSalesBlockReason(lot, today));"
+    );
+    expect(postProcessManagerSource).toContain(
+      "const skuSaleReadyLots = sku.activeLots.filter((lot) => !getSalesBlockReason(lot, today));"
+    );
+    expect(postProcessManagerSource).toContain(
+      'hint="Sellable retail packages × locked price"'
+    );
+  });
 });
 
 describe("packaged sales lifecycle E2E contract", () => {
