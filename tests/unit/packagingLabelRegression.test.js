@@ -7,6 +7,11 @@ import {
   collectPackagingLabelFontFaceCss,
   normalizePackagingLabelData,
 } from "../../src/components/Grow/PackagingLabelPreview.jsx";
+import {
+  SUBSCRIPTION_FEATURE_KEYS,
+  SUBSCRIPTION_PLAN_IDS,
+  SUBSCRIPTION_PLANS,
+} from "../../src/lib/subscriptionPlans.js";
 
 const packagingLabelSource = readFileSync(
   fileURLToPath(
@@ -204,6 +209,89 @@ describe("packaged SKU label eligibility regression", () => {
     );
     expect(labelPrintSource).toContain(
       "const eligibility = getFinishedLabelEligibility(lot);"
+    );
+  });
+});
+
+describe("label subscription boundary regression", () => {
+  it("keeps grow labels and Post Processing labels as separate feature keys", () => {
+    expect(SUBSCRIPTION_FEATURE_KEYS.GROW_LABELS).toBe("growLabels");
+    expect(SUBSCRIPTION_FEATURE_KEYS.POST_PROCESS_LABELS).toBe("postProcessLabels");
+    expect(SUBSCRIPTION_FEATURE_KEYS.GROW_LABELS).not.toBe(
+      SUBSCRIPTION_FEATURE_KEYS.POST_PROCESS_LABELS
+    );
+  });
+
+  it("keeps cultivation labels available on Free, Hobby, and Cultivator while Post Processing labels remain locked", () => {
+    [
+      SUBSCRIPTION_PLAN_IDS.FREE,
+      SUBSCRIPTION_PLAN_IDS.HOBBY,
+      SUBSCRIPTION_PLAN_IDS.CULTIVATOR,
+    ].forEach((planId) => {
+      expect(
+        SUBSCRIPTION_PLANS[planId].features[SUBSCRIPTION_FEATURE_KEYS.GROW_LABELS]
+      ).toBe(true);
+      expect(
+        SUBSCRIPTION_PLANS[planId].features[
+          SUBSCRIPTION_FEATURE_KEYS.POST_PROCESS_LABELS
+        ]
+      ).toBe(false);
+    });
+  });
+
+  it("allows both label families for Lab, trial Lab access, and admin", () => {
+    [
+      SUBSCRIPTION_PLAN_IDS.LAB,
+      SUBSCRIPTION_PLAN_IDS.TRIAL,
+      SUBSCRIPTION_PLAN_IDS.ADMIN,
+    ].forEach((planId) => {
+      expect(
+        SUBSCRIPTION_PLANS[planId].features[SUBSCRIPTION_FEATURE_KEYS.GROW_LABELS]
+      ).toBe(true);
+      expect(
+        SUBSCRIPTION_PLANS[planId].features[
+          SUBSCRIPTION_FEATURE_KEYS.POST_PROCESS_LABELS
+        ]
+      ).toBe(true);
+    });
+  });
+
+  it("keeps finished-goods fetching and packaged-SKU data behind canUsePostProcessLabels", () => {
+    expect(labelPrintWrapperSource).toContain(
+      "const canUsePostProcessLabels = props?.canUsePostProcessLabels !== false;"
+    );
+    expect(labelPrintWrapperSource).toContain(
+      "if (!uid || !canUsePostProcessLabels)"
+    );
+    expect(labelPrintWrapperSource).toMatch(
+      /const finishedGoodsSource = canUsePostProcessLabels\s*\?/
+    );
+    expect(labelPrintWrapperSource).toContain(
+      "finishedGoods={canUsePostProcessLabels ? finishedGoodsBuckets.active : []}"
+    );
+  });
+
+  it("routes blocked packaged-label access through the Post Processing label feature key", () => {
+    expect(labelPrintWrapperSource).toContain(
+      "featureKey: SUBSCRIPTION_FEATURE_KEYS.POST_PROCESS_LABELS"
+    );
+    expect(labelPrintWrapperSource).toContain(
+      "Grow and cultivation labels remain available on every plan."
+    );
+    expect(labelPrintWrapperSource).toContain(
+      "Post Processing labels require Lab access"
+    );
+  });
+
+  it("keeps the standard label component from bypassing the same Post Processing label gate", () => {
+    expect(labelPrintSource).toContain(
+      "const canUsePostProcessLabels = props?.canUsePostProcessLabels !== false;"
+    );
+    expect(labelPrintSource).toContain(
+      "featureKey: SUBSCRIPTION_FEATURE_KEYS.POST_PROCESS_LABELS"
+    );
+    expect(labelPrintSource).toContain(
+      'if (source === "finished_goods" && !canUsePostProcessLabels)'
     );
   });
 });
