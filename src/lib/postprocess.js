@@ -1,4 +1,5 @@
 // src/lib/postprocess.js
+// postprocess-v41-package-qc-release-boundaries
 // postprocess-v40-harvest-closure-traceability
 // postprocess-v39-final-disposition-consistency
 // postprocess-v38-fefo-rotation-and-audit
@@ -1072,6 +1073,152 @@ function normalizeSkuTypeValue(value = "") {
   if (["promo", "promotion", "event"].includes(raw)) return "promo";
   if (["internal", "internal_use", "testing", "retention"].includes(raw)) return "internal";
   return "retail";
+}
+
+function isPackagedFinishedInventoryLot(record = {}) {
+  if (record?.package?.isPackaged === true) return true;
+  if (safeString(record?.sourceType).toLowerCase() === "finished_package") return true;
+  return Boolean(record?.packageRunId && (record?.parentLotId || record?.sourceLotId));
+}
+
+function normalizeFinishedQcStatus(record = {}) {
+  const raw = safeString(record?.qc?.status || record?.qcStatus).toLowerCase();
+  if (["fail", "failed", "rejected"].includes(raw)) return "fail";
+  if (["hold", "held", "qc_hold"].includes(raw)) return "hold";
+  if (["pass", "passed", "approved", "release", "released"].includes(raw)) return "pass";
+  return "pending";
+}
+
+function getFinishedReleaseState(record = {}, { defaultRequired = false } = {}) {
+  const workflow = record?.workflow && typeof record.workflow === "object" ? record.workflow : {};
+  const releaseRequired = Boolean(
+    workflow?.releaseRequired ?? record?.releaseRequired ?? defaultRequired
+  );
+  const releaseStatus =
+    safeString(
+      workflow?.releaseStatus ||
+        record?.releaseStatus ||
+        (releaseRequired ? "pending" : "released")
+    ).toLowerCase() || (releaseRequired ? "pending" : "released");
+
+  return {
+    releaseRequired,
+    releaseStatus,
+    blocked: releaseRequired && releaseStatus !== "released",
+  };
+}
+
+function getFinishedWorkflowBlockReason(record = {}) {
+  const workflow = record?.workflow && typeof record.workflow === "object" ? record.workflow : {};
+  if (Boolean(workflow?.recalled ?? record?.recalled)) {
+    return "This package run is recalled and cannot be sold.";
+  }
+  if (Boolean(workflow?.quarantined ?? record?.quarantined)) {
+    return "This package run is quarantined and cannot be sold.";
+  }
+  if (Boolean(workflow?.qcHold ?? record?.qcHold)) {
+    return "This package run is on QC hold and cannot be sold.";
+  }
+  return "";
+}
+
+function getFinishedBestByBlockReason(record = {}, asOfDate = "") {
+  const shelfLife = record?.shelfLife && typeof record.shelfLife === "object" ? record.shelfLife : {};
+  const bestBy = safeString(
+    shelfLife?.bestBy ||
+      shelfLife?.expirationDate ||
+      record?.bestBy ||
+      record?.expirationDate
+  );
+  const bestByDate = parseAnyDate(bestBy);
+  const currentDate = parseAnyDate(asOfDate || toLocalYYYYMMDD(new Date()));
+  if (!bestByDate || !currentDate) return "";
+
+  const target = new Date(bestByDate);
+  const current = new Date(currentDate);
+  target.setHours(0, 0, 0, 0);
+  current.setHours(0, 0, 0, 0);
+  return target < current
+    ? "This package run is past best-by date and cannot be sold."
+    : "";
+}
+
+export function getFinishedPackagingSourceBlockReason(record = {}, asOfDate = "") {
+  if (!isFinishedGoodsLot(record)) {
+    return "Only finished inventory lots can be packaged for sale.";
+  }
+  if (isPackagedFinishedInventoryLot(record)) {
+    return "Create package runs from the finished parent batch, not from another packaged child.";
+  }
+
+  const workflow = record?.workflow && typeof record.workflow === "object" ? record.workflow : {};
+  if (Boolean(workflow?.recalled ?? record?.recalled)) {
+    return "This finished source lot is recalled and cannot be packaged.";
+  }
+  if (Boolean(workflow?.quarantined ?? record?.quarantined)) {
+    return "This finished source lot is quarantined and cannot be packaged.";
+  }
+  if (Boolean(workflow?.qcHold ?? record?.qcHold)) {
+    return "This finished source lot is on QC hold and cannot be packaged.";
+  }
+
+  const qcStatus = normalizeFinishedQcStatus(record);
+  if (qcStatus === "fail") return "This finished source lot failed QC and cannot be packaged.";
+  if (qcStatus === "hold") return "This finished source lot is on QC hold and cannot be packaged.";
+  if (qcStatus !== "pass") return "This finished source lot must pass QC before packaging.";
+
+  const releaseState = getFinishedReleaseState(record, { defaultRequired: true });
+  if (releaseState.blocked) {
+    return "This finished source lot must be released before packaging.";
+  }
+
+  const bestByBlockReason = getFinishedBestByBlockReason(record, asOfDate);
+  if (bestByBlockReason) {
+    return "This finished source lot is past best-by date and cannot be packaged.";
+  }
+
+  return "";
+}
+
+export function getFinishedSaleEligibilityBlockReason(record = {}, asOfDate = "") {
+  if (!isFinishedGoodsLot(record) || !isPackagedFinishedInventoryLot(record)) {
+    return "Only packaged finished inventory can be sold.";
+  }
+  if (normalizeSkuTypeValue(
+    valueOrFallback(
+      record?.skuType,
+      record?.packageSkuType,
+      record?.package?.skuType,
+      record?.labelMetadata?.skuType
+    )
+  ) !== "retail") {
+    return "Only retail package SKUs can be sold.";
+  }
+
+  const workflowBlockReason = getFinishedWorkflowBlockReason(record);
+  if (workflowBlockReason) return workflowBlockReason;
+
+  const qcStatus = normalizeFinishedQcStatus(record);
+  if (qcStatus === "fail") return "This package run failed QC and cannot be sold.";
+  if (qcStatus === "hold") return "This package run is on QC hold and cannot be sold.";
+  if (qcStatus !== "pass") return "This package run must pass QC before it can be sold.";
+
+  const bestByBlockReason = getFinishedBestByBlockReason(record, asOfDate);
+  if (bestByBlockReason) return bestByBlockReason;
+
+  return "";
+}
+
+export function getFinishedSaleBlockReason(record = {}, asOfDate = "") {
+  const eligibilityBlockReason = getFinishedSaleEligibilityBlockReason(record, asOfDate);
+  if (eligibilityBlockReason) return eligibilityBlockReason;
+
+  const releaseState = getFinishedReleaseState(record, { defaultRequired: true });
+  if (releaseState.blocked) {
+    return "This package run has not been released for sale.";
+  }
+
+  return "";
 }
 
 function getAverageSourceItemWeightGForPackaging(source = {}) {
@@ -2634,6 +2781,11 @@ export async function createPackagedFinishedLot({
       throw new Error("Only finished inventory lots can be packaged for sale.");
     }
 
+    const sourceBlockReason = getFinishedPackagingSourceBlockReason(source, normalizedDate);
+    if (sourceBlockReason) {
+      throw new Error(sourceBlockReason);
+    }
+
     const available = getLotAvailableQuantity(source);
     const averageItemWeightG = getAverageSourceItemWeightGForPackaging(source);
     const sourceUnit = normalizePackageUnitValue(source?.unit || "count");
@@ -2771,18 +2923,19 @@ export async function createPackagedFinishedLot({
     });
 
     const sourceWorkflow = source?.workflow && typeof source.workflow === "object" ? source.workflow : {};
-    const sourceReleaseRequired = Boolean(sourceWorkflow?.releaseRequired ?? source?.releaseRequired ?? true);
-    const sourceReleaseStatus = safeString(sourceWorkflow?.releaseStatus || source?.releaseStatus || (sourceReleaseRequired ? "pending" : "released")).toLowerCase() || (sourceReleaseRequired ? "pending" : "released");
-    const packageReleaseStatus = sourceReleaseRequired ? (sourceReleaseStatus === "released" ? "released" : "pending") : "released";
-    const packageReleasedAt = packageReleaseStatus === "released" ? safeString(sourceWorkflow?.releasedAt || source?.releasedAt || normalizedDate) : "";
-    const packageReleasedBy = packageReleaseStatus === "released" ? safeString(sourceWorkflow?.releasedBy || source?.releasedBy || "Source finished batch") : "";
+    const packageQc = {
+      status: "pending",
+      checkedBy: "",
+      checkedDate: "",
+      notes: "Package-specific QC required after packaging.",
+    };
     const packageWorkflow = {
       ...sourceWorkflow,
       releaseRequired: true,
-      releaseStatus: packageReleaseStatus,
-      releasedAt: packageReleasedAt,
-      releasedBy: packageReleasedBy,
-      notes: sourceWorkflow?.notes || (packageReleaseStatus === "released" ? "Package run inherited release from source finished batch." : "Package run needs release before retail sale."),
+      releaseStatus: "pending",
+      releasedAt: "",
+      releasedBy: "",
+      notes: "Package run requires package-specific QC and release after package/label review.",
     };
 
     const childLabelMetadata = {
@@ -2833,10 +2986,12 @@ export async function createPackagedFinishedLot({
       processCategory: "packaging",
       manufacturingStage: "packaged_inventory",
       status: "available",
+      qc: packageQc,
+      qcStatus: "pending",
       releaseRequired: true,
-      releaseStatus: packageReleaseStatus,
-      releasedAt: packageReleasedAt,
-      releasedBy: packageReleasedBy,
+      releaseStatus: "pending",
+      releasedAt: "",
+      releasedBy: "",
       workflow: packageWorkflow,
       sourceType: "finished_package",
       sourceLotId,
@@ -3219,6 +3374,11 @@ export async function recordFinishedInventoryMovement({
     const lot = lotSnap.data() || {};
     if (!isFinishedGoodsLot(lot)) {
       throw new Error("Only finished inventory lots can be sold, donated, sampled, wasted, destroyed, or adjusted.");
+    }
+
+    if (normalizedType === "sell") {
+      const saleBlockReason = getFinishedSaleBlockReason(lot, normalizedDate);
+      if (saleBlockReason) throw new Error(saleBlockReason);
     }
 
     const remaining = lotRemaining(lot);

@@ -7,6 +7,8 @@ import {
   buildHarvestIntakeMovementId,
   canCreateDryLotFromGrow,
   getMaterialLotFinalDispositionState,
+  getFinishedPackagingSourceBlockReason,
+  getFinishedSaleBlockReason,
   isActiveProcessBatch,
   isArchivedProcessBatch,
   isArchivedOrDepletedMaterialLot,
@@ -38,6 +40,56 @@ function activeLot(overrides = {}) {
     initialQuantity: 100,
     remainingQuantity: 80,
     reservations: [],
+    ...overrides,
+  };
+}
+
+function releasedFinishedParent(overrides = {}) {
+  return {
+    id: "parent-1",
+    lotType: "capsules",
+    status: "available",
+    initialQuantity: 100,
+    remainingQuantity: 100,
+    qc: { status: "pass", checkedDate: "2026-03-21" },
+    releaseRequired: true,
+    releaseStatus: "released",
+    workflow: {
+      releaseRequired: true,
+      releaseStatus: "released",
+    },
+    shelfLife: {
+      madeOn: "2026-03-21",
+      bestBy: "2027-03-21",
+    },
+    ...overrides,
+  };
+}
+
+function packagedRetailLot(overrides = {}) {
+  return {
+    id: "package-1",
+    lotType: "capsules",
+    sourceType: "finished_package",
+    sourceLotId: "parent-1",
+    parentLotId: "parent-1",
+    packageRunId: "package-1",
+    skuType: "retail",
+    status: "available",
+    initialQuantity: 10,
+    remainingQuantity: 10,
+    qc: { status: "pass", checkedDate: "2026-03-22" },
+    qcStatus: "pass",
+    releaseRequired: true,
+    releaseStatus: "released",
+    workflow: {
+      releaseRequired: true,
+      releaseStatus: "released",
+    },
+    shelfLife: {
+      madeOn: "2026-03-22",
+      bestBy: "2027-03-22",
+    },
     ...overrides,
   };
 }
@@ -266,6 +318,37 @@ describe("post-processing packaged sales regression", () => {
     );
   });
 
+  it("enforces the same packaged retail QC and release boundary in the library layer", () => {
+    expect(getFinishedSaleBlockReason(packagedRetailLot(), "2026-03-23")).toBe("");
+    expect(
+      getFinishedSaleBlockReason(
+        packagedRetailLot({ skuType: "sample" }),
+        "2026-03-23"
+      )
+    ).toBe("Only retail package SKUs can be sold.");
+    expect(
+      getFinishedSaleBlockReason(
+        packagedRetailLot({
+          qc: { status: "pending" },
+          qcStatus: "pending",
+        }),
+        "2026-03-23"
+      )
+    ).toBe("This package run must pass QC before it can be sold.");
+    expect(
+      getFinishedSaleBlockReason(
+        packagedRetailLot({
+          releaseStatus: "pending",
+          workflow: {
+            releaseRequired: true,
+            releaseStatus: "pending",
+          },
+        }),
+        "2026-03-23"
+      )
+    ).toBe("This package run has not been released for sale.");
+  });
+
   it("uses the same QC and SKU eligibility guard before manual sale release", () => {
     const releaseHandlerStart = postProcessManagerSource.indexOf(
       "async function handleReleasePackageForSale(lot)"
@@ -314,19 +397,121 @@ describe("post-processing packaged sales regression", () => {
       'hint="Sellable retail packages × locked price"'
     );
   });
+
+  it("requires the finished parent to pass QC and release before packaging", () => {
+    expect(postProcessManagerSource).toContain(
+      'getFinishedPackagingSourceBlockReason(sourceLot, form.date || "")'
+    );
+    expect(
+      getFinishedPackagingSourceBlockReason(releasedFinishedParent(), "2026-03-22")
+    ).toBe("");
+    expect(
+      getFinishedPackagingSourceBlockReason(
+        releasedFinishedParent({ qc: { status: "pending" } }),
+        "2026-03-22"
+      )
+    ).toBe("This finished source lot must pass QC before packaging.");
+    expect(
+      getFinishedPackagingSourceBlockReason(
+        releasedFinishedParent({
+          releaseStatus: "pending",
+          workflow: {
+            releaseRequired: true,
+            releaseStatus: "pending",
+          },
+        }),
+        "2026-03-22"
+      )
+    ).toBe("This finished source lot must be released before packaging.");
+  });
+
+  it("creates every package child with package-specific QC and release pending", () => {
+    expect(postprocessLibSource).toContain(
+      'status: "pending",\n      checkedBy: "",\n      checkedDate: "",\n      notes: "Package-specific QC required after packaging."'
+    );
+    expect(postprocessLibSource).toContain(
+      'releaseStatus: "pending",\n      releasedAt: "",\n      releasedBy: ""'
+    );
+    expect(postprocessLibSource).toContain(
+      'notes: "Package run requires package-specific QC and release after package/label review."'
+    );
+    expect(postprocessLibSource).not.toContain(
+      "Package run inherited release from source finished batch."
+    );
+  });
+
+  it("enforces sale readiness again inside the transactional movement writer", () => {
+    const movementStart = postprocessLibSource.indexOf(
+      "export async function recordFinishedInventoryMovement"
+    );
+    const movementEnd = postprocessLibSource.indexOf(
+      "function normalizeIngredientLinesForPostProcess",
+      movementStart
+    );
+    const movementSource = postprocessLibSource.slice(movementStart, movementEnd);
+
+    expect(movementSource).toContain('if (normalizedType === "sell")');
+    expect(movementSource).toContain(
+      "const saleBlockReason = getFinishedSaleBlockReason(lot, normalizedDate);"
+    );
+    expect(movementSource).toContain(
+      "if (saleBlockReason) throw new Error(saleBlockReason);"
+    );
+  });
+
+  it("keeps package QC separate from the explicit package release action in Sales", () => {
+    const saveQualityStart = postProcessManagerSource.indexOf(
+      "async function handleSaveQuality(lot)"
+    );
+    const saveQualityEnd = postProcessManagerSource.indexOf(
+      "function applyPackagePreset",
+      saveQualityStart
+    );
+    const saveQualitySource = postProcessManagerSource.slice(
+      saveQualityStart,
+      saveQualityEnd
+    );
+
+    expect(saveQualitySource).toContain(
+      "const packageRun = isPackagedForSale(lot);"
+    );
+    expect(saveQualitySource).toContain(
+      'const autoRelease = normalizedQc === "pass" && !packageRun;'
+    );
+    expect(saveQualitySource).toContain(
+      'releaseStatus: autoRelease ? "released" : "pending"'
+    );
+    expect(postProcessManagerSource).toContain(
+      "Complete package/label review, then release it for sale."
+    );
+    expect(postProcessManagerSource).toContain(
+      "<LotQualityPanel"
+    );
+    expect(postProcessManagerSource).toContain(
+      "handleReleasePackageForSale(lot)"
+    );
+  });
 });
 
 describe("packaged sales lifecycle E2E contract", () => {
-  it("creates a retail package child before recording the sale", () => {
+  it("creates a pending retail package child before any sale attempt", () => {
     const packageStep = growLifecycleSource.indexOf(
-      "create a released retail package child from finished inventory"
+      "create a pending retail package child from released finished inventory"
+    );
+    const blockedSaleStep = growLifecycleSource.indexOf(
+      "verify packaged retail sale is blocked before child QC and release"
+    );
+    const reviewStep = growLifecycleSource.indexOf(
+      "review the packaged child QC and release it for sale"
     );
     const saleStep = growLifecycleSource.indexOf(
       "record a packaged retail sale and verify parent-child inventory tracking"
     );
 
     expect(packageStep).toBeGreaterThan(-1);
-    expect(saleStep).toBeGreaterThan(packageStep);
+    expect(blockedSaleStep).toBeGreaterThan(packageStep);
+    expect(reviewStep).toBeGreaterThan(blockedSaleStep);
+    expect(saleStep).toBeGreaterThan(reviewStep);
     expect(growLifecycleSource).toContain(
       "postprocess.createPackagedFinishedLot({"
     );
@@ -345,15 +530,36 @@ describe("packaged sales lifecycle E2E contract", () => {
     expect(growLifecycleSource).toContain('remainingAfterSale: "7"');
   });
 
-  it("releases the parent before packaging and preserves the parent-child relationship through sale verification", () => {
+  it("expects the new package child to start QC pending and release pending", () => {
+    expect(growLifecycleSource).toContain(
+      '"pending",\n        "pending",\n        true,'
+    );
+    expect(growLifecycleSource).toContain(
+      "waitForFirestorePackagedRetailChildReleased"
+    );
+    expect(growLifecycleSource).toContain(
+      "assertPackagedRetailSaleBlockedBeforeReview"
+    );
+    expect(growLifecycleSource).toContain(
+      "/must pass QC before it can be sold/i"
+    );
+  });
+
+  it("reviews and releases the child before the SDK sale and preserves parent-child tracking", () => {
+    expect(growLifecycleSource).toContain(
+      "reviewAndReleasePackagedRetailChild"
+    );
+    expect(growLifecycleSource).toContain(
+      'qcStatus: "pass"'
+    );
     expect(growLifecycleSource).toContain(
       'releaseStatus: "released"'
     );
     expect(growLifecycleSource).toContain(
-      'qc: {'
+      "postprocess.recordFinishedInventoryMovement({"
     );
-    expect(growLifecycleSource).toContain(
-      'status: "pass"'
+    expect(growLifecycleSource).not.toContain(
+      "recordFinishedSaleViaFirestore"
     );
     expect(growLifecycleSource).toContain(
       "parentRemainingAfterPackaging"

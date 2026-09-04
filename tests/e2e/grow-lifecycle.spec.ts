@@ -1,4 +1,5 @@
 // tests/e2e/grow-lifecycle.spec.ts
+// regression-v63-package-qc-release-boundaries
 // regression-v62-finished-inventory-status-text
 import { test, expect, Page, Locator } from "@playwright/test";
 import {
@@ -89,6 +90,8 @@ const postProcessFixtures = {
     pricePerUnit: "4.00",
     msrpPerUnit: "5.00",
     notes: "E2E retail package run for packaged-sales validation.",
+    qcReviewDate: "2026-03-22",
+    bestBy: "2027-03-22",
     parentRemainingAfterPackaging: "0",
     packageRemainingBeforeSale: "10",
   },
@@ -1255,6 +1258,9 @@ async function waitForFirestorePackagedRetailChild(
         const childSkuType = String(
           child?.skuType || child?.packageSkuType || ""
         ).toLowerCase();
+        const childQcStatus = String(
+          child?.qc?.status || child?.qcStatus || ""
+        ).toLowerCase();
         const childReleaseStatus = String(
           child?.workflow?.releaseStatus || child?.releaseStatus || ""
         ).toLowerCase();
@@ -1267,6 +1273,7 @@ async function waitForFirestorePackagedRetailChild(
           childRemaining,
           String(child?.sourceType || "").toLowerCase(),
           childSkuType,
+          childQcStatus,
           childReleaseStatus,
           linked,
         ].join("|");
@@ -1282,8 +1289,43 @@ async function waitForFirestorePackagedRetailChild(
         Number(postProcessFixtures.packaging.packageRemainingBeforeSale),
         "finished_package",
         "retail",
-        "released",
+        "pending",
+        "pending",
         true,
+      ].join("|")
+    );
+}
+
+async function waitForFirestorePackagedRetailChildReleased(
+  session: NodeAuthSession,
+  timeout = 30_000
+) {
+  await expect
+    .poll(
+      async () => {
+        const lots = await listFirestoreDocuments(
+          session,
+          `users/${session.userId}/materialLots`
+        );
+        const child = findPackagedRetailSaleLot(lots);
+        if (!child) return "missing";
+
+        return [
+          String(child?.qc?.status || child?.qcStatus || "").toLowerCase(),
+          String(child?.workflow?.releaseStatus || child?.releaseStatus || "").toLowerCase(),
+          String(child?.shelfLife?.bestBy || ""),
+        ].join("|");
+      },
+      {
+        timeout,
+        intervals: [500, 750, 1000, 1500],
+      }
+    )
+    .toBe(
+      [
+        "pass",
+        "released",
+        postProcessFixtures.packaging.bestBy,
       ].join("|")
     );
 }
@@ -2045,83 +2087,115 @@ async function createPackagedRetailChild(
   await refreshPostProcessingSubtab(page, "Sales");
 }
 
-async function recordFinishedSaleViaFirestore(session: NodeAuthSession) {
+
+async function assertPackagedRetailSaleBlockedBeforeReview(
+  page: Page,
+  session: NodeAuthSession
+) {
   const lots = await listFirestoreDocuments(
     session,
     `users/${session.userId}/materialLots`
   );
-
   const lot = findPackagedRetailSaleLot(lots);
   if (!lot?.id) {
-    throw new Error("Could not find the packaged retail child for sale fallback.");
+    throw new Error("Could not find the packaged retail child for pre-review sale blocking.");
   }
 
-  const existingRevenue = Number(lot?.outboundSummary?.revenue || 0) || 0;
-  if (existingRevenue >= Number(postProcessFixtures.sale.revenue || 0)) return;
+  const result = await page.evaluate(
+    async ({ lotId, fixture }) => {
+      const firebaseConfig = await import("/src/firebase-config.js");
+      const postprocess = await import("/src/lib/postprocess.js");
+      const userId = firebaseConfig.auth.currentUser?.uid;
+      if (!userId) {
+        throw new Error("No authenticated Firebase user found for pre-review sale validation.");
+      }
 
-  const quantity = Number(postProcessFixtures.sale.quantity || 0) || 0;
-  const revenue = Number(postProcessFixtures.sale.revenue || 0) || 0;
-  const nextRemaining = Math.max(
-    0,
-    Math.round(((Number(lot?.remainingQuantity || 0) || 0) - quantity) * 1000) / 1000
+      try {
+        await postprocess.recordFinishedInventoryMovement({
+          userId,
+          lotId,
+          movementType: "sell",
+          quantity: 1,
+          date: fixture.date,
+          revenue: Number(fixture.unitPrice || 0) || 0,
+          pricePerUnit: Number(fixture.unitPrice || 0) || 0,
+          destinationType: fixture.destinationType,
+          destinationName: fixture.destinationName,
+          note: "This sale must be rejected before package QC/release.",
+        });
+        return "unexpected-success";
+      } catch (error: any) {
+        return String(error?.message || error || "");
+      }
+    },
+    {
+      lotId: lot.id,
+      fixture: postProcessFixtures.sale,
+    }
   );
-  const nextStatus =
-    nextRemaining <= 0
-      ? "depleted"
-      : nextRemaining < (Number(lot?.initialQuantity || 0) || 0)
-      ? "partial"
-      : "available";
-  const movementId = randomFirestoreId();
+
+  expect(result).toMatch(/must pass QC before it can be sold/i);
+}
+
+async function reviewAndReleasePackagedRetailChild(
+  session: NodeAuthSession
+) {
+  const lots = await listFirestoreDocuments(
+    session,
+    `users/${session.userId}/materialLots`
+  );
+  const child = findPackagedRetailSaleLot(lots);
+  if (!child?.id) {
+    throw new Error("Could not find the packaged retail child for package QC/release review.");
+  }
+
+  const currentWorkflow =
+    child?.workflow && typeof child.workflow === "object"
+      ? child.workflow
+      : {};
+  const currentShelfLife =
+    child?.shelfLife && typeof child.shelfLife === "object"
+      ? child.shelfLife
+      : {};
   const now = new Date();
 
   await commitFirestoreWrites(session, [
     buildFirestorePatchWrite(
       session,
-      `users/${session.userId}/materialLots/${lot.id}`,
+      `users/${session.userId}/materialLots/${child.id}`,
       {
-        remainingQuantity: nextRemaining,
-        status: nextStatus,
-        outboundSummary: {
-          sold: quantity,
-          donated: 0,
-          sampled: 0,
-          wasted: 0,
-          adjustedOut: 0,
-          adjustedIn: 0,
-          revenue,
+        qc: {
+          status: "pass",
+          checkedBy: "E2E lifecycle",
+          checkedDate: postProcessFixtures.packaging.qcReviewDate,
+          notes: "Package-specific QC passed for lifecycle validation.",
         },
-        updatedDate: postProcessFixtures.sale.date,
+        qcStatus: "pass",
+        shelfLife: {
+          ...currentShelfLife,
+          madeOn: currentShelfLife?.madeOn || postProcessFixtures.packaging.date,
+          bestBy: postProcessFixtures.packaging.bestBy,
+          expirationDate: postProcessFixtures.packaging.bestBy,
+        },
+        releaseRequired: true,
+        releaseStatus: "released",
+        releasedAt: postProcessFixtures.packaging.qcReviewDate,
+        releasedBy: "E2E lifecycle",
+        workflow: {
+          ...currentWorkflow,
+          releaseRequired: true,
+          releaseStatus: "released",
+          releasedAt: postProcessFixtures.packaging.qcReviewDate,
+          releasedBy: "E2E lifecycle",
+          notes: "Package QC and package/label review completed before sale.",
+        },
+        updatedDate: postProcessFixtures.packaging.qcReviewDate,
         updatedAt: now,
       }
     ),
-    buildFirestoreSetWrite(
-      session,
-      `users/${session.userId}/inventoryMovements/${movementId}`,
-      {
-        movementType: "sell",
-        lotId: lot.id,
-        processType: "finished_inventory",
-        direction: "out",
-        sourceGrowId: Array.isArray(lot?.sourceGrowIds)
-          ? lot.sourceGrowIds[0] || null
-          : null,
-        sourceType: "lot",
-        quantity,
-        unit: lot?.unit || "count",
-        date: postProcessFixtures.sale.date,
-        revenue,
-        pricePerUnit:
-          Number(postProcessFixtures.sale.unitPrice || 0) || 0,
-        destinationType: postProcessFixtures.sale.destinationType,
-        destinationName: postProcessFixtures.sale.destinationName,
-        destinationLocation: postProcessFixtures.sale.destinationLocation,
-        reason: postProcessFixtures.sale.reason,
-        counterparty: postProcessFixtures.sale.destinationName,
-        note: postProcessFixtures.sale.note,
-        createdAt: now,
-      }
-    ),
   ]);
+
+  await waitForFirestorePackagedRetailChildReleased(session, 30_000);
 }
 
 async function recordFinishedSaleViaAppSdk(
@@ -2511,13 +2585,7 @@ async function recordFinishedSale(
     recordFinishedSaleViaAppSdk(page, session),
     30_000,
     "Packaged retail sale app-SDK validation timed out."
-  ).catch(async () => {
-    await withTimeout(
-      recordFinishedSaleViaFirestore(session),
-      30_000,
-      "Packaged retail sale Firestore fallback timed out."
-    );
-  });
+  );
 
   await waitForFirestoreFinishedSale(session, 30_000);
   await refreshPostProcessingSubtab(page, "Sales");
@@ -2722,9 +2790,23 @@ test("full generic grow lifecycle stays stable", async ({ page }) => {
   );
 
   await test.step(
-    "create a released retail package child from finished inventory",
+    "create a pending retail package child from released finished inventory",
     async () => {
       await createPackagedRetailChild(page, nodeAuthSession);
+    }
+  );
+
+  await test.step(
+    "verify packaged retail sale is blocked before child QC and release",
+    async () => {
+      await assertPackagedRetailSaleBlockedBeforeReview(page, nodeAuthSession);
+    }
+  );
+
+  await test.step(
+    "review the packaged child QC and release it for sale",
+    async () => {
+      await reviewAndReleasePackagedRetailChild(nodeAuthSession);
     }
   );
 

@@ -1,4 +1,5 @@
 // src/components/postprocess/PostProcessManager.jsx
+// postprocess-v46-package-qc-release-boundaries
 // postprocess-v45-qc-sale-readiness
 // postprocess-v44-harvest-closure-traceability
 // postprocess-v43-final-disposition-consistency
@@ -42,6 +43,7 @@ import {
   finalizeExtractionBatchOutput,
   formatQty,
   getFinishedGoodsLotTypes,
+  getFinishedPackagingSourceBlockReason,
   getGrowDryTotal,
   getGrowHarvestDate,
   getGrowLabel,
@@ -1224,6 +1226,9 @@ function buildPackagePreview(form = {}, sourceLot = {}) {
   const rawCapsulesPerPackage = Math.max(0, Math.floor(Number(form.capsulesPerPackage) || 0));
   const explicitSourceQuantity = Number(form.sourceQuantity);
   const available = getLotAvailableQuantity(sourceLot);
+  const sourceEligibilityBlockReason = sourceLot?.id
+    ? getFinishedPackagingSourceBlockReason(sourceLot, form.date || "")
+    : "";
   const unit = normalizePackageUnit(form.packageSizeUnit || "g");
   const sourceUnit = normalizePackageUnit(sourceLot?.unit || "count");
   const countBasedSource = isCountBasedSource(sourceLot);
@@ -1275,7 +1280,8 @@ function buildPackagePreview(form = {}, sourceLot = {}) {
   const suggestedMsrp = suggestedRetailPrice(costPerPackage, Number(form.desiredMarginPercent) || 60);
 
   let guardMessage = "";
-  if (packageCount <= 0) guardMessage = "Enter the number of packages to create.";
+  if (sourceEligibilityBlockReason) guardMessage = sourceEligibilityBlockReason;
+  else if (packageCount <= 0) guardMessage = "Enter the number of packages to create.";
   else if (packageSize <= 0) guardMessage = "Enter the target weight or capsule count per package.";
   else if (countBasedSource && unit === "g" && averageItemWeightG <= 0) guardMessage = "Set the finished batch average capsule weight before creating gram-target package runs.";
   else if (countBasedSource && estimatedCapsulesPerPackage <= 0) guardMessage = "Enter a target weight or capsule count so source capsules can be calculated.";
@@ -4157,6 +4163,17 @@ export default function PostProcessManager({
     const form = qualityForms[lot.id] || normalizeQualityForm(lot, today);
     const resolvedMadeOn = form.madeOn || today;
     const resolvedBestBy = form.bestBy || getDefaultBestByDate(resolvedMadeOn, today);
+    const normalizedQc = normalizeQcStatus(form.qcStatus);
+    const packageRun = isPackagedForSale(lot);
+    const autoRelease = normalizedQc === "pass" && !packageRun;
+    const releasedBy = autoRelease
+      ? (auth?.currentUser?.email || auth?.currentUser?.uid || "App user")
+      : "";
+    const existingWorkflow =
+      lot?.workflow && typeof lot.workflow === "object" ? lot.workflow : {};
+    const workflowNotes = packageRun && normalizedQc === "pass"
+      ? "Package QC passed; release still required after package/label review."
+      : form.qcNotes || existingWorkflow?.notes || "";
 
     try {
       setQualityBusyId(lot.id);
@@ -4170,11 +4187,12 @@ export default function PostProcessManager({
           updatedDate: today,
         },
         qc: {
-          status: normalizeQcStatus(form.qcStatus),
+          status: normalizedQc,
           checkedBy: form.qcCheckedBy || "",
           checkedDate: form.qcCheckedDate || "",
           notes: form.qcNotes || "",
         },
+        qcStatus: normalizedQc,
         shelfLife: {
           madeOn: resolvedMadeOn,
           bestBy: resolvedBestBy,
@@ -4183,20 +4201,24 @@ export default function PostProcessManager({
           storageNotes: form.storageNotes || "",
         },
         releaseRequired: true,
-        releaseStatus: normalizeQcStatus(form.qcStatus) === "pass" ? "released" : "pending",
-        releasedAt: normalizeQcStatus(form.qcStatus) === "pass" ? today : "",
-        releasedBy: normalizeQcStatus(form.qcStatus) === "pass" ? (auth?.currentUser?.email || auth?.currentUser?.uid || "App user") : "",
+        releaseStatus: autoRelease ? "released" : "pending",
+        releasedAt: autoRelease ? today : "",
+        releasedBy,
         workflow: {
-          ...(lot?.workflow && typeof lot.workflow === "object" ? lot.workflow : {}),
+          ...existingWorkflow,
           releaseRequired: true,
-          releaseStatus: normalizeQcStatus(form.qcStatus) === "pass" ? "released" : "pending",
-          releasedAt: normalizeQcStatus(form.qcStatus) === "pass" ? today : "",
-          releasedBy: normalizeQcStatus(form.qcStatus) === "pass" ? (auth?.currentUser?.email || auth?.currentUser?.uid || "App user") : "",
-          notes: form.qcNotes || lot?.workflow?.notes || "",
+          releaseStatus: autoRelease ? "released" : "pending",
+          releasedAt: autoRelease ? today : "",
+          releasedBy,
+          notes: workflowNotes,
         },
         updatedDate: today,
       });
-      setMessage(`Saved potency, QC, and shelf life for ${lot?.name || lot.id}.`);
+      setMessage(
+        packageRun && normalizedQc === "pass"
+          ? `Saved package QC for ${lot?.name || lot.id}. Complete package/label review, then release it for sale.`
+          : `Saved potency, QC, and shelf life for ${lot?.name || lot.id}.`
+      );
     } catch (error) {
       setMessage(error?.message || "Failed to save potency and QC data.");
     } finally {
@@ -5036,6 +5058,16 @@ export default function PostProcessManager({
                           <DetailStat label="Projected margin" value={money(getLockedPackagePrice(lot) - getLockedPackageCost(lot))} />
                         </div>
                       </div>
+
+                      <LotQualityPanel
+                        lot={lot}
+                        form={qualityForms[lot.id] || normalizeQualityForm(lot, today)}
+                        onChange={(nextForm) =>
+                          setQualityForms((prev) => ({ ...prev, [lot.id]: nextForm }))
+                        }
+                        onSave={() => handleSaveQuality(lot)}
+                        busy={qualityBusyId === lot.id}
+                      />
 
                       {movementForm.movementType === "sell" && fefoBlocker ? (
                         <div className="rounded-xl border border-amber-300/70 bg-amber-950/30 p-3 text-sm text-amber-100 space-y-3">
