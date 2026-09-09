@@ -1,4 +1,5 @@
 // src/lib/postprocess.js
+// postprocess-v43-external-distribution-qc-release-boundaries
 // postprocess-v42-transactional-accounting-authority
 // postprocess-v41-package-qc-release-boundaries
 // postprocess-v40-harvest-closure-traceability
@@ -1217,6 +1218,74 @@ export function getFinishedSaleBlockReason(record = {}, asOfDate = "") {
   const releaseState = getFinishedReleaseState(record, { defaultRequired: true });
   if (releaseState.blocked) {
     return "This package run has not been released for sale.";
+  }
+
+  return "";
+}
+
+export function getFinishedPackageReleaseEligibilityBlockReason(record = {}, asOfDate = "") {
+  if (!isFinishedGoodsLot(record) || !isPackagedFinishedInventoryLot(record)) {
+    return "Only packaged finished inventory can be released.";
+  }
+
+  const workflow = record?.workflow && typeof record.workflow === "object" ? record.workflow : {};
+  if (Boolean(workflow?.recalled ?? record?.recalled)) {
+    return "This package run is recalled and cannot be released.";
+  }
+  if (Boolean(workflow?.quarantined ?? record?.quarantined)) {
+    return "This package run is quarantined and cannot be released.";
+  }
+  if (Boolean(workflow?.qcHold ?? record?.qcHold)) {
+    return "This package run is on QC hold and cannot be released.";
+  }
+
+  const qcStatus = normalizeFinishedQcStatus(record);
+  if (qcStatus === "fail") return "This package run failed QC and cannot be released.";
+  if (qcStatus === "hold") return "This package run is on QC hold and cannot be released.";
+  if (qcStatus !== "pass") return "This package run must pass QC before it can be released.";
+
+  const bestByBlockReason = getFinishedBestByBlockReason(record, asOfDate);
+  if (bestByBlockReason) {
+    return "This package run is past best-by date and cannot be released.";
+  }
+
+  return "";
+}
+
+export function getFinishedExternalDistributionBlockReason(
+  record = {},
+  { movementType = "", destinationType = "", asOfDate = "" } = {}
+) {
+  const normalizedType = normalizeFinishedMovementType(movementType);
+  if (normalizedType !== "donate" && normalizedType !== "sample") return "";
+
+  const skuType = normalizeSkuTypeValue(
+    valueOrFallback(
+      record?.skuType,
+      record?.packageSkuType,
+      record?.package?.skuType,
+      record?.labelMetadata?.skuType
+    )
+  );
+  const normalizedDestinationType = safeString(destinationType).toLowerCase();
+
+  // Internal/testing packages may move internally before final QC/release because
+  // the movement itself can be part of the testing or retention workflow.
+  if (
+    normalizedType === "sample" &&
+    skuType === "internal" &&
+    normalizedDestinationType === "internal"
+  ) {
+    return "";
+  }
+
+  const releaseEligibilityBlockReason =
+    getFinishedPackageReleaseEligibilityBlockReason(record, asOfDate);
+  if (releaseEligibilityBlockReason) return releaseEligibilityBlockReason;
+
+  const releaseState = getFinishedReleaseState(record, { defaultRequired: true });
+  if (releaseState.blocked) {
+    return "This package run has not been released for distribution.";
   }
 
   return "";
@@ -3450,6 +3519,13 @@ export async function recordFinishedInventoryMovement({
       const saleBlockReason = getFinishedSaleBlockReason(lot, normalizedDate);
       if (saleBlockReason) throw new Error(saleBlockReason);
     }
+
+    const distributionBlockReason = getFinishedExternalDistributionBlockReason(lot, {
+      movementType: normalizedType,
+      destinationType: normalizedDestinationType,
+      asOfDate: normalizedDate,
+    });
+    if (distributionBlockReason) throw new Error(distributionBlockReason);
 
     const remaining = lotRemaining(lot);
     const available = getLotAvailableQuantity(lot);

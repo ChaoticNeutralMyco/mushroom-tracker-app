@@ -1,4 +1,5 @@
 // src/components/postprocess/PostProcessManager.jsx
+// postprocess-v47-external-distribution-qc-release-boundaries
 // postprocess-v46-package-qc-release-boundaries
 // postprocess-v45-qc-sale-readiness
 // postprocess-v44-harvest-closure-traceability
@@ -43,6 +44,8 @@ import {
   finalizeExtractionBatchOutput,
   formatQty,
   getFinishedGoodsLotTypes,
+  getFinishedExternalDistributionBlockReason,
+  getFinishedPackageReleaseEligibilityBlockReason,
   getFinishedPackagingSourceBlockReason,
   getGrowDryTotal,
   getGrowHarvestDate,
@@ -908,6 +911,13 @@ function pricesDiffer(a = 0, b = 0) {
   return Math.abs(roundCurrency(a) - roundCurrency(b)) >= 0.01;
 }
 
+function getDefaultSampleDestinationType(lot = {}) {
+  const skuType = getSkuType(lot);
+  if (skuType === "promo") return "event";
+  if (skuType === "internal") return "internal";
+  return "other";
+}
+
 function getDefaultMovementFormForLot(lot = {}, today = "") {
   const skuType = getSkuType(lot);
   const base = normalizeMovementForm(today);
@@ -920,14 +930,13 @@ function getDefaultMovementFormForLot(lot = {}, today = "") {
     priceOverrideReason: "",
   };
 
-  if (skuType === "sample") {
-    return { ...base, ...priceDefaults, movementType: "sample", destinationType: "internal" };
-  }
-  if (skuType === "promo") {
-    return { ...base, ...priceDefaults, movementType: "sample", destinationType: "event" };
-  }
-  if (skuType === "internal") {
-    return { ...base, ...priceDefaults, movementType: "sample", destinationType: "internal" };
+  if (skuType === "sample" || skuType === "promo" || skuType === "internal") {
+    return {
+      ...base,
+      ...priceDefaults,
+      movementType: "sample",
+      destinationType: getDefaultSampleDestinationType(lot),
+    };
   }
   return { ...base, ...priceDefaults, movementType: "sell", destinationType: "customer" };
 }
@@ -3906,6 +3915,14 @@ export default function PostProcessManager({
       if (form.movementType === "sell" && salesBlockReason) {
         throw new Error(salesBlockReason);
       }
+      const distributionBlockReason = getFinishedExternalDistributionBlockReason(lot, {
+        movementType: form.movementType,
+        destinationType: form.destinationType,
+        asOfDate: form.date || today,
+      });
+      if (distributionBlockReason) {
+        throw new Error(distributionBlockReason);
+      }
       if (form.movementType === "destroy" && !String(form.reason || "").trim()) {
         throw new Error("Enter a reason before destroying finished inventory.");
       }
@@ -4013,10 +4030,10 @@ export default function PostProcessManager({
     }
   }
 
-  async function handleReleasePackageForSale(lot) {
+  async function handleReleasePackage(lot) {
     if (!userId || !lot?.id) return;
 
-    const eligibilityBlockReason = getPackageSaleEligibilityBlockReason(lot, today);
+    const eligibilityBlockReason = getFinishedPackageReleaseEligibilityBlockReason(lot, today);
     if (eligibilityBlockReason) {
       setMessage(eligibilityBlockReason);
       return;
@@ -4038,13 +4055,13 @@ export default function PostProcessManager({
           releaseStatus: "released",
           releasedAt: today,
           releasedBy,
-          notes: existingWorkflow?.notes || "Released from Sales after package/QC review.",
+          notes: existingWorkflow?.notes || "Released after package/QC and label review.",
         },
         updatedDate: today,
       });
-      setMessage(`Released ${lot?.lotCode || lot?.batchLot || lot?.name || "package run"} for sale.`);
+      setMessage(`Released ${lot?.lotCode || lot?.batchLot || lot?.name || "package run"} after package/QC review.`);
     } catch (error) {
-      setMessage(error?.message || "Failed to release package for sale.");
+      setMessage(error?.message || "Failed to release package.");
     } finally {
       setReleaseBusyId("");
     }
@@ -4216,7 +4233,7 @@ export default function PostProcessManager({
       });
       setMessage(
         packageRun && normalizedQc === "pass"
-          ? `Saved package QC for ${lot?.name || lot.id}. Complete package/label review, then release it for sale.`
+          ? `Saved package QC for ${lot?.name || lot.id}. Complete package/label review, then release it for distribution.`
           : `Saved potency, QC, and shelf life for ${lot?.name || lot.id}.`
       );
     } catch (error) {
@@ -4989,7 +5006,7 @@ export default function PostProcessManager({
               <div className="space-y-3">
                 {sku.activeLots.map((lot, index) => {
                   const meta = getProductTypeMeta(lot?.productType || lot?.finishedGoodType || lot?.lotType);
-                  const movementForm = movementForms[lot.id] || normalizeMovementForm(today);
+                  const movementForm = movementForms[lot.id] || getDefaultMovementFormForLot(lot, today);
                   const outboundSummary = lot?.outboundSummary || {};
                   const available = Number(getLotAvailableQuantity(lot)) || 0;
                   const fefoBlocker = getFefoBlockingLot(lot, saleReadyFinishedGoodsLots, today);
@@ -5004,9 +5021,21 @@ export default function PostProcessManager({
                     Boolean(fefoBlocker) &&
                     (!fefoOverrideRequested || fefoOverrideMissingReason);
                   const salesBlockReason = getSalesBlockReason(lot, today);
+                  const distributionBlockReason = getFinishedExternalDistributionBlockReason(lot, {
+                    movementType: movementForm.movementType,
+                    destinationType: movementForm.destinationType,
+                    asOfDate: today,
+                  });
+                  const outboundBlockReason =
+                    movementForm.movementType === "sell"
+                      ? salesBlockReason
+                      : distributionBlockReason;
                   const releaseState = getReleaseStateForSales(lot);
-                  const sellBlockedByQuality = movementForm.movementType === "sell" && Boolean(salesBlockReason);
-                  const releaseBlockedOnly = sellBlockedByQuality && releaseState.blocked && salesBlockReason.includes("released");
+                  const outboundBlockedByQuality = Boolean(outboundBlockReason);
+                  const releaseBlockedOnly =
+                    outboundBlockedByQuality &&
+                    releaseState.blocked &&
+                    outboundBlockReason.includes("released");
                   const priceAudit = getSalePriceOverrideState(lot, movementForm);
 
                   return (
@@ -5119,15 +5148,18 @@ export default function PostProcessManager({
                         </div>
                       ) : null}
 
-                      {sellBlockedByQuality ? (
+                      {outboundBlockedByQuality ? (
                         <div className="rounded-xl border border-red-400/80 bg-red-950/30 p-3 text-sm text-red-100 space-y-3">
-                          <div>Sale blocked: {salesBlockReason} Destroy, waste, sample, or adjustment actions are still available when appropriate.</div>
+                          <div>
+                            {movementForm.movementType === "sell" ? "Sale" : "Distribution"} blocked: {outboundBlockReason}
+                            {" "}Waste, destroy, and audit adjustments remain available when appropriate. Internal/testing SKUs may still move to internal use before final release.
+                          </div>
                           {releaseBlockedOnly ? (
                             <div className="rounded-lg border border-purple-400/60 bg-purple-950/30 p-3 text-purple-100">
                               <div className="font-medium">Release path</div>
                               <div className="mt-1 text-xs text-purple-100/80">Use this only after the package run has passed QC, shelf-life, and label/package review. Future role controls can make this approval-only.</div>
-                              <button type="button" onClick={() => handleReleasePackageForSale(lot)} disabled={releaseBusyId === lot.id} className="btn btn-accent mt-3 text-xs disabled:opacity-60">
-                                {releaseBusyId === lot.id ? "Releasing..." : "Release package for sale"}
+                              <button type="button" onClick={() => handleReleasePackage(lot)} disabled={releaseBusyId === lot.id} className="btn btn-accent mt-3 text-xs disabled:opacity-60">
+                                {releaseBusyId === lot.id ? "Releasing..." : "Release package"}
                               </button>
                             </div>
                           ) : null}
@@ -5137,7 +5169,7 @@ export default function PostProcessManager({
                       <div className="rounded-xl border border-zinc-800 p-3 space-y-3">
                         <div className="font-medium text-sm">Outbound action</div>
                         <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-6 gap-3">
-                          <label className="space-y-1 text-sm block"><span className="text-zinc-400">Action</span><select value={movementForm.movementType} onChange={(e) => { const nextType = e.target.value; const defaultPrice = getLockedPackagePrice(lot); setMovementForms((prev) => ({ ...prev, [lot.id]: { ...movementForm, movementType: nextType, destinationType: nextType === "destroy" ? "disposal" : nextType === "sample" ? (getSkuType(lot) === "promo" ? "event" : "internal") : movementForm.destinationType, direction: nextType === "adjustment" ? movementForm.direction : "out", unitPrice: nextType === "sell" ? (movementForm.unitPrice || (defaultPrice > 0 ? String(defaultPrice) : "")) : movementForm.unitPrice, fefoOverride: nextType === "sell" ? movementForm.fefoOverride : false, fefoOverrideReason: nextType === "sell" ? movementForm.fefoOverrideReason : "" } })); }} className="w-full rounded-xl border border-zinc-700 bg-zinc-950 px-3 py-2"><option value="sell">Sell</option><option value="donate">Donate</option><option value="sample">Sample out</option><option value="waste">Waste</option><option value="destroy">Destroy</option><option value="adjustment">Manual adjustment</option></select></label>
+                          <label className="space-y-1 text-sm block"><span className="text-zinc-400">Action</span><select value={movementForm.movementType} onChange={(e) => { const nextType = e.target.value; const defaultPrice = getLockedPackagePrice(lot); setMovementForms((prev) => ({ ...prev, [lot.id]: { ...movementForm, movementType: nextType, destinationType: nextType === "destroy" ? "disposal" : nextType === "sample" ? getDefaultSampleDestinationType(lot) : movementForm.destinationType, direction: nextType === "adjustment" ? movementForm.direction : "out", unitPrice: nextType === "sell" ? (movementForm.unitPrice || (defaultPrice > 0 ? String(defaultPrice) : "")) : movementForm.unitPrice, fefoOverride: nextType === "sell" ? movementForm.fefoOverride : false, fefoOverrideReason: nextType === "sell" ? movementForm.fefoOverrideReason : "" } })); }} className="w-full rounded-xl border border-zinc-700 bg-zinc-950 px-3 py-2"><option value="sell">Sell</option><option value="donate">Donate</option><option value="sample">Sample out</option><option value="waste">Waste</option><option value="destroy">Destroy</option><option value="adjustment">Manual adjustment</option></select></label>
                           <label className="space-y-1 text-sm block"><span className="text-zinc-400">Quantity</span><input type="number" inputMode="decimal" min="0" step="1" max={available || undefined} value={movementForm.quantity} onChange={(e) => handleMovementQuantityChange(lot, movementForm, e.target.value)} className={`w-full rounded-xl border bg-zinc-950 px-3 py-2 ${movementWarnings[lot.id] ? "border-red-400 text-red-100" : "border-zinc-700"}`} /></label>
                           <label className="space-y-1 text-sm block"><span className="text-zinc-400">Sale price</span><input type="number" inputMode="decimal" min="0" step="0.01" value={movementForm.unitPrice} onChange={(e) => setMovementForms((prev) => ({ ...prev, [lot.id]: { ...movementForm, unitPrice: e.target.value, priceManuallyChanged: true } }))} disabled={movementForm.movementType !== "sell"} placeholder={String(getLockedPackagePrice(lot) || "")} className={`w-full rounded-xl border bg-zinc-950 px-3 py-2 disabled:opacity-60 ${priceAudit.requiresMemo ? "border-amber-400 text-amber-100" : "border-zinc-700"}`} /></label>
                           <label className="space-y-1 text-sm block"><span className="text-zinc-400">Date</span><input type="date" value={movementForm.date} onChange={(e) => setMovementForms((prev) => ({ ...prev, [lot.id]: { ...movementForm, date: e.target.value } }))} className="w-full rounded-xl border border-zinc-700 bg-zinc-950 px-3 py-2" /></label>

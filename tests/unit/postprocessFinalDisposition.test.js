@@ -7,6 +7,8 @@ import {
   buildHarvestIntakeMovementId,
   canCreateDryLotFromGrow,
   getMaterialLotFinalDispositionState,
+  getFinishedExternalDistributionBlockReason,
+  getFinishedPackageReleaseEligibilityBlockReason,
   getFinishedPackagingSourceBlockReason,
   getFinishedSaleBlockReason,
   resolveFinishedSaleAccounting,
@@ -244,10 +246,16 @@ describe("post-processing packaged sales regression", () => {
       '<option value="sample">Sample / not for sale</option>'
     );
     expect(postProcessManagerSource).toContain(
-      'if (skuType === "sample")'
+      'if (skuType === "sample" || skuType === "promo" || skuType === "internal")'
     );
     expect(postProcessManagerSource).toContain(
-      'movementType: "sample", destinationType: "internal"'
+      'destinationType: getDefaultSampleDestinationType(lot)'
+    );
+    expect(postProcessManagerSource).toContain(
+      'if (skuType === "promo") return "event";'
+    );
+    expect(postProcessManagerSource).toContain(
+      'if (skuType === "internal") return "internal";'
     );
   });
 
@@ -351,9 +359,9 @@ describe("post-processing packaged sales regression", () => {
     ).toBe("This package run has not been released for sale.");
   });
 
-  it("uses the same QC and SKU eligibility guard before manual sale release", () => {
+  it("uses package QC eligibility before the general package release action", () => {
     const releaseHandlerStart = postProcessManagerSource.indexOf(
-      "async function handleReleasePackageForSale(lot)"
+      "async function handleReleasePackage(lot)"
     );
     const releaseHandlerEnd = postProcessManagerSource.indexOf(
       "async function handleSaveReservation(lot)",
@@ -365,9 +373,15 @@ describe("post-processing packaged sales regression", () => {
     );
 
     expect(releaseHandler).toContain(
-      "getPackageSaleEligibilityBlockReason(lot, today)"
+      "getFinishedPackageReleaseEligibilityBlockReason(lot, today)"
     );
     expect(releaseHandler).toContain("if (eligibilityBlockReason)");
+    expect(releaseHandler).toContain(
+      '"Released after package/QC and label review."'
+    );
+    expect(postProcessManagerSource).toContain(
+      'releaseBusyId === lot.id ? "Releasing..." : "Release package"'
+    );
   });
 
   it("separates active package runs from retail inventory that is actually sale-ready", () => {
@@ -484,13 +498,182 @@ describe("post-processing packaged sales regression", () => {
       'releaseStatus: autoRelease ? "released" : "pending"'
     );
     expect(postProcessManagerSource).toContain(
-      "Complete package/label review, then release it for sale."
+      "Complete package/label review, then release it for distribution."
     );
     expect(postProcessManagerSource).toContain(
       "<LotQualityPanel"
     );
     expect(postProcessManagerSource).toContain(
-      "handleReleasePackageForSale(lot)"
+      "handleReleasePackage(lot)"
+    );
+  });
+
+  it("blocks external sample and donation distribution until package QC and release are complete", () => {
+    expect(
+      getFinishedExternalDistributionBlockReason(
+        packagedRetailLot({
+          skuType: "sample",
+          qc: { status: "pending" },
+          qcStatus: "pending",
+          releaseStatus: "pending",
+          workflow: {
+            releaseRequired: true,
+            releaseStatus: "pending",
+          },
+        }),
+        {
+          movementType: "sample",
+          destinationType: "other",
+          asOfDate: "2026-03-23",
+        }
+      )
+    ).toBe("This package run must pass QC before it can be released.");
+
+    expect(
+      getFinishedExternalDistributionBlockReason(
+        packagedRetailLot({
+          skuType: "promo",
+          releaseStatus: "pending",
+          workflow: {
+            releaseRequired: true,
+            releaseStatus: "pending",
+          },
+        }),
+        {
+          movementType: "sample",
+          destinationType: "event",
+          asOfDate: "2026-03-23",
+        }
+      )
+    ).toBe("This package run has not been released for distribution.");
+
+    expect(
+      getFinishedExternalDistributionBlockReason(
+        packagedRetailLot({ skuType: "promo" }),
+        {
+          movementType: "sample",
+          destinationType: "event",
+          asOfDate: "2026-03-23",
+        }
+      )
+    ).toBe("");
+
+    expect(
+      getFinishedExternalDistributionBlockReason(
+        packagedRetailLot({
+          qc: { status: "pending" },
+          qcStatus: "pending",
+        }),
+        {
+          movementType: "donate",
+          destinationType: "donation",
+          asOfDate: "2026-03-23",
+        }
+      )
+    ).toBe("This package run must pass QC before it can be released.");
+  });
+
+  it("keeps internal testing movement available before final package QC without opening an external bypass", () => {
+    const pendingInternal = packagedRetailLot({
+      skuType: "internal",
+      qc: { status: "pending" },
+      qcStatus: "pending",
+      releaseStatus: "pending",
+      workflow: {
+        releaseRequired: true,
+        releaseStatus: "pending",
+      },
+    });
+
+    expect(
+      getFinishedExternalDistributionBlockReason(pendingInternal, {
+        movementType: "sample",
+        destinationType: "internal",
+        asOfDate: "2026-03-23",
+      })
+    ).toBe("");
+
+    expect(
+      getFinishedExternalDistributionBlockReason(pendingInternal, {
+        movementType: "sample",
+        destinationType: "event",
+        asOfDate: "2026-03-23",
+      })
+    ).toBe("This package run must pass QC before it can be released.");
+
+    expect(
+      getFinishedExternalDistributionBlockReason(pendingInternal, {
+        movementType: "waste",
+        destinationType: "disposal",
+        asOfDate: "2026-03-23",
+      })
+    ).toBe("");
+
+    expect(
+      getFinishedExternalDistributionBlockReason(pendingInternal, {
+        movementType: "destroy",
+        destinationType: "disposal",
+        asOfDate: "2026-03-23",
+      })
+    ).toBe("");
+
+    expect(postProcessManagerSource).toContain(
+      'if (skuType === "internal") return "internal";'
+    );
+    expect(postProcessManagerSource).toContain(
+      'return "other";'
+    );
+  });
+
+  it("enforces non-sale distribution readiness in both UI and transactional writer while release remains SKU-agnostic", () => {
+    expect(
+      getFinishedPackageReleaseEligibilityBlockReason(
+        packagedRetailLot({
+          skuType: "sample",
+          releaseStatus: "pending",
+          workflow: {
+            releaseRequired: true,
+            releaseStatus: "pending",
+          },
+        }),
+        "2026-03-23"
+      )
+    ).toBe("");
+
+    expect(
+      getFinishedPackageReleaseEligibilityBlockReason(
+        packagedRetailLot({
+          skuType: "sample",
+          qc: { status: "pending" },
+          qcStatus: "pending",
+        }),
+        "2026-03-23"
+      )
+    ).toBe("This package run must pass QC before it can be released.");
+
+    const movementStart = postprocessLibSource.indexOf(
+      "export async function recordFinishedInventoryMovement"
+    );
+    const movementEnd = postprocessLibSource.indexOf(
+      "function normalizeIngredientLinesForPostProcess",
+      movementStart
+    );
+    const movementSource = postprocessLibSource.slice(movementStart, movementEnd);
+
+    expect(movementSource).toContain(
+      "const distributionBlockReason = getFinishedExternalDistributionBlockReason(lot, {"
+    );
+    expect(movementSource).toContain(
+      "destinationType: normalizedDestinationType"
+    );
+    expect(movementSource).toContain(
+      "if (distributionBlockReason) throw new Error(distributionBlockReason);"
+    );
+    expect(postProcessManagerSource).toContain(
+      "const distributionBlockReason = getFinishedExternalDistributionBlockReason(lot, {"
+    );
+    expect(postProcessManagerSource).toContain(
+      "if (distributionBlockReason)"
     );
   });
 
