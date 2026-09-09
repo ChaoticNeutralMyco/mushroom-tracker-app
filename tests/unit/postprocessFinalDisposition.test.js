@@ -9,6 +9,8 @@ import {
   getMaterialLotFinalDispositionState,
   getFinishedPackagingSourceBlockReason,
   getFinishedSaleBlockReason,
+  resolveFinishedSaleAccounting,
+  resolvePackagingSourceQuantity,
   isActiveProcessBatch,
   isArchivedProcessBatch,
   isArchivedOrDepletedMaterialLot,
@@ -490,6 +492,94 @@ describe("post-processing packaged sales regression", () => {
     expect(postProcessManagerSource).toContain(
       "handleReleasePackageForSale(lot)"
     );
+  });
+
+  it("makes count-based package math authoritative over caller-supplied source quantity", () => {
+    expect(
+      resolvePackagingSourceQuantity({
+        packageSize: 10,
+        packageSizeUnit: "capsules",
+        packageCount: 10,
+        sourceUnit: "count",
+        capsulesPerPackage: 10,
+        sourceQuantity: 100,
+      })
+    ).toBe(100);
+
+    expect(() =>
+      resolvePackagingSourceQuantity({
+        packageSize: 10,
+        packageSizeUnit: "capsules",
+        packageCount: 10,
+        sourceUnit: "count",
+        capsulesPerPackage: 10,
+        sourceQuantity: 50,
+      })
+    ).toThrow(/must match package math/i);
+
+    expect(
+      resolvePackagingSourceQuantity({
+        packageSize: 3.5,
+        packageSizeUnit: "g",
+        packageCount: 10,
+        sourceUnit: "g",
+        sourceQuantity: 34.5,
+      })
+    ).toBe(34.5);
+  });
+
+  it("derives locked sale pricing and revenue from stored package accounting", () => {
+    const lot = packagedRetailLot({
+      pricePerUnit: 4,
+      unitCost: 2,
+      package: {
+        isPackaged: true,
+        skuType: "retail",
+        defaultSalePricePerPackage: 4,
+      },
+      pricing: {
+        pricePerUnit: 4,
+      },
+    });
+
+    expect(resolveFinishedSaleAccounting(lot, { quantity: 3 })).toMatchObject({
+      defaultPricePerUnit: 4,
+      actualPricePerUnit: 4,
+      revenue: 12,
+      hasPriceOverride: false,
+    });
+
+    expect(
+      resolveFinishedSaleAccounting(lot, {
+        quantity: 3,
+        pricePerUnit: 3.5,
+        defaultPricePerUnit: 3.5,
+        revenue: 999,
+      })
+    ).toMatchObject({
+      defaultPricePerUnit: 4,
+      actualPricePerUnit: 3.5,
+      revenue: 10.5,
+      hasPriceOverride: true,
+    });
+
+    const movementStart = postprocessLibSource.indexOf(
+      "export async function recordFinishedInventoryMovement"
+    );
+    const movementEnd = postprocessLibSource.indexOf(
+      "function normalizeIngredientLinesForPostProcess",
+      movementStart
+    );
+    const movementSource = postprocessLibSource.slice(movementStart, movementEnd);
+
+    expect(movementSource).toContain("resolveFinishedSaleAccounting(lot");
+    expect(movementSource).toContain(
+      'const resolvedRevenue =\n      normalizedType === "sell" ? saleAccounting.revenue : 0;'
+    );
+    expect(movementSource).not.toContain(
+      "sanitizeCurrency(defaultPricePerUnit) > 0"
+    );
+    expect(movementSource).not.toContain("sanitizeCurrency(revenue) > 0");
   });
 });
 

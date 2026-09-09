@@ -1,4 +1,5 @@
 // src/lib/postprocess.js
+// postprocess-v42-transactional-accounting-authority
 // postprocess-v41-package-qc-release-boundaries
 // postprocess-v40-harvest-closure-traceability
 // postprocess-v39-final-disposition-consistency
@@ -1221,6 +1222,42 @@ export function getFinishedSaleBlockReason(record = {}, asOfDate = "") {
   return "";
 }
 
+export function getFinishedLockedPackagePrice(record = {}) {
+  return sanitizeCurrency(
+    valueOrFallback(
+      record?.pricePerUnit,
+      record?.package?.defaultSalePricePerPackage,
+      record?.labelMetadata?.defaultSalePricePerPackage,
+      record?.pricing?.pricePerUnit
+    )
+  );
+}
+
+export function resolveFinishedSaleAccounting(
+  record = {},
+  { quantity = 0, pricePerUnit = null } = {}
+) {
+  const defaultPricePerUnit = getFinishedLockedPackagePrice(record);
+  const requestedPricePerUnit = sanitizeCurrency(pricePerUnit);
+  const actualPricePerUnit =
+    requestedPricePerUnit > 0 ? requestedPricePerUnit : defaultPricePerUnit;
+  const normalizedQuantity = sanitizePositiveNumber(quantity);
+  const packageUnitCost = getLotUnitCost(record);
+
+  return {
+    defaultPricePerUnit,
+    actualPricePerUnit,
+    packageUnitCost,
+    revenue: roundCurrency(actualPricePerUnit * normalizedQuantity),
+    hasPriceOverride:
+      Math.abs(actualPricePerUnit - defaultPricePerUnit) >= 0.01,
+    belowCost:
+      packageUnitCost > 0 &&
+      actualPricePerUnit > 0 &&
+      actualPricePerUnit < packageUnitCost,
+  };
+}
+
 function getAverageSourceItemWeightGForPackaging(source = {}) {
   const direct = sanitizePositiveNumber(valueOrFallback(
     source?.package?.averageWeightPerItemG,
@@ -1263,6 +1300,43 @@ function estimatePackagingSourceQuantity({ packageSize = 0, packageSizeUnit = ""
   }
 
   return roundNumber(size * count, 3);
+}
+
+export function resolvePackagingSourceQuantity({
+  packageSize = 0,
+  packageSizeUnit = "",
+  packageCount = 0,
+  sourceUnit = "",
+  capsulesPerPackage = 0,
+  averageItemWeightG = 0,
+  sourceQuantity = 0,
+} = {}) {
+  const normalizedSourceUnit = normalizePackageUnitValue(sourceUnit);
+  const countBasedSource =
+    normalizedSourceUnit === "unit" || normalizedSourceUnit === "capsules";
+  const estimatedSourceQty = estimatePackagingSourceQuantity({
+    packageSize,
+    packageSizeUnit,
+    packageCount,
+    sourceUnit,
+    capsulesPerPackage,
+    averageItemWeightG,
+  });
+  const suppliedSourceQty = sanitizePositiveNumber(sourceQuantity);
+
+  if (
+    countBasedSource &&
+    suppliedSourceQty > 0 &&
+    estimatedSourceQty > 0 &&
+    Math.abs(suppliedSourceQty - estimatedSourceQty) >= 0.001
+  ) {
+    throw new Error(
+      `Count-based package source quantity must match package math (${estimatedSourceQty} required).`
+    );
+  }
+
+  if (countBasedSource) return estimatedSourceQty;
+  return suppliedSourceQty > 0 ? suppliedSourceQty : estimatedSourceQty;
 }
 function buildPackageLotCode({ baseCode = "", date = "", size = "", unit = "", count = "", suffix = "", skuType = "retail" } = {}) {
   const safeBase = safeString(baseCode).replace(/[^a-z0-9-]/gi, "").replace(/^-+|-+$/g, "");
@@ -2795,19 +2869,15 @@ export async function createPackagedFinishedLot({
       throw new Error("Enter capsules per package so packaging can calculate source capsules used and approximate dose per capsule.");
     }
 
-    const estimatedSourceQty = estimatePackagingSourceQuantity({
+    const requestedSourceQty = resolvePackagingSourceQuantity({
       packageSize: normalizedPackageSize,
       packageSizeUnit: normalizedPackageUnit,
       packageCount: normalizedPackageCount,
       sourceUnit: source?.unit || "count",
       capsulesPerPackage: normalizedCapsulesPerPackage,
       averageItemWeightG,
+      sourceQuantity,
     });
-    const requestedSourceQty = countBasedSource && normalizedPackageUnit === "g"
-      ? estimatedSourceQty
-      : sanitizePositiveNumber(sourceQuantity) > 0
-        ? sanitizePositiveNumber(sourceQuantity)
-        : estimatedSourceQty;
 
     if (requestedSourceQty <= 0) {
       throw new Error("Enter package count and capsules per package so the source quantity can be calculated.");
@@ -3390,30 +3460,23 @@ export async function recordFinishedInventoryMovement({
     const nextRemaining = sanitizePositiveNumber(remaining - normalizedQuantity);
     const nextStatus = normalizedType === "destroy" && nextRemaining <= 0 ? "destroyed" : nextLotStatus(nextRemaining, lotInitial(lot));
 
-    const packageDefaultPrice = sanitizeCurrency(defaultPricePerUnit) > 0
-      ? sanitizeCurrency(defaultPricePerUnit)
-      : sanitizeCurrency(valueOrFallback(lot?.pricePerUnit, lot?.pricing?.pricePerUnit, lot?.package?.defaultSalePricePerPackage));
+    const saleAccounting = resolveFinishedSaleAccounting(lot, {
+      quantity: normalizedQuantity,
+      pricePerUnit,
+    });
+    const packageDefaultPrice = saleAccounting.defaultPricePerUnit;
     const packageMsrp = sanitizeCurrency(valueOrFallback(lot?.msrpPerUnit, lot?.pricing?.suggestedMsrpPerUnit, lot?.package?.suggestedMsrpPerPackage));
-    const packageUnitCost = getLotUnitCost(lot);
-    const resolvedPricePerUnit =
-      sanitizeCurrency(pricePerUnit) > 0
-        ? sanitizeCurrency(pricePerUnit)
-        : packageDefaultPrice;
-    const hasPriceOverride = normalizedType === "sell" && Math.abs(resolvedPricePerUnit - packageDefaultPrice) >= 0.01;
-    const belowCost = normalizedType === "sell" && packageUnitCost > 0 && resolvedPricePerUnit > 0 && resolvedPricePerUnit < packageUnitCost;
+    const packageUnitCost = saleAccounting.packageUnitCost;
+    const resolvedPricePerUnit = saleAccounting.actualPricePerUnit;
+    const hasPriceOverride = normalizedType === "sell" && saleAccounting.hasPriceOverride;
+    const belowCost = normalizedType === "sell" && saleAccounting.belowCost;
     const nonRetailSale = normalizedType === "sell" && normalizeSkuTypeValue(valueOrFallback(lot?.skuType, lot?.packageSkuType, lot?.package?.skuType)) !== "retail";
     if ((hasPriceOverride || belowCost || nonRetailSale) && !normalizedPriceOverrideReason) {
       throw new Error("Enter a price override memo before recording this sale.");
     }
 
     const resolvedRevenue =
-      normalizedType === "sell"
-        ? roundCurrency(
-            sanitizeCurrency(revenue) > 0
-              ? sanitizeCurrency(revenue)
-              : resolvedPricePerUnit * normalizedQuantity
-          )
-        : 0;
+      normalizedType === "sell" ? saleAccounting.revenue : 0;
 
     const outboundSummary = buildOutboundSnapshot(
       lot?.outboundSummary || {},
