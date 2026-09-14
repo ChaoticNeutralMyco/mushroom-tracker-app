@@ -24,17 +24,17 @@ const AS_OF = "2026-07-26";
 const postProcessManagerSource = readFileSync(
   new URL("../../src/components/postprocess/PostProcessManager.jsx", import.meta.url),
   "utf8"
-);
+).replace(/\r\n?/g, "\n");
 
 const postprocessLibSource = readFileSync(
   new URL("../../src/lib/postprocess.js", import.meta.url),
   "utf8"
-);
+).replace(/\r\n?/g, "\n");
 
 const growLifecycleSource = readFileSync(
   new URL("../e2e/grow-lifecycle.spec.ts", import.meta.url),
   "utf8"
-);
+).replace(/\r\n?/g, "\n");
 
 function activeLot(overrides = {}) {
   return {
@@ -257,6 +257,16 @@ describe("post-processing packaged sales regression", () => {
     expect(postProcessManagerSource).toContain(
       'if (skuType === "internal") return "internal";'
     );
+  });
+
+  it("uses the generalized outbound quality state consistently in the movement button", () => {
+    expect(postProcessManagerSource).toContain(
+      "const outboundBlockedByQuality = Boolean(outboundBlockReason);"
+    );
+    expect(postProcessManagerSource).toContain(
+      "disabled={movementBusyId === lot.id || sellBlockedByFefo || outboundBlockedByQuality}"
+    );
+    expect(postProcessManagerSource).not.toContain("sellBlockedByQuality");
   });
 
   it("uses FEFO inside the exact matching SKU and falls back to inventory age", () => {

@@ -1,4 +1,5 @@
 // src/components/postprocess/PostProcessManager.jsx
+// postprocess-v48-outbound-quality-button-fix
 // postprocess-v47-external-distribution-qc-release-boundaries
 // postprocess-v46-package-qc-release-boundaries
 // postprocess-v45-qc-sale-readiness
@@ -5225,12 +5226,12 @@ export default function PostProcessManager({
                           </div>
                         ) : null}
 
-                        <button type="button" onClick={() => handleFinishedMovement(lot)} disabled={movementBusyId === lot.id || sellBlockedByFefo || sellBlockedByQuality} className="btn btn-accent disabled:opacity-60 text-sm">
+                        <button type="button" onClick={() => handleFinishedMovement(lot)} disabled={movementBusyId === lot.id || sellBlockedByFefo || outboundBlockedByQuality} className="btn btn-accent disabled:opacity-60 text-sm">
                           {sellBlockedByFefo
                             ? fefoOverrideRequested
                               ? "FEFO override reason required"
                               : "Sell earlier-expiring package first"
-                            : sellBlockedByQuality
+                            : outboundBlockedByQuality
                               ? "Sale blocked"
                               : movementBusyId === lot.id
                                 ? "Recording..."
