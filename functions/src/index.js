@@ -28,6 +28,10 @@ import {
   reactivateGrowBatchWithEntitlement,
 } from "./growService.js";
 import {
+  FinishedInventoryServiceError,
+  recordFinishedInventoryMovementTrusted as recordFinishedInventoryMovementTrustedService,
+} from "./finishedInventoryService.js";
+import {
   BillingServiceError,
   createCustomerPortalSession,
   createStripeRestClient,
@@ -85,6 +89,7 @@ function callableError(error) {
     error instanceof EntitlementServiceError ||
     error instanceof EntitlementValidationError ||
     error instanceof GrowServiceError ||
+    error instanceof FinishedInventoryServiceError ||
     error instanceof BillingServiceError ||
     error instanceof AdminServiceError
       ? error.code
@@ -120,7 +125,11 @@ function serializeEntitlement(entitlement) {
   );
 }
 
-async function ensureTrustedEntitlement(uid, now = new Date()) {
+async function ensureTrustedEntitlement(
+  uid,
+  now = new Date(),
+  eventSource = "trusted_grow_callable"
+) {
   initializeBackend();
   const user = await getAuth().getUser(uid);
 
@@ -130,7 +139,7 @@ async function ensureTrustedEntitlement(uid, now = new Date()) {
     accountCreatedAt: user.metadata?.creationTime || null,
     now,
     eventId: "ensure-entitlement-v1",
-    eventSource: "trusted_grow_callable",
+    eventSource,
   });
 }
 
@@ -336,6 +345,56 @@ export const reactivateGrowBatch = onCall(
   }
 );
 
+
+export const recordFinishedInventoryMovementTrusted = onCall(
+  {
+    region: SUBSCRIPTION_BACKEND_REGION,
+    secrets: adminSecretBindings,
+  },
+  async (request) => {
+    if (!request.auth?.uid) {
+      throw new HttpsError("unauthenticated", "Sign in is required.");
+    }
+
+    const now = new Date();
+
+    try {
+      await ensureTrustedEntitlement(
+        request.auth.uid,
+        now,
+        "trusted_finished_inventory_callable"
+      );
+
+      const result = await recordFinishedInventoryMovementTrustedService({
+        db: initializeBackend(),
+        uid: request.auth.uid,
+        payload: request.data || {},
+        now,
+        internalFullAccess: internalFullAccessForUid(request.auth.uid),
+      });
+
+      logger.info("Trusted finished inventory movement recorded.", {
+        uid: request.auth.uid,
+        lotId: request.data?.lotId || null,
+        movementType: request.data?.movementType || null,
+        movementId: result?.movementId || null,
+        fefoOverrideApplied: result?.fefoOverrideApplied === true,
+      });
+
+      return result;
+    } catch (error) {
+      logger.warn("recordFinishedInventoryMovementTrusted rejected", {
+        uid: request.auth.uid,
+        lotId: request.data?.lotId || null,
+        movementType: request.data?.movementType || null,
+        code: error?.code || "unknown",
+        message: error?.message || "Unknown finished inventory error",
+      });
+
+      throw callableError(error);
+    }
+  }
+);
 
 export const getMyAdminAccess = onCall(
   {
