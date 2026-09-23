@@ -1,4 +1,5 @@
 // src/components/postprocess/PostProcessManager.jsx
+// postprocess-v50-trusted-package-final-disposition
 // postprocess-v49-trusted-finished-inventory-callable
 // postprocess-v48-outbound-quality-button-fix
 // postprocess-v47-external-distribution-qc-release-boundaries
@@ -4003,24 +4004,46 @@ export default function PostProcessManager({
     try {
       setFinalDispositionBusyId(lot.id);
       setMessage("");
-      const result = await recordMaterialLotFinalDisposition({
-        userId,
-        lotId: lot.id,
-        quantity,
-        date: form.date || today,
-        reason: form.reason,
-        method: form.method,
-        note: form.note,
-        trigger: dispositionState.reasonCode || "manual_disposition",
-      });
+      const trustedFinishedDisposition =
+        isFinishedGoodsLot(lot) && isPackagedForSale(lot);
+
+      const result = trustedFinishedDisposition
+        ? await recordFinishedInventoryMovementTrusted({
+            lotId: lot.id,
+            movementType: "destroy",
+            quantity,
+            date: form.date || today,
+            reason: form.reason,
+            destroyMethod: form.method,
+            note: form.note,
+            referenceType: "final_disposition",
+            referenceId: dispositionState.reasonCode || "manual_disposition",
+          })
+        : await recordMaterialLotFinalDisposition({
+            userId,
+            lotId: lot.id,
+            quantity,
+            date: form.date || today,
+            reason: form.reason,
+            method: form.method,
+            note: form.note,
+            trigger: dispositionState.reasonCode || "manual_disposition",
+          });
 
       setFinalDispositionForms((prev) => {
         const next = { ...prev };
         delete next[lot.id];
         return next;
       });
+      const fullyDisposed = trustedFinishedDisposition
+        ? (
+            Number(result?.remainingQuantity || 0) <= 0 ||
+            String(result?.status || "").trim().toLowerCase() === "destroyed"
+          )
+        : Boolean(result?.archived);
+
       setMessage(
-        result?.archived
+        fullyDisposed
           ? `${lot?.name || lot.id} was fully disposed and moved to history.`
           : `${formatQty(quantity, lot?.unit || "units", getQtyDigits(lot?.unit || "units"))} was removed from ${lot?.name || lot.id}.`
       );

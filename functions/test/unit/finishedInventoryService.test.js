@@ -4,6 +4,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   FinishedInventoryServiceError,
+  buildTrustedFinishedFinalDisposition,
   compareTrustedFinishedFefoPriority,
   getTrustedFinishedFefoBlocker,
   getTrustedFinishedSalesSkuKey,
@@ -66,6 +67,76 @@ function packagedLot(overrides = {}) {
   };
 }
 
+test("trusted package final disposition preserves destruction audit parity", () => {
+  const partial = buildTrustedFinishedFinalDisposition(
+    packagedLot({
+      destructionSummary: {
+        destroyedQuantity: 2,
+      },
+    }),
+    {
+      movementType: "destroy",
+      referenceType: "final_disposition",
+      referenceId: "failed_qc",
+      quantity: 3,
+      date: "2026-09-14",
+      reason: "Failed package QC.",
+      destroyMethod: "discarded",
+      note: "Witnessed disposal.",
+      nextRemaining: 5,
+    }
+  );
+
+  assert.deepEqual(partial, {
+    type: "destroy",
+    trigger: "failed_qc",
+    method: "discarded",
+    reason: "Failed package QC.",
+    note: "Witnessed disposal.",
+    lastQuantity: 3,
+    totalQuantity: 5,
+    lastDate: "2026-09-14",
+    completed: false,
+    completedAt: "",
+  });
+
+  const completed = buildTrustedFinishedFinalDisposition(
+    packagedLot({
+      finalDisposition: partial,
+      destructionSummary: {
+        destroyedQuantity: 5,
+      },
+    }),
+    {
+      movementType: "destroy",
+      referenceType: "final_disposition",
+      referenceId: "failed_qc",
+      quantity: 5,
+      date: "2026-09-15",
+      reason: "Failed package QC.",
+      destroyMethod: "discarded",
+      note: "Remaining packages destroyed.",
+      nextRemaining: 0,
+    }
+  );
+
+  assert.equal(completed.totalQuantity, 10);
+  assert.equal(completed.completed, true);
+  assert.equal(completed.completedAt, "2026-09-15");
+
+  assert.equal(
+    buildTrustedFinishedFinalDisposition(
+      packagedLot(),
+      {
+        movementType: "destroy",
+        referenceType: "normal_inventory_movement",
+        quantity: 1,
+        nextRemaining: 9,
+      }
+    ),
+    null
+  );
+});
 test("trusted FEFO key scopes rotation to the exact package SKU", () => {
   const first = packagedLot({ id: "a" });
   const second = packagedLot({ id: "b" });

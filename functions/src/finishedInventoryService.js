@@ -1,4 +1,5 @@
 // functions/src/finishedInventoryService.js
+// finished-inventory-service-v2-trusted-final-disposition-parity
 // finished-inventory-service-v1-trusted-fefo-authority
 
 import { FieldValue } from "firebase-admin/firestore";
@@ -616,6 +617,73 @@ function buildOutboundSummary(
   }
 
   return next;
+}
+
+export function buildTrustedFinishedFinalDisposition(
+  lot = {},
+  {
+    movementType = "",
+    referenceType = "",
+    referenceId = "",
+    quantity = 0,
+    date = "",
+    reason = "",
+    destroyMethod = "",
+    note = "",
+    nextRemaining = 0,
+  } = {}
+) {
+  if (
+    normalizeMovementType(movementType) !== "destroy" ||
+    safeString(referenceType).toLowerCase() !== "final_disposition"
+  ) {
+    return null;
+  }
+
+  const previousDisposition =
+    lot?.finalDisposition &&
+    typeof lot.finalDisposition === "object"
+      ? lot.finalDisposition
+      : {};
+
+  const previousDestroyed =
+    sanitizePositiveNumber(
+      valueOrFallback(
+        previousDisposition?.totalQuantity,
+        lot?.destructionSummary?.destroyedQuantity,
+        0
+      )
+    );
+
+  const completed =
+    sanitizePositiveNumber(nextRemaining) <= 0;
+
+  return {
+    type: "destroy",
+    trigger:
+      safeString(referenceId) ||
+      "manual_disposition",
+    method:
+      safeString(destroyMethod) ||
+      "discarded",
+    reason: safeString(reason),
+    note: safeString(note),
+    lastQuantity:
+      sanitizePositiveNumber(quantity),
+    totalQuantity:
+      sanitizePositiveNumber(
+        previousDestroyed +
+          sanitizePositiveNumber(quantity)
+      ),
+    lastDate: safeString(date),
+    completed,
+    completedAt:
+      completed
+        ? safeString(date)
+        : safeString(
+            previousDisposition?.completedAt
+          ),
+  };
 }
 
 function normalizeSalesKeyPart(value = "") {
@@ -1436,6 +1504,27 @@ export async function recordFinishedInventoryMovementTrusted({
         lastDestroyMethod:
           destroyMethod || null,
       };
+
+      const finalDisposition =
+        buildTrustedFinishedFinalDisposition(
+          lot,
+          {
+            movementType,
+            referenceType,
+            referenceId,
+            quantity,
+            date,
+            reason,
+            destroyMethod,
+            note,
+            nextRemaining,
+          }
+        );
+
+      if (finalDisposition) {
+        lotUpdate.finalDisposition =
+          finalDisposition;
+      }
 
       if (nextRemaining <= 0) {
         lotUpdate.destroyedAt = date;

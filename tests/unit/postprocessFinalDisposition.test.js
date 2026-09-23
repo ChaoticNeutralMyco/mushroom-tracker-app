@@ -351,6 +351,44 @@ describe("post-processing packaged sales regression", () => {
       "delete payload.fefoSelectedBestBy;"
     );
   });
+  it("routes packaged final disposition through the trusted backend while preserving generic material disposition", () => {
+    const handlerStart = postProcessManagerSource.indexOf(
+      "async function handleFinalDisposition(lot)"
+    );
+    const handlerEnd = postProcessManagerSource.indexOf(
+      "async function handleReleasePackage(lot)",
+      handlerStart
+    );
+    const handler = postProcessManagerSource.slice(
+      handlerStart,
+      handlerEnd
+    );
+
+    expect(handler).toContain(
+      "const trustedFinishedDisposition ="
+    );
+    expect(handler).toContain(
+      "isFinishedGoodsLot(lot) && isPackagedForSale(lot);"
+    );
+    expect(handler).toContain(
+      "await recordFinishedInventoryMovementTrusted({"
+    );
+    expect(handler).toContain(
+      'movementType: "destroy"'
+    );
+    expect(handler).toContain(
+      'referenceType: "final_disposition"'
+    );
+    expect(handler).toContain(
+      'referenceId: dispositionState.reasonCode || "manual_disposition"'
+    );
+    expect(handler).toContain(
+      ": await recordMaterialLotFinalDisposition({"
+    );
+    expect(handler).toContain(
+      "const fullyDisposed = trustedFinishedDisposition"
+    );
+  });
   it("retains outbound movements in the auditable inventory ledger", () => {
     expect(postProcessManagerSource).toContain(
       'title="Inventory movement ledger"'
