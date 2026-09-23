@@ -31,6 +31,11 @@ const postprocessLibSource = readFileSync(
   "utf8"
 ).replace(/\r\n?/g, "\n");
 
+const finishedInventoryApiSource = readFileSync(
+  new URL("../../src/lib/finishedInventoryApi.js", import.meta.url),
+  "utf8"
+).replace(/\r\n?/g, "\n");
+
 const growLifecycleSource = readFileSync(
   new URL("../e2e/grow-lifecycle.spec.ts", import.meta.url),
   "utf8"
@@ -308,6 +313,44 @@ describe("post-processing packaged sales regression", () => {
     );
   });
 
+  it("routes finished inventory writes through the deployed trusted callable boundary", () => {
+    expect(postProcessManagerSource).toContain(
+      'import { recordFinishedInventoryMovementTrusted } from "../../lib/finishedInventoryApi.js";'
+    );
+    expect(postProcessManagerSource).toContain(
+      "await recordFinishedInventoryMovementTrusted({"
+    );
+    expect(postProcessManagerSource).not.toContain(
+      "await recordFinishedInventoryMovement({"
+    );
+    expect(finishedInventoryApiSource).toContain(
+      'import { httpsCallable } from "firebase/functions";'
+    );
+    expect(finishedInventoryApiSource).toContain(
+      '"recordFinishedInventoryMovementTrusted"'
+    );
+    expect(finishedInventoryApiSource).toContain(
+      "delete payload.userId;"
+    );
+    expect(finishedInventoryApiSource).toContain(
+      "delete payload.revenue;"
+    );
+    expect(finishedInventoryApiSource).toContain(
+      "delete payload.defaultPricePerUnit;"
+    );
+    expect(finishedInventoryApiSource).toContain(
+      "delete payload.fefoSkippedLotId;"
+    );
+    expect(finishedInventoryApiSource).toContain(
+      "delete payload.fefoSkippedLotCode;"
+    );
+    expect(finishedInventoryApiSource).toContain(
+      "delete payload.fefoSkippedBestBy;"
+    );
+    expect(finishedInventoryApiSource).toContain(
+      "delete payload.fefoSelectedBestBy;"
+    );
+  });
   it("retains outbound movements in the auditable inventory ledger", () => {
     expect(postProcessManagerSource).toContain(
       'title="Inventory movement ledger"'
@@ -316,7 +359,7 @@ describe("post-processing packaged sales regression", () => {
       "movements.map((movement) =>"
     );
     expect(postProcessManagerSource).toContain(
-      "recordFinishedInventoryMovement({"
+      "recordFinishedInventoryMovementTrusted({"
     );
     expect(postprocessLibSource).toContain(
       "movementType: normalizedType"

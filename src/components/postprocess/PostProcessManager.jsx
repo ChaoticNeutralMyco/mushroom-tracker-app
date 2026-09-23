@@ -1,4 +1,5 @@
 // src/components/postprocess/PostProcessManager.jsx
+// postprocess-v49-trusted-finished-inventory-callable
 // postprocess-v48-outbound-quality-button-fix
 // postprocess-v47-external-distribution-qc-release-boundaries
 // postprocess-v46-package-qc-release-boundaries
@@ -68,10 +69,10 @@ import {
   isLowStockLot,
   parseAnyDate,
   createPackagedFinishedLot,
-  recordFinishedInventoryMovement,
   recordMaterialLotFinalDisposition,
   toLocalYYYYMMDD,
 } from "../../lib/postprocess";
+import { recordFinishedInventoryMovementTrusted } from "../../lib/finishedInventoryApi.js";
 import {
   LAB_OPERATION_ACTIONS,
   getInventoryMovementRequirement,
@@ -3927,7 +3928,7 @@ export default function PostProcessManager({
       if (form.movementType === "destroy" && !String(form.reason || "").trim()) {
         throw new Error("Enter a reason before destroying finished inventory.");
       }
-      await recordFinishedInventoryMovement({
+      await recordFinishedInventoryMovementTrusted({
         userId,
         lotId: lot.id,
         movementType: form.movementType,
