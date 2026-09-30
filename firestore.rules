@@ -69,6 +69,89 @@ service cloud.firestore {
       return !isActiveGrow(resource.data) && isActiveGrow(request.resource.data);
     }
 
+    function isPackagedFinishedInventory(data) {
+      return
+        fieldIn(data, "sourceType", ["finished_package"]) ||
+        (
+          hasField(data, "packageRunId") &&
+          data.packageRunId is string &&
+          data.packageRunId.size() > 0
+        ) ||
+        (
+          hasField(data, "package") &&
+          data.package is map &&
+          hasField(data.package, "isPackaged") &&
+          data.package.isPackaged == true
+        );
+    }
+
+    function packagedFinishedMovementFieldsAreUnchanged() {
+      return !request.resource.data
+        .diff(resource.data)
+        .affectedKeys()
+        .hasAny([
+          "initialQuantity",
+          "allocatedQuantity",
+          "remainingQuantity",
+          "status",
+          "outboundSummary",
+          "lastOutboundMovementType",
+          "lastOutboundMovementDate",
+          "destructionSummary",
+          "finalDisposition",
+          "destroyedAt",
+          "archived",
+          "isArchived",
+          "inArchive",
+          "archivedAt",
+          "archivedOn",
+          "archived_on",
+          "deleted",
+          "deletedAt"
+        ]);
+    }
+
+    function browserCanUpdateMaterialLot() {
+      return
+        !isPackagedFinishedInventory(resource.data) ||
+        (
+          isPackagedFinishedInventory(request.resource.data) &&
+          packagedFinishedMovementFieldsAreUnchanged()
+        );
+    }
+
+    function isAllowedBrowserMaterialDestroy(uid, data) {
+      return
+        fieldIn(data, "movementType", ["destroy"]) &&
+        fieldIn(data, "processType", ["material_inventory"]) &&
+        hasField(data, "lotId") &&
+        data.lotId is string &&
+        exists(
+          /databases/$(database)/documents/users/$(uid)/materialLots/$(data.lotId)
+        ) &&
+        !isPackagedFinishedInventory(
+          get(
+            /databases/$(database)/documents/users/$(uid)/materialLots/$(data.lotId)
+          ).data
+        );
+    }
+
+    function isTrustedFinishedInventoryMovement(uid, data) {
+      return
+        fieldIn(data, "processType", ["finished_inventory"]) ||
+        fieldIn(data, "movementType", [
+          "sell",
+          "donate",
+          "sample",
+          "waste",
+          "adjustment"
+        ]) ||
+        (
+          fieldIn(data, "movementType", ["destroy"]) &&
+          !isAllowedBrowserMaterialDestroy(uid, data)
+        );
+    }
+
     function isValidMarketingConsent(data) {
       return
         data.keys().hasOnly([
@@ -141,15 +224,55 @@ service cloud.firestore {
         allow read, create, update, delete: if isOwner(uid);
       }
 
-      // Current application data lives under users/{uid}/... . Billing and
-      // grow documents are deliberately excluded because they have stricter
-      // rules above.
+      // Packaged finished-inventory movement accounting is authoritative on
+      // the trusted backend. Owners retain normal reads and operational
+      // metadata editing such as QC, release, reservations, shelf life, and
+      // low-stock settings, but browser code cannot directly mutate quantity,
+      // disposition, archive, or outbound-accounting fields.
+      match /materialLots/{lotId} {
+        allow read, create, delete: if isOwner(uid);
+        allow update:
+          if isOwner(uid) &&
+             browserCanUpdateMaterialLot();
+      }
+
+      // Inventory movements remain owner-readable. Trusted finished-inventory
+      // sale/distribution/accounting movements are backend-only. Generic
+      // final disposition remains browser-writable for non-packaged material
+      // because that workflow has not been migrated to the callable boundary.
+      match /inventoryMovements/{movementId} {
+        allow read, delete: if isOwner(uid);
+
+        allow create:
+          if isOwner(uid) &&
+             !isTrustedFinishedInventoryMovement(
+               uid,
+               request.resource.data
+             );
+
+        allow update:
+          if isOwner(uid) &&
+             !isTrustedFinishedInventoryMovement(
+               uid,
+               resource.data
+             ) &&
+             !isTrustedFinishedInventoryMovement(
+               uid,
+               request.resource.data
+             );
+      }
+
+      // Current application data lives under users/{uid}/... . Billing,
+      // grows, communications, material lots, and inventory movements are
+      // deliberately excluded because they have stricter rules above.
       match /{collectionId}/{document=**} {
         allow read, create, update, delete:
           if isOwner(uid) &&
              collectionId != 'billing' &&
              collectionId != 'grows' &&
-             collectionId != 'communications';
+             collectionId != 'communications' &&
+             collectionId != 'materialLots' &&
+             collectionId != 'inventoryMovements';
       }
     }
 

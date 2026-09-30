@@ -167,6 +167,39 @@ async function seedAdminGrant(uid) {
   });
 }
 
+async function seedPackagedFinishedLot(uid, lotId = "trusted-package") {
+  await db.doc(`users/${uid}/materialLots/${lotId}`).set({
+    lotType: "capsules",
+    inventoryCategory: "finished_goods",
+    processType: "packaging",
+    sourceType: "finished_package",
+    packageRunId: lotId,
+    status: "available",
+    initialQuantity: 10,
+    allocatedQuantity: 0,
+    remainingQuantity: 10,
+    reservationQuantity: 0,
+    qcStatus: "pass",
+    releaseRequired: true,
+    releaseStatus: "released",
+    lowStockThreshold: 2,
+  });
+}
+
+async function seedDryMaterialLot(uid, lotId = "dry-material") {
+  await db.doc(`users/${uid}/materialLots/${lotId}`).set({
+    lotType: "dry_material",
+    inventoryCategory: "material",
+    processType: "drying",
+    sourceType: "grow",
+    status: "available",
+    initialQuantity: 100,
+    allocatedQuantity: 0,
+    remainingQuantity: 100,
+    unit: "g",
+  });
+}
+
 before(async () => {
   if (!firestoreHost || !authHost) {
     throw new Error(
@@ -314,6 +347,185 @@ test("tester codes and redemption records are completely private to the backend"
   assertDenied(writeCode, "Tester-code creation");
 });
 
+test("browser clients cannot mutate trusted packaged finished inventory accounting fields", async () => {
+  const lotId = "protected-package";
+  const path = `users/${owner.uid}/materialLots/${lotId}`;
+
+  await seedPackagedFinishedLot(owner.uid, lotId);
+
+  const remaining = await firestoreRequest({
+    method: "PATCH",
+    path,
+    token: owner.idToken,
+    query: "?updateMask.fieldPaths=remainingQuantity",
+    body: firestoreFields({
+      remainingQuantity: 999,
+    }),
+  });
+  assertDenied(remaining, "Packaged remaining-quantity mutation");
+
+  const status = await firestoreRequest({
+    method: "PATCH",
+    path,
+    token: owner.idToken,
+    query: "?updateMask.fieldPaths=status",
+    body: firestoreFields({
+      status: "depleted",
+    }),
+  });
+  assertDenied(status, "Packaged status mutation");
+
+  const movementType = await firestoreRequest({
+    method: "PATCH",
+    path,
+    token: owner.idToken,
+    query: "?updateMask.fieldPaths=lastOutboundMovementType",
+    body: firestoreFields({
+      lastOutboundMovementType: "sell",
+    }),
+  });
+  assertDenied(movementType, "Packaged outbound movement mutation");
+
+  const archived = await firestoreRequest({
+    method: "PATCH",
+    path,
+    token: owner.idToken,
+    query: "?updateMask.fieldPaths=archived",
+    body: firestoreFields({
+      archived: true,
+    }),
+  });
+  assertDenied(archived, "Packaged archive-state mutation");
+
+  const stored = (await db.doc(path).get()).data();
+  assert.equal(stored.remainingQuantity, 10);
+  assert.equal(stored.status, "available");
+  assert.equal(stored.archived, undefined);
+});
+
+test("owners retain operational package metadata updates outside trusted accounting fields", async () => {
+  const lotId = "editable-package";
+  const path = `users/${owner.uid}/materialLots/${lotId}`;
+
+  await seedPackagedFinishedLot(owner.uid, lotId);
+
+  const qc = await firestoreRequest({
+    method: "PATCH",
+    path,
+    token: owner.idToken,
+    query: "?updateMask.fieldPaths=qcStatus",
+    body: firestoreFields({
+      qcStatus: "pending",
+    }),
+  });
+  assert.equal(qc.status, 200, qc.body);
+
+  const release = await firestoreRequest({
+    method: "PATCH",
+    path,
+    token: owner.idToken,
+    query: "?updateMask.fieldPaths=releaseStatus",
+    body: firestoreFields({
+      releaseStatus: "pending",
+    }),
+  });
+  assert.equal(release.status, 200, release.body);
+
+  const threshold = await firestoreRequest({
+    method: "PATCH",
+    path,
+    token: owner.idToken,
+    query: "?updateMask.fieldPaths=lowStockThreshold",
+    body: firestoreFields({
+      lowStockThreshold: 4,
+    }),
+  });
+  assert.equal(threshold.status, 200, threshold.body);
+
+  const stored = (await db.doc(path).get()).data();
+  assert.equal(stored.qcStatus, "pending");
+  assert.equal(stored.releaseStatus, "pending");
+  assert.equal(stored.lowStockThreshold, 4);
+  assert.equal(stored.remainingQuantity, 10);
+});
+
+test("browser clients cannot forge trusted finished inventory movements but retain generic material disposition", async () => {
+  const packagedLotId = "movement-package";
+  const dryLotId = "movement-dry";
+
+  await seedPackagedFinishedLot(owner.uid, packagedLotId);
+  await seedDryMaterialLot(owner.uid, dryLotId);
+
+  const forgedTrusted = await firestoreRequest({
+    method: "PATCH",
+    path: `users/${owner.uid}/inventoryMovements/forged-trusted`,
+    token: owner.idToken,
+    body: firestoreFields({
+      movementType: "adjustment",
+      processType: "finished_inventory",
+      lotId: packagedLotId,
+      direction: "out",
+      quantity: 1,
+    }),
+  });
+  assertDenied(forgedTrusted, "Trusted finished inventory movement creation");
+
+  const spoofedSale = await firestoreRequest({
+    method: "PATCH",
+    path: `users/${owner.uid}/inventoryMovements/spoofed-sale`,
+    token: owner.idToken,
+    body: firestoreFields({
+      movementType: "sell",
+      processType: "material_inventory",
+      lotId: dryLotId,
+      direction: "out",
+      quantity: 1,
+    }),
+  });
+  assertDenied(spoofedSale, "Spoofed browser sale movement");
+
+  const packagedDestroy = await firestoreRequest({
+    method: "PATCH",
+    path: `users/${owner.uid}/inventoryMovements/packaged-destroy`,
+    token: owner.idToken,
+    body: firestoreFields({
+      movementType: "destroy",
+      processType: "material_inventory",
+      lotId: packagedLotId,
+      direction: "out",
+      quantity: 1,
+    }),
+  });
+  assertDenied(packagedDestroy, "Packaged browser destruction movement");
+
+  const genericDestroy = await firestoreRequest({
+    method: "PATCH",
+    path: `users/${owner.uid}/inventoryMovements/material-destroy`,
+    token: owner.idToken,
+    body: firestoreFields({
+      movementType: "destroy",
+      processType: "material_inventory",
+      lotId: dryLotId,
+      direction: "out",
+      quantity: 1,
+    }),
+  });
+  assert.equal(genericDestroy.status, 200, genericDestroy.body);
+
+  const packageMovement = await firestoreRequest({
+    method: "PATCH",
+    path: `users/${owner.uid}/inventoryMovements/package-in`,
+    token: owner.idToken,
+    body: firestoreFields({
+      movementType: "package_in",
+      processType: "packaging",
+      lotId: packagedLotId,
+      direction: "in",
+      quantity: 10,
+    }),
+  });
+  assert.equal(packageMovement.status, 200, packageMovement.body);
+});
 test("owners retain normal read and write access outside billing", async () => {
   const taskPath = `users/${owner.uid}/tasks/rules-test-task`;
 
