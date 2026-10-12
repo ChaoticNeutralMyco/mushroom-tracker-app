@@ -1,4 +1,5 @@
 // functions/src/finishedInventoryService.js
+// finished-inventory-service-v3-strict-authority-parity
 // finished-inventory-service-v2-trusted-final-disposition-parity
 // finished-inventory-service-v1-trusted-fefo-authority
 
@@ -91,6 +92,23 @@ function normalizeMovementType(value = "") {
   return OUTBOUND_MOVEMENT_TYPES.has(normalized)
     ? normalized
     : "adjustment";
+}
+
+function requireMovementType(value = "") {
+  const normalized = safeString(value).toLowerCase();
+
+  if (!OUTBOUND_MOVEMENT_TYPES.has(normalized)) {
+    throw new FinishedInventoryServiceError(
+      "Choose a valid finished-inventory movement type.",
+      "invalid-argument",
+      {
+        code: "invalid-movement-type",
+        movementType: safeString(value) || null,
+      }
+    );
+  }
+
+  return normalized;
 }
 
 function normalizeSkuType(value = "") {
@@ -693,6 +711,58 @@ function normalizeSalesKeyPart(value = "") {
     .replace(/^-+|-+$/g, "");
 }
 
+function formatCleanWeightG(value, digits = 1) {
+  const numeric = Number(value);
+
+  if (!Number.isFinite(numeric) || numeric <= 0) {
+    return "0 g";
+  }
+
+  const factor = 10 ** digits;
+  const rounded = Math.round(numeric * factor) / factor;
+
+  return `${String(rounded).replace(/\.0$/, "")} g`;
+}
+
+function getPackageCapsulesPerPackage(lot = {}) {
+  const numeric = Number(
+    lot?.capsulesPerPackage ??
+      lot?.package?.capsulesPerPackage ??
+      lot?.labelMetadata?.capsulesPerPackage ??
+      0
+  );
+
+  return Number.isFinite(numeric) && numeric > 0
+    ? Math.floor(numeric)
+    : 0;
+}
+
+function getPackageActualWeightG(lot = {}) {
+  const direct = Number(
+    lot?.actualPackageWeightG ??
+      lot?.package?.actualWeightG ??
+      lot?.labelMetadata?.actualPackageWeightG ??
+      0
+  );
+
+  if (Number.isFinite(direct) && direct > 0) {
+    return Math.round(direct * 1000) / 1000;
+  }
+
+  const totalWeight = safeString(
+    lot?.totalWeight ??
+      lot?.labelMetadata?.totalWeight
+  );
+
+  const parsed = Number(
+    totalWeight.match(/([0-9]+(?:\.[0-9]+)?)/)?.[1] || 0
+  );
+
+  return Number.isFinite(parsed) && parsed > 0
+    ? parsed
+    : 0;
+}
+
 function getPackageSizeLabel(lot = {}) {
   const explicit = safeString(
     lot?.packageSizeLabel ||
@@ -714,6 +784,16 @@ function getPackageSizeLabel(lot = {}) {
       lot?.package?.unit ??
       lot?.labelMetadata?.packageSizeUnit
   );
+
+  const capsulesPerPackage = getPackageCapsulesPerPackage(lot);
+  const actualWeightG = getPackageActualWeightG(lot);
+
+  if (capsulesPerPackage > 0 && actualWeightG > 0) {
+    return `${capsulesPerPackage} capsules · ≈ ${formatCleanWeightG(
+      actualWeightG,
+      actualWeightG < 1 ? 3 : 1
+    )}`;
+  }
 
   if (Number.isFinite(size) && size > 0) {
     return `${size} ${unit}`.trim();
@@ -890,6 +970,25 @@ export function getTrustedFinishedFefoBlocker(
         compareTrustedFinishedFefoPriority
       )[0] || null
   );
+}
+
+export async function loadTrustedFinishedFefoCandidates({
+  tx,
+  userRef,
+} = {}) {
+  // Include older finished lots without inventoryCategory.
+  // The Firestore document path, not a client-supplied id field,
+  // is authoritative for FEFO lot identity.
+  const materialLotsSnap = await tx.get(
+    userRef.collection("materialLots")
+  );
+
+  return materialLotsSnap.docs
+    .map((snapshot) => ({
+      ...(snapshot.data() || {}),
+      id: snapshot.id,
+    }))
+    .filter((candidate) => isFinishedGoodsLot(candidate));
 }
 
 export function resolveTrustedFinishedFefoDecision({
@@ -1160,7 +1259,7 @@ export async function recordFinishedInventoryMovementTrusted({
   }
 
   const movementType =
-    normalizeMovementType(
+    requireMovementType(
       payload?.movementType
     );
 
@@ -1244,8 +1343,8 @@ export async function recordFinishedInventoryMovementTrusted({
     }
 
     const lot = {
-      id: lotSnap.id,
       ...(lotSnap.data() || {}),
+      id: lotSnap.id,
     };
 
     if (!isFinishedGoodsLot(lot)) {
@@ -1346,25 +1445,11 @@ export async function recordFinishedInventoryMovementTrusted({
     };
 
     if (movementType === "sell") {
-      const finishedGoodsQuery =
-        userRef
-          .collection("materialLots")
-          .where(
-            "inventoryCategory",
-            "==",
-            "finished_goods"
-          );
-
-      const finishedGoodsSnap =
-        await tx.get(finishedGoodsQuery);
-
       const candidateLots =
-        finishedGoodsSnap.docs.map(
-          (snapshot) => ({
-            id: snapshot.id,
-            ...(snapshot.data() || {}),
-          })
-        );
+        await loadTrustedFinishedFefoCandidates({
+          tx,
+          userRef,
+        });
 
       fefoDecision =
         resolveTrustedFinishedFefoDecision({

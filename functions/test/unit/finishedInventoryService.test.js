@@ -10,6 +10,8 @@ import {
   getTrustedFinishedSalesSkuKey,
   getTrustedFinishedSaleBlockReason,
   hasTrustedFinishedInventoryMovementAccess,
+  loadTrustedFinishedFefoCandidates,
+  recordFinishedInventoryMovementTrusted,
   resolveTrustedFinishedFefoDecision,
 } from "../../src/finishedInventoryService.js";
 import {
@@ -66,6 +68,174 @@ function packagedLot(overrides = {}) {
     ...overrides,
   };
 }
+
+test("trusted callable rejects unknown movement types instead of coercing them to adjustment", async () => {
+  let transactionCalled = false;
+
+  for (const movementType of ["sell-ish", "", "unknown"]) {
+    await assert.rejects(
+      recordFinishedInventoryMovementTrusted({
+        db: {
+          runTransaction: async () => {
+            transactionCalled = true;
+            throw new Error("Invalid movement reached the transaction.");
+          },
+        },
+        uid: "owner",
+        payload: {
+          lotId: "package-lot",
+          movementType,
+          quantity: 1,
+        },
+      }),
+      (error) =>
+        error instanceof FinishedInventoryServiceError &&
+        error.code === "invalid-argument" &&
+        error.details?.code === "invalid-movement-type"
+    );
+  }
+
+  assert.equal(transactionCalled, false);
+});
+
+test("trusted FEFO SKU reconstruction matches capsule package label fallback", () => {
+  const canonical = packagedLot({
+    id: "canonical",
+    packageSizeLabel: "60 capsules · ≈ 30 g",
+    package: {
+      isPackaged: true,
+      skuType: "retail",
+      size: 60,
+      unit: "capsules",
+      label: "60 capsules · ≈ 30 g",
+      packagedDate: "2026-09-01",
+    },
+  });
+
+  const legacy = packagedLot({
+    id: "legacy",
+    packageSizeLabel: "",
+    capsulesPerPackage: 60,
+    actualPackageWeightG: 30,
+    package: {
+      isPackaged: true,
+      skuType: "retail",
+      size: 60,
+      unit: "capsules",
+      label: "",
+      packagedDate: "2026-09-01",
+    },
+  });
+
+  assert.equal(
+    getTrustedFinishedSalesSkuKey(legacy),
+    getTrustedFinishedSalesSkuKey(canonical)
+  );
+});
+
+test("trusted FEFO includes legacy finished lots and uses real Firestore document IDs", async () => {
+  const selected = packagedLot({
+    id: "selected",
+    shelfLife: { bestBy: "2027-01-01" },
+  });
+
+  const legacy = packagedLot({
+    id: "selected",
+    shelfLife: { bestBy: "2026-12-01" },
+  });
+
+  delete legacy.inventoryCategory;
+
+  const dry = {
+    lotType: "dry_material",
+    remainingQuantity: 100,
+  };
+
+  const collectionRef = {
+    path: "users/owner/materialLots",
+  };
+
+  const userRef = {
+    collection(name) {
+      assert.equal(name, "materialLots");
+      return collectionRef;
+    },
+  };
+
+  const tx = {
+    async get(ref) {
+      assert.equal(ref, collectionRef);
+
+      return {
+        docs: [
+          {
+            id: "legacy-earlier",
+            data: () => legacy,
+          },
+          {
+            id: "selected",
+            data: () => selected,
+          },
+          {
+            id: "dry-material",
+            data: () => dry,
+          },
+        ],
+      };
+    },
+  };
+
+  const candidates = await loadTrustedFinishedFefoCandidates({
+    tx,
+    userRef,
+  });
+
+  assert.deepEqual(
+    candidates.map((candidate) => candidate.id),
+    ["legacy-earlier", "selected"]
+  );
+
+  assert.equal(
+    Object.prototype.hasOwnProperty.call(
+      candidates[0],
+      "inventoryCategory"
+    ),
+    false
+  );
+
+  assert.equal(
+    getTrustedFinishedFefoBlocker(
+      selected,
+      candidates,
+      AS_OF
+    )?.id,
+    "legacy-earlier"
+  );
+});
+
+test("inactive entitlements cannot reuse stale finished-inventory feature overrides", () => {
+  for (const status of [
+    SUBSCRIPTION_STATUSES.CANCELED,
+    SUBSCRIPTION_STATUSES.EXPIRED,
+  ]) {
+    assert.equal(
+      hasTrustedFinishedInventoryMovementAccess({
+        entitlement: {
+          planId: SUBSCRIPTION_PLAN_IDS.LAB,
+          status,
+          featureOverrides: {
+            salesTracking: true,
+            fefoControls: true,
+            inventoryAuditHistory: true,
+          },
+        },
+        movementType: "sell",
+        now: new Date("2026-09-14T12:00:00.000Z"),
+      }),
+      false
+    );
+  }
+});
 
 test("trusted package final disposition preserves destruction audit parity", () => {
   const partial = buildTrustedFinishedFinalDisposition(
