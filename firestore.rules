@@ -152,6 +152,42 @@ service cloud.firestore {
         );
     }
 
+    // Deletion checks use the stored record, not caller-supplied replacement
+    // data. Keep trusted finished-inventory history immutable, while allowing
+    // cleanup of ordinary packaging records and non-packaged material history.
+    // An old material-destroy record remains removable if its lot was already
+    // deleted, because it cannot have been a valid packaged-destroy record
+    // when it was originally created through the browser.
+    function browserCanDeleteInventoryMovement(uid, data) {
+      return
+        !fieldIn(data, "processType", ["finished_inventory"]) &&
+        !fieldIn(data, "movementType", [
+          "sell",
+          "donate",
+          "sample",
+          "waste",
+          "adjustment"
+        ]) &&
+        (
+          !fieldIn(data, "movementType", ["destroy"]) ||
+          (
+            fieldIn(data, "processType", ["material_inventory"]) &&
+            hasField(data, "lotId") &&
+            data.lotId is string &&
+            (
+              !exists(
+                /databases/$(database)/documents/users/$(uid)/materialLots/$(data.lotId)
+              ) ||
+              !isPackagedFinishedInventory(
+                get(
+                  /databases/$(database)/documents/users/$(uid)/materialLots/$(data.lotId)
+                ).data
+              )
+            )
+          )
+        );
+    }
+
     function isValidMarketingConsent(data) {
       return
         data.keys().hasOnly([
@@ -230,7 +266,12 @@ service cloud.firestore {
       // low-stock settings, but browser code cannot directly mutate quantity,
       // disposition, archive, or outbound-accounting fields.
       match /materialLots/{lotId} {
-        allow read, create, delete: if isOwner(uid);
+        allow read, create: if isOwner(uid);
+        // Packaged lots retain their trusted accounting and audit history;
+        // generic source/material lots remain owner-deletable.
+        allow delete:
+          if isOwner(uid) &&
+             !isPackagedFinishedInventory(resource.data);
         allow update:
           if isOwner(uid) &&
              browserCanUpdateMaterialLot();
@@ -241,7 +282,13 @@ service cloud.firestore {
       // final disposition remains browser-writable for non-packaged material
       // because that workflow has not been migrated to the callable boundary.
       match /inventoryMovements/{movementId} {
-        allow read, delete: if isOwner(uid);
+        allow read: if isOwner(uid);
+        // Trusted finished-inventory movement history is append-only for
+        // browser users, including the owner. Generic material and packaging
+        // cleanup retains its existing deletion path.
+        allow delete:
+          if isOwner(uid) &&
+             browserCanDeleteInventoryMovement(uid, resource.data);
 
         allow create:
           if isOwner(uid) &&

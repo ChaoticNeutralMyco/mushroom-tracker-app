@@ -403,6 +403,202 @@ test("browser clients cannot mutate trusted packaged finished inventory accounti
   assert.equal(stored.archived, undefined);
 });
 
+test("browser owners cannot delete packaged finished lots but can delete ordinary material lots", async () => {
+  const packagedLotId = "delete-protected-package";
+  const packagedPath = `users/${owner.uid}/materialLots/${packagedLotId}`;
+  const dryLotId = "delete-ordinary-dry-material";
+  const dryPath = `users/${owner.uid}/materialLots/${dryLotId}`;
+
+  await seedPackagedFinishedLot(owner.uid, packagedLotId);
+  await seedDryMaterialLot(owner.uid, dryLotId);
+
+  const ownerDeletePackaged = await firestoreRequest({
+    method: "DELETE",
+    path: packagedPath,
+    token: owner.idToken,
+  });
+  assertDenied(ownerDeletePackaged, "Owner deletion of a packaged finished lot");
+
+  const otherDeletePackaged = await firestoreRequest({
+    method: "DELETE",
+    path: packagedPath,
+    token: otherUser.idToken,
+  });
+  assertDenied(otherDeletePackaged, "Cross-account packaged lot deletion");
+
+  assert.equal((await db.doc(packagedPath).get()).exists, true);
+  assert.equal((await db.doc(packagedPath).get()).data().remainingQuantity, 10);
+
+  // Legacy package documents must not escape protection just because they
+  // use the nested package marker rather than sourceType or packageRunId.
+  const legacyPackagePath = `users/${owner.uid}/materialLots/legacy-nested-package`;
+  await db.doc(legacyPackagePath).set({
+    lotType: "capsules",
+    package: { isPackaged: true },
+    remainingQuantity: 3,
+  });
+  const deleteLegacyPackage = await firestoreRequest({
+    method: "DELETE",
+    path: legacyPackagePath,
+    token: owner.idToken,
+  });
+  assertDenied(deleteLegacyPackage, "Legacy nested-package deletion");
+  assert.equal((await db.doc(legacyPackagePath).get()).exists, true);
+
+  const ownerDeleteDry = await firestoreRequest({
+    method: "DELETE",
+    path: dryPath,
+    token: owner.idToken,
+  });
+  assert.ok(ownerDeleteDry.ok, ownerDeleteDry.body);
+  assert.equal((await db.doc(dryPath).get()).exists, false);
+});
+
+test("browser owners cannot delete or rewrite trusted finished inventory movements", async () => {
+  const lotId = "movement-deletion-protected-package";
+  await seedPackagedFinishedLot(owner.uid, lotId);
+
+  for (const movementType of [
+    "sell",
+    "donate",
+    "sample",
+    "waste",
+    "destroy",
+    "adjustment",
+  ]) {
+    const path = `users/${owner.uid}/inventoryMovements/trusted-${movementType}`;
+    await db.doc(path).set({
+      movementType,
+      processType: "finished_inventory",
+      lotId,
+      direction: "out",
+      quantity: 1,
+    });
+
+    const ownerDelete = await firestoreRequest({
+      method: "DELETE",
+      path,
+      token: owner.idToken,
+    });
+    assertDenied(ownerDelete, `Owner deletion of trusted ${movementType} history`);
+
+    const crossAccountDelete = await firestoreRequest({
+      method: "DELETE",
+      path,
+      token: otherUser.idToken,
+    });
+    assertDenied(crossAccountDelete, `Cross-account deletion of ${movementType} history`);
+
+    assert.equal((await db.doc(path).get()).exists, true);
+  }
+
+  // A legacy/misclassified sale must still remain protected by movementType.
+  const legacySalePath = `users/${owner.uid}/inventoryMovements/legacy-sale`;
+  await db.doc(legacySalePath).set({
+    movementType: "sell",
+    processType: "material_inventory",
+    lotId,
+    quantity: 1,
+  });
+  const legacySaleDelete = await firestoreRequest({
+    method: "DELETE",
+    path: legacySalePath,
+    token: owner.idToken,
+  });
+  assertDenied(legacySaleDelete, "Legacy sale history deletion");
+
+  // A mislabeled material destruction record referencing a packaged lot
+  // must not be removable through the generic material cleanup exception.
+  const mislabeledDestroyPath =
+    `users/${owner.uid}/inventoryMovements/legacy-packaged-destroy`;
+  await db.doc(mislabeledDestroyPath).set({
+    movementType: "destroy",
+    processType: "material_inventory",
+    lotId,
+    quantity: 1,
+  });
+  const packagedDestroyDelete = await firestoreRequest({
+    method: "DELETE",
+    path: mislabeledDestroyPath,
+    token: owner.idToken,
+  });
+  assertDenied(packagedDestroyDelete, "Legacy packaged destruction history deletion");
+
+  const salePath = `users/${owner.uid}/inventoryMovements/trusted-sell`;
+  const ownerRewrite = await firestoreRequest({
+    method: "PATCH",
+    path: salePath,
+    token: owner.idToken,
+    query: "?updateMask.fieldPaths=quantity",
+    body: firestoreFields({ quantity: 999 }),
+  });
+  assertDenied(ownerRewrite, "Owner mutation of trusted sale history");
+  assert.equal((await db.doc(salePath).get()).data().quantity, 1);
+});
+
+test("owners retain deletion of ordinary packaging and material destruction history", async () => {
+  const packagedLotId = "history-packaging-source";
+  const dryLotId = "history-dry-material";
+  const dryLotPath = `users/${owner.uid}/materialLots/${dryLotId}`;
+  const packagingPath = `users/${owner.uid}/inventoryMovements/history-package-in`;
+  const materialDestroyPath = `users/${owner.uid}/inventoryMovements/history-material-destroy`;
+
+  await seedPackagedFinishedLot(owner.uid, packagedLotId);
+  await seedDryMaterialLot(owner.uid, dryLotId);
+
+  const createPackageHistory = await firestoreRequest({
+    method: "PATCH",
+    path: packagingPath,
+    token: owner.idToken,
+    body: firestoreFields({
+      movementType: "package_in",
+      processType: "packaging",
+      lotId: packagedLotId,
+      direction: "in",
+      quantity: 10,
+    }),
+  });
+  assert.equal(createPackageHistory.status, 200, createPackageHistory.body);
+
+  const createMaterialHistory = await firestoreRequest({
+    method: "PATCH",
+    path: materialDestroyPath,
+    token: owner.idToken,
+    body: firestoreFields({
+      movementType: "destroy",
+      processType: "material_inventory",
+      lotId: dryLotId,
+      direction: "out",
+      quantity: 1,
+    }),
+  });
+  assert.equal(createMaterialHistory.status, 200, createMaterialHistory.body);
+
+  // Ordinary material cleanup can leave an orphan historical movement.
+  const deleteDry = await firestoreRequest({
+    method: "DELETE",
+    path: dryLotPath,
+    token: owner.idToken,
+  });
+  assert.ok(deleteDry.ok, deleteDry.body);
+
+  for (const path of [packagingPath, materialDestroyPath]) {
+    const remove = await firestoreRequest({
+      method: "DELETE",
+      path,
+      token: owner.idToken,
+    });
+    assert.ok(remove.ok, `${path}: ${remove.body}`);
+    assert.equal((await db.doc(path).get()).exists, false);
+  }
+
+  // Cleanup of unrelated package history must not delete its actual lot.
+  assert.equal(
+    (await db.doc(`users/${owner.uid}/materialLots/${packagedLotId}`).get()).exists,
+    true
+  );
+});
+
 test("owners retain operational package metadata updates outside trusted accounting fields", async () => {
   const lotId = "editable-package";
   const path = `users/${owner.uid}/materialLots/${lotId}`;
