@@ -403,6 +403,238 @@ test("browser clients cannot mutate trusted packaged finished inventory accounti
   assert.equal(stored.archived, undefined);
 });
 
+function nestedFirestoreFields(parentField, data) {
+  return {
+    fields: {
+      [parentField]: {
+        mapValue: firestoreFields(data),
+      },
+    },
+  };
+}
+
+async function seedSkuIdentityFixture(uid, lotId) {
+  await seedPackagedFinishedLot(uid, lotId);
+  await db.doc(`users/${uid}/materialLots/${lotId}`).set({
+    productType: "capsule",
+    productName: "Lion's Mane",
+    strainName: "Lion's Mane",
+    variantTag: "standard",
+    skuType: "retail",
+    packageSkuType: "retail",
+    packageSize: 3.5,
+    packageSizeUnit: "g",
+    packageSizeLabel: "3.5 g",
+    packDate: "2026-10-01",
+    package: {
+      isPackaged: true,
+      skuType: "retail",
+      size: 3.5,
+      unit: "g",
+      label: "3.5 g",
+      packagedDate: "2026-10-01",
+      costPerPackage: 2,
+    },
+    labelMetadata: {
+      productName: "Lion's Mane",
+      skuType: "retail",
+      packageSizeLabel: "3.5 g",
+      packDate: "2026-10-01",
+      bestBy: "2027-10-01",
+      notes: "Initial artwork note",
+    },
+    shelfLife: {
+      madeOn: "2026-10-01",
+      bestBy: "2027-10-01",
+    },
+  }, { merge: true });
+}
+
+test("browser owners cannot change existing packaged SKU identity or FEFO age fields", async () => {
+  const lotId = "sku-identity-locked";
+  const path = `users/${owner.uid}/materialLots/${lotId}`;
+  await seedSkuIdentityFixture(owner.uid, lotId);
+
+  const immutableFields = [
+    ["skuType", "sample"],
+    ["packageSkuType", "promo"],
+    ["productName", "Reishi"],
+    ["strainName", "Cordyceps"],
+    ["variantTag", "new-formula"],
+    ["packageSizeLabel", "7 g"],
+    ["packageSize", 7],
+    ["lotType", "dry_material"],
+    ["sourceType", "grow"],
+    ["packDate", "2028-10-01"],
+  ];
+
+  for (const [field, value] of immutableFields) {
+    const result = await firestoreRequest({
+      method: "PATCH",
+      path,
+      token: owner.idToken,
+      query: `?updateMask.fieldPaths=${field}`,
+      body: firestoreFields({ [field]: value }),
+    });
+    assertDenied(result, `Packaged SKU identity field ${field}`);
+  }
+
+  const otherAccount = await firestoreRequest({
+    method: "PATCH",
+    path,
+    token: otherUser.idToken,
+    query: "?updateMask.fieldPaths=skuType",
+    body: firestoreFields({ skuType: "sample" }),
+  });
+  assertDenied(otherAccount, "Cross-account packaged SKU identity edit");
+
+  const stored = (await db.doc(path).get()).data();
+  assert.equal(stored.skuType, "retail");
+  assert.equal(stored.productName, "Lion's Mane");
+  assert.equal(stored.packageSizeLabel, "3.5 g");
+  assert.equal(stored.packDate, "2026-10-01");
+});
+
+test("browser owners cannot rewrite nested package and label FEFO identity", async () => {
+  const lotId = "nested-identity-locked";
+  const path = `users/${owner.uid}/materialLots/${lotId}`;
+  await seedSkuIdentityFixture(owner.uid, lotId);
+
+  for (const [field, value] of [
+    ["package.skuType", "sample"],
+    ["package.label", "7 g"],
+    ["package.size", 7],
+    ["package.isPackaged", false],
+    ["package.packagedDate", "2028-10-01"],
+    ["labelMetadata.productName", "Reishi"],
+    ["labelMetadata.skuType", "sample"],
+    ["labelMetadata.packageSizeLabel", "7 g"],
+    ["labelMetadata.bestBy", "2029-01-01"],
+    ["labelMetadata.packDate", "2028-10-01"],
+  ]) {
+    const [parent, child] = field.split(".");
+    const result = await firestoreRequest({
+      method: "PATCH",
+      path,
+      token: owner.idToken,
+      query: `?updateMask.fieldPaths=${field}`,
+      body: nestedFirestoreFields(parent, { [child]: value }),
+    });
+    assertDenied(result, `Nested SKU or FEFO identity ${field}`);
+  }
+
+  // Replacing a whole nested map must not erase a protected identity field.
+  const wholeMapReplacement = await firestoreRequest({
+    method: "PATCH",
+    path,
+    token: owner.idToken,
+    query: "?updateMask.fieldPaths=package",
+    body: nestedFirestoreFields("package", { costPerPackage: 3 }),
+  });
+  assertDenied(wholeMapReplacement, "Whole-package map identity removal");
+
+  const stored = (await db.doc(path).get()).data();
+  assert.equal(stored.package.skuType, "retail");
+  assert.equal(stored.package.label, "3.5 g");
+  assert.equal(stored.labelMetadata.bestBy, "2027-10-01");
+});
+
+test("owners retain QC, shelf life, reservations and unrelated package metadata updates", async () => {
+  const lotId = "sku-operational-metadata";
+  const path = `users/${owner.uid}/materialLots/${lotId}`;
+  await seedSkuIdentityFixture(owner.uid, lotId);
+
+  const edits = [
+    {
+      field: "qcStatus",
+      body: firestoreFields({ qcStatus: "pass" }),
+    },
+    {
+      field: "releaseStatus",
+      body: firestoreFields({ releaseStatus: "released" }),
+    },
+    {
+      field: "lowStockThreshold",
+      body: firestoreFields({ lowStockThreshold: 5 }),
+    },
+    {
+      field: "reservationQuantity",
+      body: firestoreFields({ reservationQuantity: 2 }),
+    },
+    {
+      field: "shelfLife.bestBy",
+      body: nestedFirestoreFields("shelfLife", { bestBy: "2027-11-01" }),
+    },
+    {
+      field: "package.costPerPackage",
+      body: nestedFirestoreFields("package", { costPerPackage: 3 }),
+    },
+    {
+      field: "labelMetadata.notes",
+      body: nestedFirestoreFields("labelMetadata", { notes: "Reprinted label" }),
+    },
+  ];
+
+  for (const { field, body } of edits) {
+    const result = await firestoreRequest({
+      method: "PATCH",
+      path,
+      token: owner.idToken,
+      query: `?updateMask.fieldPaths=${field}`,
+      body,
+    });
+    assert.equal(result.status, 200, `${field}: ${result.body}`);
+  }
+
+  const stored = (await db.doc(path).get()).data();
+  assert.equal(stored.qcStatus, "pass");
+  assert.equal(stored.lowStockThreshold, 5);
+  assert.equal(stored.reservationQuantity, 2);
+  assert.equal(stored.shelfLife.bestBy, "2027-11-01");
+  assert.equal(stored.package.costPerPackage, 3);
+  assert.equal(stored.labelMetadata.notes, "Reprinted label");
+  assert.equal(stored.skuType, "retail");
+  assert.equal(stored.labelMetadata.productName, "Lion's Mane");
+});
+
+test("new packaged lots remain owner-creatable and non-packaged lots remain editable", async () => {
+  const newPath = `users/${owner.uid}/materialLots/sku-new-package`;
+  const create = await firestoreRequest({
+    method: "PATCH",
+    path: newPath,
+    token: owner.idToken,
+    body: firestoreFields({
+      lotType: "capsules",
+      sourceType: "finished_package",
+      packageRunId: "sku-new-package",
+      skuType: "retail",
+      packageSizeLabel: "7 g",
+      remainingQuantity: 10,
+    }),
+  });
+  assert.equal(create.status, 200, create.body);
+
+  const postCreate = await firestoreRequest({
+    method: "PATCH",
+    path: newPath,
+    token: owner.idToken,
+    query: "?updateMask.fieldPaths=skuType",
+    body: firestoreFields({ skuType: "sample" }),
+  });
+  assertDenied(postCreate, "SKU identity change following package creation");
+
+  const dryPath = `users/${owner.uid}/materialLots/sku-normal-material`;
+  await seedDryMaterialLot(owner.uid, "sku-normal-material");
+  const materialUpdate = await firestoreRequest({
+    method: "PATCH",
+    path: dryPath,
+    token: owner.idToken,
+    query: "?updateMask.fieldPaths=lotType",
+    body: firestoreFields({ lotType: "extract" }),
+  });
+  assert.equal(materialUpdate.status, 200, materialUpdate.body);
+});
+
 test("browser owners cannot delete packaged finished lots but can delete ordinary material lots", async () => {
   const packagedLotId = "delete-protected-package";
   const packagedPath = `users/${owner.uid}/materialLots/${packagedLotId}`;

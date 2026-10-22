@@ -111,12 +111,104 @@ service cloud.firestore {
         ]);
     }
 
+    // SKU identity and FEFO ranking inputs are fixed for an existing package
+    // run. This leaves QC, release workflow, shelf-life review, reservation,
+    // thresholds, costs and other unrelated operational metadata editable.
+    // Date corrections through shelfLife remain allowed; these are an
+    // intentional existing QC workflow, not a trusted FEFO audit boundary.
+    function packagedFinishedIdentityFieldsAreUnchanged() {
+      return !request.resource.data
+        .diff(resource.data)
+        .affectedKeys()
+        .hasAny([
+          "lotType",
+          "inventoryCategory",
+          "processType",
+          "sourceType",
+          "manufacturingStage",
+          "packageRunId",
+          "sourceLotId",
+          "parentLotId",
+          "productType",
+          "finishedGoodType",
+          "productName",
+          "strainName",
+          "strain",
+          "sourceStrain",
+          "batchName",
+          "name",
+          "variantTag",
+          "variant",
+          "skuType",
+          "packageSkuType",
+          "packageSizeLabel",
+          "packageSize",
+          "packageSizeUnit",
+          "packageCount",
+          "capsulesPerPackage",
+          "actualPackageWeightG",
+          "totalWeight",
+          "bestBy",
+          "expirationDate",
+          "packDate",
+          "createdDate",
+          "date"
+        ]) &&
+        packagedNestedIdentityFieldsAreUnchanged(
+          "package",
+          [
+            "isPackaged",
+            "skuType",
+            "label",
+            "size",
+            "unit",
+            "count",
+            "capsulesPerPackage",
+            "actualWeightG",
+            "packagedDate"
+          ]
+        ) &&
+        packagedNestedIdentityFieldsAreUnchanged(
+          "labelMetadata",
+          [
+            "productName",
+            "skuType",
+            "packageSkuType",
+            "packageSizeLabel",
+            "packageSize",
+            "packageSizeUnit",
+            "capsulesPerPackage",
+            "actualPackageWeightG",
+            "totalWeight",
+            "bestBy",
+            "bestByDate",
+            "packDate"
+          ]
+        );
+    }
+
+    // Compare only identity-bearing nested keys. A full-map freeze would
+    // break unrelated package/label metadata edits and backup restoration.
+    // Unchanged null or legacy values are accepted; malformed replacements
+    // cannot silently erase a protected map.
+    function packagedNestedIdentityFieldsAreUnchanged(field, identityFields) {
+      let before = resource.data.get(field, {});
+      let after = request.resource.data.get(field, {});
+      return before == after ||
+        (
+          before is map &&
+          after is map &&
+          !after.diff(before).affectedKeys().hasAny(identityFields)
+        );
+    }
+
     function browserCanUpdateMaterialLot() {
       return
         !isPackagedFinishedInventory(resource.data) ||
         (
           isPackagedFinishedInventory(request.resource.data) &&
-          packagedFinishedMovementFieldsAreUnchanged()
+          packagedFinishedMovementFieldsAreUnchanged() &&
+          packagedFinishedIdentityFieldsAreUnchanged()
         );
     }
 
@@ -261,10 +353,9 @@ service cloud.firestore {
       }
 
       // Packaged finished-inventory movement accounting is authoritative on
-      // the trusted backend. Owners retain normal reads and operational
-      // metadata editing such as QC, release, reservations, shelf life, and
-      // low-stock settings, but browser code cannot directly mutate quantity,
-      // disposition, archive, or outbound-accounting fields.
+      // the trusted backend. Existing package SKU identity and FEFO inputs
+      // are also immutable from browsers. QC, release, reservations, shelf
+      // life and low-stock controls retain their existing workflows.
       match /materialLots/{lotId} {
         allow read, create: if isOwner(uid);
         // Packaged lots retain their trusted accounting and audit history;
