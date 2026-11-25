@@ -69,7 +69,7 @@
   },
   "plugins": {
     "updater": {
-      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDVGQzQ0RjJDRUI0REQwREQKUldUZDBFM3JMRS9FWDJNYXplVHJaanE2NTZzYjJ2ZDJRdVRBb2JjUWZZbDJ1dDB1Wkc3UTF1cncK",
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDAyQzBCODA1MUM2OUU2NjIKUldSaTVta2NCYmpBQXF6S2JqWGFrQTM3cTBPTHN6RThPNW9ybjRMNEliMCtXRFRlTFdtUGhkUlEK",
       "endpoints": [
         "https://github.com/ChaoticNeutralMyco/mushroom-tracker-app/releases/latest/download/latest.json"
       ]
