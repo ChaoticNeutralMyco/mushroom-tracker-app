@@ -1,72 +1,73 @@
 # .github/workflows/tauri-release.yml
+# Temporary recovery-branch replacement ONLY; never merge into main.
 name: Tauri Desktop Release
-
 on:
   workflow_dispatch:
-
-concurrency:
-  group: tauri-release-${{ github.ref }}
-  cancel-in-progress: false
-
-permissions:
-  contents: write
-
+permissions: {}
 jobs:
-  build:
-    if: github.ref == 'refs/heads/main'
-    runs-on: windows-2022
-    env:
-      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
-      CI: "true"
-      NODE_OPTIONS: --max-old-space-size=4096
-      CARGO_INCREMENTAL: "0"
-      CARGO_TERM_COLOR: always
-
+  recover-public-key:
+    if: github.ref == 'refs/heads/myco-updater-key-recovery'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Setup Node 24
-        uses: actions/setup-node@v4
-        with:
-          node-version: "24"
-          cache: "npm"
-
-      - name: Install frontend deps
-        run: npm ci
-
-      - name: Install Tauri CLI for release action
-        shell: pwsh
+      - name: Build public-key derivation helper (no signing secrets)
+        shell: bash
         run: |
-          npm install -g @tauri-apps/cli@2.11.4
-          tauri --version
-
-      - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          toolchain: stable
-
-      - name: Read release version
-        id: version
-        shell: pwsh
-        run: |
-          $v = (Get-Content package.json -Raw | ConvertFrom-Json).version
-          "tag=v$v" >> $env:GITHUB_OUTPUT
-
-      - name: Build desktop release
-        uses: tauri-apps/tauri-action@v0
+          set -euo pipefail
+          dir="$RUNNER_TEMP/myco-public-key-helper"
+          mkdir -p "$dir/src"
+          cat > "$dir/Cargo.toml" <<'EOF'
+          [package]
+          name = "myco-public-key-helper"
+          version = "0.1.0"
+          edition = "2021"
+          [dependencies]
+          minisign = "=0.10.0"
+          base64 = "=0.22.1"
+          EOF
+          cat > "$dir/src/main.rs" <<'EOF'
+          use base64::{engine::general_purpose::STANDARD, Engine as _};
+          use minisign::{PublicKey, SecretKeyBox};
+          fn recover() -> Result<(), &'static str> {
+              let stored = std::env::var("TAURI_SIGNING_PRIVATE_KEY")
+                  .map_err(|_| "Signing secret unavailable")?;
+              let password = std::env::var("TAURI_SIGNING_PRIVATE_KEY_PASSWORD").unwrap_or_default();
+              if stored.trim().is_empty() { return Err("Signing secret empty"); }
+              let text = if stored.trim_start().starts_with("untrusted comment:") {
+                  stored.trim().to_owned()
+              } else {
+                  let bytes = STANDARD.decode(stored.split_whitespace().collect::<String>())
+                      .map_err(|_| "Unsupported signing key encoding")?;
+                  String::from_utf8(bytes).map_err(|_| "Unsupported signing key text")?
+              };
+              let sk = SecretKeyBox::from_string(&text)
+                  .map_err(|_| "Signing key format not accepted")?
+                  .into_secret_key(Some(password))
+                  .map_err(|_| "Signing key could not be decrypted")?;
+              let pk = PublicKey::from_secret_key(&sk).map_err(|_| "Public key derivation failed")?;
+              let bytes = pk.to_bytes();
+              if bytes.len() != 42 { return Err("Unexpected public key length"); }
+              let id = bytes[2..10].iter().rev().map(|b| format!("{b:02X}")).collect::<String>();
+              if id != "02C0B8051C69E662" { return Err("Derived key differs from verified draft signature"); }
+              let public = pk.to_box().map_err(|_| "Public key serialization failed")?.into_string();
+              println!("MYCO_UPDATER_KEY_ID={id}");
+              println!("MYCO_UPDATER_PUBLIC_KEY={}", STANDARD.encode(public.as_bytes()));
+              Ok(())
+          }
+          fn main() {
+              if let Err(message) = recover() {
+                  eprintln!("Public key recovery failed: {message}");
+                  std::process::exit(1);
+              }
+          }
+          EOF
+          cargo build --release --manifest-path "$dir/Cargo.toml"
+      - name: Derive and print ONLY the matching public key
+        shell: bash
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_KEY_PASSWORD }}
-        with:
-          tagName: ${{ steps.version.outputs.tag }}
-          releaseName: "Chaotic Neutral Myco Tracker ${{ steps.version.outputs.tag }}"
-          releaseBody: |
-            Desktop release for Chaotic Neutral Myco Tracker.
-
-            Includes the Windows NSIS installer and updater artifacts.
-          releaseDraft: true
-          includeUpdaterJson: true
-          prerelease: false
-          tauriScript: "tauri"
+        run: |
+          set -euo pipefail
+          set +x
+          "$RUNNER_TEMP/myco-public-key-helper/target/release/myco-public-key-helper"
