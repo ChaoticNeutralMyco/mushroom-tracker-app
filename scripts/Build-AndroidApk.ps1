@@ -1,195 +1,97 @@
-<#  Build Android APK and copy to .\release\android
-    - Bootstraps Capacitor if missing (uses JSON config; no TS required).
-    - Converts/remove capacitor.config.ts if TypeScript isn’t installed.
-    - Adds android platform (no --yes), builds web, syncs, assembles Release (fallback Debug).
-    - Copies APK to .\release\android\mushroom-tracker.apk
-    - Optionally installs to a device/emulator and grants CAMERA.
-    Safe to re-run.
-#>
-
+﻿# scripts/Build-AndroidApk.ps1
+# Build the existing Capacitor project using the lockfile, never a fallback APK.
+[CmdletBinding()]
 param(
-  [string]$PackageId = "com.chaoticneutral.myco",
-  [switch]$InstallAfterBuild = $true
+    [string]$PackageId = 'com.chaoticneutral.myco',
+    [ValidateSet('Debug','Release')][string]$BuildType = 'Release',
+    [switch]$InstallAfterBuild,
+    [switch]$SkipDependencyInstall,
+    [string]$OutputDirectory
 )
-
-$ErrorActionPreference = "Stop"
-if ($PSVersionTable.PSVersion.Major -ge 7) { try { $global:PSStyle.OutputRendering = "PlainText" } catch {} }
-
-# ---- Android SDK prelude (idempotent)
+$ErrorActionPreference = 'Stop'
+$root = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 $sdk = "$env:LOCALAPPDATA\Android\Sdk"
-if (-not (Test-Path $sdk)) { $sdk = $env:ANDROID_SDK_ROOT }
-$adb = if ($sdk) { Join-Path $sdk "platform-tools\adb.exe" } else { "adb" }
-$emu = if ($sdk) { Join-Path $sdk "emulator\emulator.exe" } else { "emulator" }
-if (-not (Get-Command $adb -ErrorAction SilentlyContinue)) {
-  Write-Host "ADB not found. Please install Android SDK Platform Tools." -ForegroundColor Red
-  exit 1
+if (-not (Test-Path -LiteralPath $sdk) -and $env:ANDROID_SDK_ROOT) { $sdk = $env:ANDROID_SDK_ROOT }
+$adb = Join-Path $sdk 'platform-tools\adb.exe'
+$emu = Join-Path $sdk 'emulator\emulator.exe'
+$android = Join-Path $root 'android'
+$gradlew = Join-Path $android 'gradlew.bat'
+$npm = (Get-Command npm.cmd -ErrorAction Stop).Source
+$capCli = Join-Path $root 'node_modules\.bin\cap.cmd'
+
+function Invoke-Step([string]$Executable,[string[]]$Arguments) {
+    $prior = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = 'Continue'
+        & $Executable @Arguments | Out-Host
+        $code = $LASTEXITCODE
+    } finally { $ErrorActionPreference = $prior }
+    if ($code -ne 0) { throw "Command failed (exit $code): $Executable $($Arguments -join ' ')" }
 }
 
-# ---- Project root
-$root = Split-Path -Parent $PSScriptRoot
-Set-Location $root
-
-function Ensure-NpmPackage {
-  param([string]$pkg, [string]$flags = "")
-  $ok = $false
-  try { $null = npm ls $pkg --depth=0 2>$null; $ok = $LASTEXITCODE -eq 0 } catch {}
-  if (-not $ok) {
-    Write-Host "Installing $pkg ..." -ForegroundColor Yellow
-    if ($flags) { npm i $pkg $flags | Out-Host } else { npm i $pkg | Out-Host }
-  }
-}
-
-# ---- Ensure Capacitor deps
-Ensure-NpmPackage "@capacitor/core@latest"
-Ensure-NpmPackage "@capacitor/cli@latest" "-D"
-Ensure-NpmPackage "@capacitor/android@latest" "-D"
-
-# ---- Prefer JSON config to avoid TS requirement
-$cfgJson = Join-Path $root "capacitor.config.json"
-$cfgTs   = Join-Path $root "capacitor.config.ts"
-
-$hasTsConfig = Test-Path $cfgTs
-$hasTsPkg = $false
-try { $null = npm ls typescript --depth=0 2>$null; $hasTsPkg = $LASTEXITCODE -eq 0 } catch {}
-
-if ($hasTsConfig -and -not $hasTsPkg) {
-  Write-Host "TypeScript config detected but 'typescript' is not installed; switching to JSON config..." -ForegroundColor Yellow
-  try { Remove-Item $cfgTs -Force } catch {}
-}
-
-if (-not (Test-Path $cfgJson)) {
-  Write-Host "Creating capacitor.config.json ..." -ForegroundColor Yellow
-@"
-{
-  "appId": "$PackageId",
-  "appName": "Mushroom Tracker",
-  "webDir": "dist",
-  "bundledWebRuntime": false,
-  "server": { "androidScheme": "https", "allowNavigation": ["*"] }
-}
-"@ | Set-Content -Encoding UTF8 $cfgJson
-}
-
-# ---- Add android platform if missing
-$androidDir = $null
-foreach ($d in @("android","android-app")) {
-  $g1 = Join-Path $d "app\build.gradle"
-  $g2 = Join-Path $d "app\build.gradle.kts"
-  if ( (Test-Path $g1) -or (Test-Path $g2) ) { $androidDir = $d; break }
-}
-if (-not $androidDir) {
-  Write-Host "`n==> Adding Capacitor Android platform..." -ForegroundColor Cyan
-  $addOk = $true
-  try {
-    # No --yes (older/newer CLIs don’t support it); JSON config prevents prompts.
-    npx cap add android | Out-Host
-  } catch {
-    $addOk = $false
-  }
-  if (-not $addOk) {
-    Write-Host "cap add android failed, attempting init+add..." -ForegroundColor Yellow
-    npx cap init "Mushroom Tracker" "$PackageId" --web-dir dist --npm-client npm | Out-Host
-    npx cap add android | Out-Host
-  }
-  # Recheck
-  foreach ($d in @("android","android-app")) {
-    $g1 = Join-Path $d "app\build.gradle"
-    $g2 = Join-Path $d "app\build.gradle.kts"
-    if ( (Test-Path $g1) -or (Test-Path $g2) ) { $androidDir = $d; break }
-  }
-  if (-not $androidDir) {
-    Write-Host "Failed to create the Android project (android/). See logs above." -ForegroundColor Red
-    exit 1
-  }
-}
-
-# ---- Build web & sync
-Write-Host "`n==> Building Vite web bundle..." -ForegroundColor Cyan
-npm ci --no-audit | Out-Host
-npm run build | Out-Host
-
-Write-Host "`n==> Syncing web bundle to Android project..." -ForegroundColor Cyan
-npx cap sync android | Out-Host
-
-# ---- Add CAMERA permission (idempotent)
-$manifest = Join-Path $root "android\app\src\main\AndroidManifest.xml"
-if (Test-Path $manifest) {
-  $xml = Get-Content $manifest -Raw
-  if ($xml -notmatch 'android\.permission\.CAMERA') {
-    Write-Host "Adding CAMERA permission to AndroidManifest.xml ..." -ForegroundColor Yellow
-    $xml = $xml -replace '(<application\b)', "<uses-permission android:name=`"android.permission.CAMERA`" />`r`n`$1"
-    Set-Content -Encoding UTF8 $manifest $xml
-  }
-}
-
-# ---- Build APK
-if (-not (Test-Path "android")) {
-  Write-Host "Android project folder missing after sync. Aborting." -ForegroundColor Red
-  exit 1
-}
-
-Push-Location "android"
-$gradlew = if (Test-Path ".\gradlew.bat") { ".\gradlew.bat" } else { ".\gradlew" }
-
-Write-Host "`n==> Cleaning project..." -ForegroundColor Cyan
-& $gradlew clean | Out-Host
-
-Write-Host "`n==> Building APK (release preferred)..." -ForegroundColor Cyan
-$builtRelease = $true
-try { & $gradlew :app:assembleRelease | Out-Host } catch { $builtRelease = $false }
-
-# Pick release APK if exists
-$apkRelease = $null
+Push-Location -LiteralPath $root
 try {
-  $apkRelease = Get-ChildItem "app\build\outputs\apk\release" -Recurse -Include *-release.apk,app-release.apk -ErrorAction SilentlyContinue |
-    Sort-Object LastWriteTime -Descending | Select-Object -First 1
-} catch {}
-
-if (-not $apkRelease) { $builtRelease = $false }
-
-if (-not $builtRelease) {
-  Write-Host "Release APK not found or unsigned; building Debug instead..." -ForegroundColor Yellow
-  & $gradlew :app:assembleDebug | Out-Host
-}
-
-# Choose final APK
-$apk = $apkRelease
-if (-not $apk) {
-  $apk = Get-ChildItem "app\build\outputs\apk\debug" -Recurse -Include *-debug.apk,app-debug.apk -ErrorAction SilentlyContinue |
-    Sort-Object LastWriteTime -Descending | Select-Object -First 1
-}
-
-Pop-Location
-
-if (-not $apk) {
-  Write-Host "No APK produced. Check Gradle errors above." -ForegroundColor Red
-  exit 1
-}
-
-# ---- Copy near repo root
-$releaseOut = Join-Path $root "release\android"
-New-Item -ItemType Directory -Force -Path $releaseOut | Out-Null
-$dest = Join-Path $releaseOut "mushroom-tracker.apk"
-Copy-Item $apk.FullName -Destination $dest -Force
-
-Write-Host "`n==> Android artifact copied to: $dest" -ForegroundColor Green
-
-# ---- Optional install to device/emulator
-if ($InstallAfterBuild) {
-  Write-Host "`n==> Checking devices..." -ForegroundColor Cyan
-  & $adb kill-server | Out-Null
-  & $adb start-server | Out-Null
-  & $adb devices
-
-  & $adb reverse tcp:5173 tcp:5173 2>$null
-  & $adb reverse tcp:1420 tcp:1420 2>$null
-
-  Write-Host "`n==> Installing APK..." -ForegroundColor Cyan
-  & $adb install -r "$dest" | Out-Host
-
-  Write-Host "==> Granting CAMERA permission (if declared)..." -ForegroundColor Cyan
-  & $adb shell pm grant $PackageId android.permission.CAMERA 2>$null
-
-  Write-Host "==> Launching app (best-effort)..." -ForegroundColor Cyan
-  & $adb shell monkey -p $PackageId -c android.intent.category.LAUNCHER 1 2>$null
-}
+    $pkg = Get-Content -LiteralPath 'package.json' -Raw | ConvertFrom-Json
+    # Windows PowerShell 5.1 cannot deserialize package-lock's empty root key.
+    $lockJson = & node.exe -e "const l=require('./package-lock.json');const p=l.packages;console.log(JSON.stringify({version:l.version,rootVersion:p[''].version,versions:Object.fromEntries(['@capacitor/core','@capacitor/cli','@capacitor/android','@tauri-apps/cli','vite'].map(k=>[k,p['node_modules/'+k].version]))}));"
+    if ($LASTEXITCODE -ne 0) { throw 'Cannot read the dependency lockfile.' }
+    $lock = $lockJson | ConvertFrom-Json
+    $lockHash = (Get-FileHash -LiteralPath 'package-lock.json' -Algorithm SHA256).Hash
+    $pkgHash = (Get-FileHash -LiteralPath 'package.json' -Algorithm SHA256).Hash
+    $cap = Get-Content -LiteralPath 'capacitor.config.json' -Raw | ConvertFrom-Json
+    $gradleText = Get-Content -LiteralPath 'android/app/build.gradle' -Raw
+    $manifest = Get-Content -LiteralPath 'android/app/src/main/AndroidManifest.xml' -Raw
+    if ($cap.appId -ne $PackageId -or $PackageId -ne 'com.chaoticneutral.myco') { throw 'Unexpected application ID.' }
+    if ($cap.webDir -ne 'dist' -or $cap.server.url -or $cap.server.androidScheme -ne 'https' -or @($cap.server.allowNavigation | Where-Object { $null -ne $_ }).Count -ne 0) { throw 'Unsafe or unexpected Capacitor configuration.' }
+    if ($manifest -notmatch 'android\.permission\.CAMERA' -or $manifest -notmatch 'android\.permission\.INTERNET') { throw 'Required Android manifest permissions missing.' }
+    $version = [regex]::Match($gradleText, 'versionName\s+["'']([^"'']+)["'']').Groups[1].Value
+    if ($version -ne $pkg.version -or $lock.version -ne $pkg.version -or $lock.rootVersion -ne $pkg.version) { throw 'Android/package/lock version mismatch.' }
+    if (-not (Test-Path -LiteralPath $gradlew -PathType Leaf)) { throw 'Existing Android Gradle wrapper is required.' }
+    # Release guard runs before any packaging. Debug never falls through to Release.
+    if ($BuildType -eq 'Release') {
+        Push-Location -LiteralPath $android
+        try { Invoke-Step $gradlew @('--no-daemon','--no-configuration-cache','--console=plain',':app:verifyMycoReleaseSigning') }
+        finally { Pop-Location }
+    }
+    if (-not $SkipDependencyInstall) { Invoke-Step $npm @('ci','--no-audit','--no-fund') }
+    foreach ($name in @('@capacitor/core','@capacitor/cli','@capacitor/android','vite')) {
+        $declared = if ($pkg.dependencies.PSObject.Properties[$name]) { $pkg.dependencies.PSObject.Properties[$name].Value } else { $pkg.devDependencies.PSObject.Properties[$name].Value }
+        $locked = $lock.versions.PSObject.Properties[$name].Value
+        $actual = (Get-Content -LiteralPath (Join-Path $root "node_modules/$name/package.json") -Raw | ConvertFrom-Json).version
+        if ($declared -ne $locked -or $actual -ne $locked) { throw "Local $name does not match the pinned lockfile version." }
+    }
+    Write-Host 'Building fresh Vite assets...'
+    Invoke-Step $npm @('run','build')
+    Write-Host 'Synchronizing the existing Android project...'
+    Invoke-Step $capCli @('sync','android')
+    $variant = $BuildType.ToLowerInvariant()
+    $apk = Join-Path $android "app\build\outputs\apk\$variant\app-$variant.apk"
+    # Remove only this generated build output so a failed command cannot reuse it.
+    if (Test-Path -LiteralPath $apk) { Remove-Item -LiteralPath $apk -Force }
+    Push-Location -LiteralPath $android
+    try { Invoke-Step $gradlew @('--no-daemon','--no-configuration-cache','--console=plain',":app:assemble$BuildType") }
+    finally { Pop-Location }
+    if (-not (Test-Path -LiteralPath $apk -PathType Leaf)) { throw "Expected $BuildType APK not produced; no fallback attempted." }
+    # Verify the APK is signed (debug key for Debug, configured release key for Release).
+    $tools = @(Get-ChildItem -LiteralPath (Join-Path $sdk 'build-tools') -Directory | Where-Object { $_.Name -match '^\d+\.\d+\.\d+$' -and (Test-Path -LiteralPath (Join-Path $_.FullName 'apksigner.bat')) } | Sort-Object { [version]$_.Name } -Descending)
+    if ($tools.Count -eq 0) { throw 'Android SDK apksigner not found.' }
+    Invoke-Step (Join-Path $tools[0].FullName 'apksigner.bat') @('verify',$apk)
+    if ((Get-FileHash -LiteralPath 'package.json' -Algorithm SHA256).Hash -ne $pkgHash -or (Get-FileHash -LiteralPath 'package-lock.json' -Algorithm SHA256).Hash -ne $lockHash) { throw 'Dependency manifest changed during packaging.' }
+    if (-not $OutputDirectory) { $OutputDirectory = Join-Path $root 'release\android' }
+    New-Item -ItemType Directory -Path $OutputDirectory -Force | Out-Null
+    $filename = if ($BuildType -eq 'Release') { 'mushroom-tracker.apk' } else { 'mushroom-tracker-debug.apk' }
+    $dest = Join-Path $OutputDirectory $filename
+    Copy-Item -LiteralPath $apk -Destination $dest -Force
+    if ((Get-FileHash -LiteralPath $apk -Algorithm SHA256).Hash -ne (Get-FileHash -LiteralPath $dest -Algorithm SHA256).Hash) { throw 'APK copy verification failed.' }
+    Write-Host "APK ($BuildType): $dest"
+    if ($InstallAfterBuild) {
+        # Only the named test emulator; never uninstall or target a physical device.
+        & (Join-Path $PSScriptRoot 'Start-MycoCamAvd.ps1') -AvdName 'CNM_API34_CAM' | Out-Null
+        $serial = 'emulator-5554'
+        Invoke-Step $adb @('-s',$serial,'reverse','tcp:5173','tcp:5173')
+        Invoke-Step $adb @('-s',$serial,'reverse','tcp:1420','tcp:1420')
+        Invoke-Step $adb @('-s',$serial,'install','-r',$dest)
+        Invoke-Step $adb @('-s',$serial,'shell','pm','grant',$PackageId,'android.permission.CAMERA')
+        Write-Host 'Installed on test emulator only. App not launched automatically.'
+    }
+} finally { Pop-Location }

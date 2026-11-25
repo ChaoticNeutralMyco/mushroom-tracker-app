@@ -42,6 +42,8 @@ keystore.properties
 android/app/my-release-key.jks
 *.jks
 *.keystore
+*.p12
+*.pfx
 *.apk
 *.aab
 *.msi

@@ -6,27 +6,57 @@ import { useNavigate } from "react-router";
 
 export default function ScanBarcodeModal({ open = true, onClose }) {
   const videoRef = useRef(null);
-  const codeReaderRef = useRef(null);
-  const controlsRef = useRef(null);
+  const onCloseRef = useRef(onClose);
   const [error, setError] = useState("");
-  const [scanning, setScanning] = useState(false);
+  const [scanning, setScanning] = useState(true);
 
   const navigate = useNavigate();
+
+  useEffect(() => {
+    onCloseRef.current = onClose;
+  }, [onClose]);
 
   useEffect(() => {
     if (!open) return;
 
     let cancelled = false;
+    let handled = false;
+    let controls = null;
+    const video = videoRef.current;
+    const codeReader = new BrowserMultiFormatReader();
 
-    const stopScanner = () => {
+    const stopScanner = (activeControls = controls) => {
       try {
-        controlsRef.current?.stop?.();
+        activeControls?.stop?.();
       } catch {}
       try {
-        codeReaderRef.current?.reset?.();
+        codeReader.reset?.();
       } catch {}
-      controlsRef.current = null;
-      codeReaderRef.current = null;
+      try {
+        video?.srcObject?.getTracks?.().forEach((track) => track.stop());
+        if (video) {
+          video.pause();
+          video.srcObject = null;
+        }
+      } catch {}
+      controls = null;
+    };
+
+    const finishScan = (destination, activeControls) => {
+      if (cancelled || handled) return;
+      handled = true;
+      stopScanner(activeControls);
+      setScanning(false);
+      onCloseRef.current?.();
+      navigate(destination);
+    };
+
+    const handleEscape = (event) => {
+      if (event.key !== "Escape") return;
+      event.preventDefault();
+      cancelled = true;
+      stopScanner();
+      onCloseRef.current?.();
     };
 
     async function startScan() {
@@ -34,62 +64,44 @@ export default function ScanBarcodeModal({ open = true, onClose }) {
       setScanning(true);
 
       try {
-        if (!videoRef.current) {
-          setError("Camera element not ready.");
+        if (!video) {
+          setError("Camera unavailable.");
           return;
         }
 
-        const codeReader = new BrowserMultiFormatReader();
-        codeReaderRef.current = codeReader;
-
-        const constraints = {
-          video: { facingMode: "environment" },
-          audio: false,
-        };
-
-        const controls = await codeReader.decodeFromConstraints(
-          constraints,
-          videoRef.current,
-          (result) => {
-            if (cancelled) return;
-            if (!result) return;
-
+        const scannerControls = await codeReader.decodeFromConstraints(
+          { video: { facingMode: "environment" }, audio: false },
+          video,
+          (result, scanError, activeControls) => {
+            if (cancelled || handled || !result) return;
             const rawText = String(result.getText() || "").trim();
             if (!rawText) return;
 
-            // stop ASAP to avoid double navigations
-            stopScanner();
-
-            // 1) legacy: storage:<itemId> / library:<itemId>
+            // Legacy storage and library labels.
             const pref = rawText.match(/^(storage|library)\s*:\s*(.+)$/i);
             if (pref) {
               const id = String(pref[2] || "").trim();
               if (id) {
-                onClose?.();
-                navigate(`/?tab=strains&lib=${encodeURIComponent(id)}&_=${Date.now()}`);
+                finishScan(`/?tab=strains&lib=${encodeURIComponent(id)}&_=${Date.now()}`, activeControls);
               }
               return;
             }
 
-            // 2) URL: support /quick/:id, /grow/:id, /library/:id, /storage/:id, and ?lib=<id>
+            // URL-based grow and stored-item labels.
             try {
               const url = new URL(rawText);
-
               const qp = new URLSearchParams(url.search || "");
               const libQ = qp.get("lib") || qp.get("library") || qp.get("storage");
               if (libQ) {
-                onClose?.();
-                navigate(`/?tab=strains&lib=${encodeURIComponent(libQ)}&_=${Date.now()}`);
+                finishScan(`/?tab=strains&lib=${encodeURIComponent(libQ)}&_=${Date.now()}`, activeControls);
                 return;
               }
 
               const pathParts = url.pathname.split("/").filter(Boolean);
-
               if (pathParts[0] === "quick" || pathParts[0] === "grow") {
                 const growId = pathParts[1];
                 if (growId) {
-                  onClose?.();
-                  navigate(`/quick/${growId}`);
+                  finishScan(`/quick/${growId}`, activeControls);
                   return;
                 }
               }
@@ -97,80 +109,116 @@ export default function ScanBarcodeModal({ open = true, onClose }) {
               if (pathParts[0] === "library" || pathParts[0] === "storage") {
                 const libId = pathParts[1];
                 if (libId) {
-                  onClose?.();
-                  navigate(`/?tab=strains&lib=${encodeURIComponent(libId)}&_=${Date.now()}`);
+                  finishScan(`/?tab=strains&lib=${encodeURIComponent(libId)}&_=${Date.now()}`, activeControls);
                   return;
                 }
               }
             } catch {
-              // not a URL
+              // Continue checking non-URL labels.
             }
 
-            // 3) Fallback: treat as growId if it's an ID-like token
+            // Fallback for plain grow IDs.
             if (/^[A-Za-z0-9_-]+$/.test(rawText)) {
-              onClose?.();
-              navigate(`/quick/${rawText}`);
-              return;
+              finishScan(`/quick/${rawText}`, activeControls);
             }
           }
         );
 
-        controlsRef.current = controls;
+        // Close any late-starting reader after the modal is dismissed.
+        if (cancelled || handled) {
+          try {
+            scannerControls?.stop?.();
+          } catch {}
+          return;
+        }
+        controls = scannerControls;
       } catch (e) {
-        setError(e?.message || "Camera scan failed.");
+        if (!cancelled && !handled) {
+          stopScanner();
+          setError(e?.message || "Unable to start the camera.");
+        }
       } finally {
-        setScanning(false);
+        if (!cancelled && !handled) setScanning(false);
       }
     }
 
+    document.addEventListener("keydown", handleEscape);
     startScan();
 
     return () => {
       cancelled = true;
+      document.removeEventListener("keydown", handleEscape);
       stopScanner();
-      setScanning(false);
     };
-  }, [open, navigate, onClose]);
+  }, [open, navigate]);
 
   if (!open) return null;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
-      <div className="w-full max-w-md rounded-xl bg-white shadow-lg">
-        <div className="flex items-center justify-between border-b p-3">
-          <div className="font-semibold">Scan Label</div>
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-4"
+      role="dialog"
+      aria-modal="true"
+      aria-label="Scan Label"
+    >
+      <div className="w-full max-w-md max-h-[calc(100dvh-2rem)] overflow-y-auto rounded-2xl border border-zinc-700 bg-zinc-900 text-white shadow-2xl">
+        <div className="flex items-center justify-between border-b border-zinc-700 px-4 py-3">
+          <h2 className="text-lg font-semibold text-white">Scan Label</h2>
           <button
-            className="rounded-lg p-2 hover:bg-zinc-100"
+            type="button"
             onClick={onClose}
-            aria-label="Close"
+            aria-label="Close scanner"
+            className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl border border-zinc-600 bg-zinc-800 text-white hover:bg-zinc-700 active:bg-zinc-600"
           >
-            <X className="h-5 w-5" />
+            <X className="h-6 w-6" />
           </button>
         </div>
 
-        <div className="p-3 space-y-3">
-          <div className="rounded-lg overflow-hidden bg-black">
+        <div className="space-y-3 p-4">
+          <div className="relative aspect-[4/3] max-h-[45dvh] overflow-hidden rounded-xl bg-black">
             <video
               ref={videoRef}
-              className="w-full h-64 object-cover"
+              className="absolute inset-0 h-full w-full object-contain"
+              autoPlay
               muted
               playsInline
             />
+
+            {!error && !scanning && (
+              <div aria-hidden="true" className="pointer-events-none absolute inset-0 flex items-center justify-center">
+                <div className="relative aspect-square w-[58%] max-h-[78%]">
+                  <div className="absolute left-0 top-0 h-7 w-7 rounded-tl-lg border-l-[3px] border-t-[3px] border-white" />
+                  <div className="absolute right-0 top-0 h-7 w-7 rounded-tr-lg border-r-[3px] border-t-[3px] border-white" />
+                  <div className="absolute bottom-0 left-0 h-7 w-7 rounded-bl-lg border-b-[3px] border-l-[3px] border-white" />
+                  <div className="absolute bottom-0 right-0 h-7 w-7 rounded-br-lg border-b-[3px] border-r-[3px] border-white" />
+                </div>
+              </div>
+            )}
+
+            {scanning && !error && (
+              <div role="status" className="absolute inset-0 flex flex-col items-center justify-center gap-3 bg-black/60">
+                <div className="h-8 w-8 animate-spin rounded-full border-2 border-white/20 border-t-white" />
+                <span className="text-sm text-white">Starting camera...</span>
+              </div>
+            )}
           </div>
 
-          {scanning ? (
-            <div className="text-sm text-zinc-600">Starting camera…</div>
-          ) : null}
-
           {error ? (
-            <div className="rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-700">{error}</div>
-          ) : (
-            <div className="text-xs text-zinc-500">
-              Scans grow labels (<span className="font-mono">/quick/&lt;id&gt;</span>) and stored item labels (
-              <span className="font-mono">?tab=strains&amp;lib=&lt;id&gt;</span>). Also supports legacy{" "}
-              <span className="font-mono">storage:&lt;id&gt;</span>.
+            <div role="alert" className="rounded-xl border border-rose-500/40 bg-rose-950 px-3 py-3 text-sm text-rose-200">
+              {error}
             </div>
+          ) : (
+            <p className="text-center text-sm text-zinc-300">Align the label within the frame.</p>
           )}
+
+          <button
+            type="button"
+            onClick={onClose}
+            className="flex min-h-12 w-full items-center justify-center gap-2 rounded-xl bg-white px-4 py-3 text-sm font-semibold text-zinc-900 hover:bg-zinc-200 active:bg-zinc-300"
+          >
+            <X className="h-5 w-5" />
+            Close Scanner
+          </button>
         </div>
       </div>
     </div>

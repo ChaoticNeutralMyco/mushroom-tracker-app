@@ -1153,7 +1153,7 @@ function LabelPrint(props) {
   };
 
   return (
-    <div className="px-6 py-6">
+    <div className="w-full min-w-0 max-w-full px-4 py-6 sm:px-6">
       <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
         <div className="text-sm text-zinc-400">
           {LABEL_TEMPLATES[templateId]?.name || "Avery 5160 / 8160"} · {sourceLabel} ·{" "}
@@ -1165,7 +1165,7 @@ function LabelPrint(props) {
           ) : null}
         </div>
 
-        <div className="inline-flex flex-wrap items-center gap-4">
+        <div className="inline-flex min-w-0 max-w-full flex-wrap items-center gap-4">
           <div className="inline-flex items-center gap-2">
             <span className="text-sm">Source</span>
             <select
@@ -1298,10 +1298,10 @@ function LabelPrint(props) {
             <span className="text-sm">Watermark</span>
           </label>
 
-          <div className="inline-flex items-center gap-2">
+          <div className="inline-flex min-w-0 max-w-full flex-wrap items-center gap-2">
             <span className="text-sm">WM URL</span>
             <input
-              className="rounded border border-zinc-300 bg-white px-2 py-1 text-sm w-56"
+              className="w-56 min-w-0 max-w-full rounded border border-zinc-300 bg-white px-2 py-1 text-sm"
               placeholder="optional override"
               value={wmInput}
               onChange={(e) => setWmInput(e.target.value)}
@@ -1345,7 +1345,7 @@ function LabelPrint(props) {
       ) : null}
 
       <div
-        className="rounded-lg border border-zinc-200 bg-white p-3 overflow-auto"
+        className="w-full min-w-0 max-w-full rounded-lg border border-zinc-200 bg-white p-3 overflow-auto"
         style={{ maxHeight: "70vh" }}
       >
         <div style={sheetStyle}>

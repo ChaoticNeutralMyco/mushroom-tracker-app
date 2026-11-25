@@ -1435,22 +1435,22 @@ export default function PackagingLabelPreview({
   const sheetPreviewHeightPx = AVERY_5659.sheetHeightIn * 96 * sheetScale;
 
   return (
-    <div className="rounded-2xl border border-zinc-200 dark:border-zinc-800 bg-zinc-50/70 dark:bg-zinc-950/40 p-4 space-y-5">
-      <div className="flex flex-wrap items-start justify-between gap-3">
-        <div>
+    <div className="w-full min-w-0 max-w-full rounded-2xl border border-zinc-200 dark:border-zinc-800 bg-zinc-50/70 dark:bg-zinc-950/40 p-3 sm:p-4 space-y-5">
+      <div className="flex min-w-0 flex-col items-start gap-3 lg:flex-row lg:items-start lg:justify-between">
+        <div data-testid="packaging-label-preview-intro" className="w-full min-w-0 lg:flex-1">
           <div className="text-lg font-semibold">{title}</div>
           <div className="text-sm text-zinc-600 dark:text-zinc-400">{subtitle}</div>
           <div className="mt-1 text-xs text-zinc-500 dark:text-zinc-500">
             Preview source: {sourceLabel}
           </div>
         </div>
-        <button type="button" onClick={printAverySheets} className="btn btn-accent">
+        <button type="button" onClick={printAverySheets} className="btn btn-accent max-w-full shrink-0 whitespace-normal">
           <Printer className="h-4 w-4" />
           Print Avery 5659 sheets
         </button>
       </div>
 
-      <div className="rounded-xl border border-zinc-200 dark:border-zinc-800 bg-white/80 dark:bg-zinc-900/80 p-3">
+      <div className="min-w-0 max-w-full rounded-xl border border-zinc-200 dark:border-zinc-800 bg-white/80 dark:bg-zinc-900/80 p-3">
         <div className="flex flex-wrap items-end gap-3">
           <label className="inline-flex items-center gap-2 select-none">
             <input
@@ -1494,7 +1494,7 @@ export default function PackagingLabelPreview({
             <span className="text-sm">Grid preview</span>
           </label>
 
-          <label className="space-y-1 text-sm min-w-[190px]">
+          <label className="min-w-0 w-full space-y-1 text-sm sm:w-auto sm:min-w-[190px]">
             <span className="block text-xs uppercase tracking-wide text-zinc-500">
               Label scale: {Number(scalePct).toFixed(1)}%
             </span>
@@ -1564,10 +1564,10 @@ export default function PackagingLabelPreview({
         </div>
       </div>
 
-      <div className="grid gap-4 xl:grid-cols-[minmax(300px,0.8fr)_minmax(0,1.2fr)]">
-        <div className="rounded-xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 p-3 space-y-2">
+      <div className="grid min-w-0 grid-cols-1 gap-4 xl:grid-cols-[minmax(300px,0.8fr)_minmax(0,1.2fr)]">
+        <div data-testid="packaging-label-lots-panel" className="min-w-0 max-w-full rounded-xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 p-3 space-y-2">
           <div className="font-medium">Packaging lots and quantities</div>
-          <div className="max-h-[360px] overflow-auto space-y-2 pr-1">
+          <div className="max-h-[360px] min-w-0 max-w-full overflow-y-auto overflow-x-hidden space-y-2 pr-1">
             {normalizedItems.map((item) => {
               const checked = selectedIds.has(item.id);
               const previewing = item.id === activePreviewId;
@@ -1575,13 +1575,14 @@ export default function PackagingLabelPreview({
               return (
                 <div
                   key={item.id}
-                  className={`rounded-lg border p-3 ${
+                  data-testid="packaging-label-lot-row"
+                  className={`min-w-0 max-w-full rounded-lg border p-3 ${
                     previewing
                       ? "border-violet-400/70 bg-violet-500/10"
                       : "border-zinc-200 dark:border-zinc-800"
                   }`}
                 >
-                  <div className="flex items-start gap-3">
+                  <div className="flex min-w-0 flex-wrap items-start gap-3">
                     <input
                       type="checkbox"
                       checked={checked}
@@ -1592,16 +1593,16 @@ export default function PackagingLabelPreview({
                     <button
                       type="button"
                       onClick={() => onSelectedIdChange?.(item.id)}
-                      className="min-w-0 flex-1 text-left"
+                      className="min-w-0 flex-1 basis-[12rem] text-left"
                     >
                       <div className="font-medium truncate" title={item.name}>
                         {item.name}
                       </div>
-                      <div className="text-xs text-zinc-500">
+                      <div className="break-words [overflow-wrap:anywhere] text-xs text-zinc-500">
                         {item.data.batchLot || "No lot code"} · up to {item.maxQuantity}
                       </div>
                     </button>
-                    <label className="text-xs text-zinc-500">
+                    <label className="flex shrink-0 items-center gap-2 text-xs text-zinc-500">
                       Qty
                       <input
                         type="number"
@@ -1610,7 +1611,7 @@ export default function PackagingLabelPreview({
                         value={quantities[item.id] ?? 1}
                         disabled={!checked}
                         onChange={(event) => updateQuantity(item, event.target.value)}
-                        className="ml-2 w-16 rounded border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-950 px-2 py-1 text-sm text-zinc-900 dark:text-zinc-100 disabled:opacity-40"
+                        className="w-16 rounded border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-950 px-2 py-1 text-sm text-zinc-900 dark:text-zinc-100 disabled:opacity-40"
                       />
                     </label>
                   </div>
@@ -1620,7 +1621,7 @@ export default function PackagingLabelPreview({
           </div>
         </div>
 
-        <div className="rounded-xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 p-3 overflow-auto">
+        <div data-testid="packaging-label-sheet-scroll" className="min-w-0 max-w-full rounded-xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 p-3 overflow-auto">
           <div className="font-medium mb-3">Avery 5659 sheet preview</div>
           <div className="flex flex-wrap gap-4 items-start">
             {previewPages.map((page, pageIndex) => (
@@ -1697,12 +1698,12 @@ export default function PackagingLabelPreview({
         </div>
       </div>
 
-      <div className="grid grid-cols-1 xl:grid-cols-[minmax(0,440px)_minmax(280px,1fr)] gap-4 items-start">
-        <div className="rounded-2xl border border-zinc-200 dark:border-zinc-800 bg-white p-3 overflow-auto">
+      <div className="grid min-w-0 grid-cols-1 xl:grid-cols-[minmax(0,440px)_minmax(0,1fr)] gap-4 items-start">
+        <div className="min-w-0 max-w-full rounded-2xl border border-zinc-200 dark:border-zinc-800 bg-white p-3 overflow-auto">
           <LabelArtwork labelData={labelData} />
         </div>
 
-        <div className="rounded-2xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 p-4">
+        <div className="min-w-0 max-w-full rounded-2xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 p-4">
           <div className="font-medium mb-3">Generated fields</div>
           <dl className="grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-2 text-sm">
             {[

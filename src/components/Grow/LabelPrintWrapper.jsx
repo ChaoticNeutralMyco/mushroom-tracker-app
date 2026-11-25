@@ -504,7 +504,7 @@ export default function LabelPrintWrapper(props) {
   const meta = templateMeta[templateId] || templateMeta["5160"];
 
   return (
-    <div className="space-y-4">
+    <div className="w-full min-w-0 max-w-full space-y-4">
       <div>
         <div className="text-lg font-semibold">Labels — {meta.title}</div>
         <div className="text-xs opacity-70">
@@ -522,9 +522,9 @@ export default function LabelPrintWrapper(props) {
       </div>
 
       {canUsePostProcessLabels ? (
-      <div className="rounded-2xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 p-4 space-y-3">
-        <div className="flex flex-wrap items-end justify-between gap-3">
-          <div>
+      <div className="w-full min-w-0 max-w-full rounded-2xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 p-4 space-y-3">
+        <div className="grid min-w-0 grid-cols-1 gap-3 xl:grid-cols-[minmax(0,1fr)_minmax(260px,24rem)] xl:items-end">
+          <div data-testid="packaging-label-selector-intro" className="min-w-0">
             <div className="font-semibold">Packaging labels — Avery 5659</div>
             <div className="text-xs text-zinc-500 dark:text-zinc-400">
               Only packaged child SKUs created by a package run are eligible. Parent finished batches never appear here. Uses <span className="font-medium">public/Packaging Label.png</span> unchanged on Avery 5659 sheets with six 3×3 labels per US Letter page.
@@ -533,14 +533,14 @@ export default function LabelPrintWrapper(props) {
           </div>
 
           {packagingOptions.length > 0 ? (
-            <label className="space-y-1 text-sm min-w-[260px]">
+            <label className="block w-full min-w-0 max-w-full space-y-1 text-sm">
               <span className="text-xs uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
                 Packaged SKU
               </span>
               <select
                 value={selectedPackagingLot?.id || ""}
                 onChange={(e) => setSelectedPackagingLotId(e.target.value)}
-                className="w-full rounded-xl border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-900 px-3 py-2"
+                className="w-full min-w-0 max-w-full rounded-xl border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-900 px-3 py-2"
               >
                 {packagingOptions.map((lot) => (
                   <option key={lot.id} value={lot.id}>

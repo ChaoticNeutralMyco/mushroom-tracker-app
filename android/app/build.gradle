@@ -1,5 +1,42 @@
-// C:\Users\vtruj\mushroom-tracker-app\android\app\build.gradle
+// android/app/build.gradle
 apply plugin: 'com.android.application'
+
+// Keep release signing credentials outside the repository.
+def signingOverride = System.getenv('MYCO_ANDROID_SIGNING_PROPERTIES')
+def signingPropertiesFile = signingOverride?.trim()
+    ? new File(signingOverride)
+    : new File(System.getProperty('user.home'), '.myco-tracker/android-signing.properties')
+def signingProperties = new Properties()
+def signingProblem = null
+def releaseKeyFile = null
+def repoDirectory = rootProject.projectDir.parentFile.canonicalFile.toPath()
+
+if (!signingPropertiesFile.isAbsolute()) {
+    signingProblem = 'MYCO_ANDROID_SIGNING_PROPERTIES must be an absolute path.'
+} else if (signingPropertiesFile.canonicalFile.toPath().startsWith(repoDirectory)) {
+    signingProblem = 'Signing properties must be stored outside the repository.'
+} else if (!signingPropertiesFile.isFile()) {
+    signingProblem = 'External Android signing properties file is missing.'
+} else {
+    try {
+        signingPropertiesFile.withInputStream { signingProperties.load(it) }
+        def requiredFields = ['storeFile', 'storePassword', 'keyAlias', 'keyPassword']
+        if (requiredFields.any { !signingProperties.getProperty(it)?.trim() }) {
+            signingProblem = 'External Android signing properties are incomplete.'
+        } else {
+            def configuredKey = new File(signingProperties.getProperty('storeFile'))
+            releaseKeyFile = configuredKey.isAbsolute()
+                ? configuredKey
+                : new File(signingPropertiesFile.parentFile, signingProperties.getProperty('storeFile'))
+            if (!releaseKeyFile.isFile()) {
+                signingProblem = 'Configured Android signing keystore is missing.'
+            }
+        }
+    } catch (Exception ignored) {
+        signingProblem = 'External Android signing properties could not be loaded.'
+    }
+}
+def releaseSigningReady = signingProblem == null
 
 android {
     namespace = "com.chaoticneutral.myco"
@@ -9,8 +46,8 @@ android {
         applicationId "com.chaoticneutral.myco"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode 1
-        versionName "1.0"
+        versionCode 3
+        versionName "1.1.5"
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
         aaptOptions {
             // Files and dirs to omit from the packaged assets dir, modified to accommodate modern web apps.
@@ -19,16 +56,14 @@ android {
         }
     }
 
-    // 🔐 ADD THIS BLOCK: uses the my-release-key.jks you just generated
     signingConfigs {
         release {
-            // keystore file you created in this same folder (android/app)
-            storeFile file("my-release-key.jks")
-
-            // ⛔ IMPORTANT: replace these with your real passwords
-            storePassword "colorado"
-            keyAlias "my-release-key-alias"
-            keyPassword "colorado"
+            if (releaseSigningReady) {
+                storeFile = releaseKeyFile
+                storePassword = signingProperties.getProperty('storePassword')
+                keyAlias = signingProperties.getProperty('keyAlias')
+                keyPassword = signingProperties.getProperty('keyPassword')
+            }
         }
     }
 
@@ -37,9 +72,28 @@ android {
             minifyEnabled false
             proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
 
-            // ✅ Tell Gradle to use the release signing config above
             signingConfig signingConfigs.release
         }
+    }
+}
+
+
+// Release packaging must fail if the external signing configuration is absent.
+def verifyMycoReleaseSigning = tasks.register('verifyMycoReleaseSigning') {
+    group = 'verification'
+    description = 'Require external signing credentials before release packaging.'
+    doLast {
+        if (!releaseSigningReady) {
+            throw new GradleException("MYCO_RELEASE_SIGNING_REQUIRED: ${signingProblem}")
+        }
+    }
+}
+
+tasks.configureEach { task ->
+    if (task.name in ['preReleaseBuild', 'validateSigningRelease',
+                      'assembleRelease', 'bundleRelease', 'packageRelease',
+                      'packageReleaseBundle', 'signReleaseBundle']) {
+        task.dependsOn(verifyMycoReleaseSigning)
     }
 }
 

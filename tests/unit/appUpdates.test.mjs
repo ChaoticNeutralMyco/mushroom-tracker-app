@@ -1,0 +1,8 @@
+// tests/unit/appUpdates.test.mjs
+import test from "node:test";
+import assert from "node:assert/strict";
+import { compareVersions, androidReleaseUpdate, webReleaseUpdate, RELEASE_REPO } from "../../src/lib/appUpdates.js";
+const release = {tag_name:"v1.1.6",draft:false,prerelease:false,body:"notes",assets:[{name:"MycoTracker-1.1.6-Android.apk",state:"uploaded",size:42,browser_download_url:`https://github.com/${RELEASE_REPO}/releases/download/v1.1.6/MycoTracker-1.1.6-Android.apk`}]};
+test("numeric comparisons and malformed versions",()=>{assert.equal(compareVersions("1.10.0","1.9.9"),1);assert.equal(compareVersions("1.1.5","v1.1.5"),0);assert.equal(compareVersions("1.1.4","1.1.5"),-1);for(const v of ["1.2","1.2.3-beta","1.02.3","1.2.3/evil",undefined])assert.throws(()=>compareVersions(v,"1.1.5"));});
+test("Android accepts only stable matching release asset",()=>{assert.equal(androidReleaseUpdate(release,"1.1.5").version,"1.1.6");assert.equal(androidReleaseUpdate(release,"1.1.6"),null);assert.throws(()=>androidReleaseUpdate({...release,prerelease:true},"1.1.5"));assert.throws(()=>androidReleaseUpdate({...release,draft:true},"1.1.5"));assert.throws(()=>androidReleaseUpdate({...release,assets:[]},"1.1.5"));assert.throws(()=>androidReleaseUpdate({...release,assets:[{...release.assets[0],browser_download_url:"https://evil.example/file.apk"}]},"1.1.5"));});
+test("web checks only newer versions",()=>{assert.deepEqual(webReleaseUpdate({version:"1.1.6",notes:["fixed"]},"1.1.5"),{version:"1.1.6",notes:"fixed"});assert.equal(webReleaseUpdate({version:"1.1.4"},"1.1.5"),null);assert.throws(()=>webReleaseUpdate({},"1.1.5"));});

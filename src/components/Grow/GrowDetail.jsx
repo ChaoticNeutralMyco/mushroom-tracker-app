@@ -52,6 +52,9 @@ const STAGES_BULK = ["Inoculated", "Colonizing", "Colonized", "Fruiting", "Harve
 const STAGES_NON_BULK = ["Inoculated", "Colonizing", "Colonized"];
 const TERMINAL_STAGES = ["Contaminated"];
 
+// Keep the empty-flush fallback stable across renders; the sync effect depends on this array.
+const EMPTY_FLUSHES = [];
+
 function pickCoverUrl(grow, photos) {
   return getCoverSrc(grow, photos);
 }
@@ -439,13 +442,13 @@ export default function GrowDetail({
   const flushesFromGrow =
     (Array.isArray(grow?.flushes) && grow.flushes) ||
     (Array.isArray(grow?.harvest?.flushes) && grow.harvest.flushes) ||
-    [];
+    EMPTY_FLUSHES;
   const [flushes, setFlushes] = useState(flushesFromGrow);
-  const flushesRef = useRef(Array.isArray(flushesFromGrow) ? flushesFromGrow : []);
+  const flushesRef = useRef(Array.isArray(flushesFromGrow) ? flushesFromGrow : EMPTY_FLUSHES);
   const flushWriteQueueRef = useRef(Promise.resolve());
 
   useEffect(() => {
-    const nextFlushes = Array.isArray(flushesFromGrow) ? flushesFromGrow : [];
+    const nextFlushes = Array.isArray(flushesFromGrow) ? flushesFromGrow : EMPTY_FLUSHES;
     flushesRef.current = nextFlushes;
     setFlushes(nextFlushes);
   }, [flushesFromGrow]);

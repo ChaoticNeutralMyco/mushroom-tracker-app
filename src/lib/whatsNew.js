@@ -7,6 +7,15 @@ export const WHATS_NEW_EVENT = "cn:whats-new:open";
 const STORAGE_PREFIX = "cn:whats-new:last-seen";
 
 export const WHATS_NEW_RELEASES = Object.freeze({
+  "1.1.5": Object.freeze({
+    title: "What’s new in Myco Tracker",
+    summary: "A more polished app and a simpler way to stay up to date.",
+    items: Object.freeze([
+      "Cleaner mobile label scanner with a prominent Close Scanner button.",
+      "Improved grow, inventory and label layouts, plus reliability and native security fixes.",
+      "Automatic and manual application update checks on web, Android and Windows."
+]),
+  }),
   "1.1.4": Object.freeze({
     title: "What’s new in Myco Tracker",
     summary:
@@ -41,11 +50,14 @@ export function getWhatsNewRelease(version = APP_VERSION) {
     };
   }
 
+  const currentNotes = normalizedVersion === APP_VERSION && Array.isArray(packageMetadata.mycoReleaseNotes)
+    ? packageMetadata.mycoReleaseNotes.filter((item) => typeof item === "string")
+    : [];
   return {
     version: normalizedVersion,
     title: "What’s new in Myco Tracker",
     summary: `Myco Tracker has been updated to version ${normalizedVersion}.`,
-    items: ["This release includes product improvements, fixes, and reliability updates."],
+    items: currentNotes.length ? currentNotes : ["This release includes product improvements, fixes, and reliability updates."],
   };
 }
 

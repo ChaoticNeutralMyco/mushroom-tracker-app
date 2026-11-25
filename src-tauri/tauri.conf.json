@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "Chaotic Neutral Myco Tracker",
-  "version": "1.1.4",
+  "version": "1.1.5",
   "identifier": "com.chaoticneutral.myco",
   "build": {
     "beforeDevCommand": "npm run dev",
@@ -20,8 +20,38 @@
       }
     ],
     "security": {
-      "csp": null
-    }
+      "csp": {
+        "default-src": "'self'",
+        "script-src": "'self' https://apis.google.com https://accounts.google.com https://www.google.com/recaptcha/ https://www.recaptcha.net/recaptcha/ https://www.gstatic.com/recaptcha/",
+        "style-src": "'self' 'unsafe-inline' https://fonts.googleapis.com https://accounts.google.com",
+        "img-src": "'self' asset: http://asset.localhost https://asset.localhost blob: data: https://firebasestorage.googleapis.com https://storage.googleapis.com https://*.googleusercontent.com https://www.gstatic.com https://www.google.com https://www.recaptcha.net",
+        "font-src": "'self' data: https://fonts.gstatic.com",
+        "connect-src": "'self' ipc: http://ipc.localhost https://ipc.localhost https://identitytoolkit.googleapis.com https://securetoken.googleapis.com https://firestore.googleapis.com https://firebasestorage.googleapis.com https://storage.googleapis.com https://firebaseappcheck.googleapis.com https://content-firebaseappcheck.googleapis.com https://firebaseinstallations.googleapis.com https://www.googleapis.com https://us-central1-chaotic-neutral-tracker.cloudfunctions.net https://apis.google.com https://chaotic-neutral-tracker.firebaseapp.com https://chaotic-neutral-tracker.web.app https://accounts.google.com https://www.google.com/recaptcha/ https://www.recaptcha.net/recaptcha/ https://www.gstatic.com/recaptcha/",
+        "frame-src": "'self' blob: https://chaotic-neutral-tracker.firebaseapp.com https://chaotic-neutral-tracker.web.app https://accounts.google.com https://apis.google.com https://www.google.com/recaptcha/ https://www.recaptcha.net/recaptcha/ https://www.gstatic.com/recaptcha/",
+        "worker-src": "'self' blob:",
+        "media-src": "'self' blob: data:",
+        "object-src": "'none'",
+        "base-uri": "'self'",
+        "form-action": "'self' https://chaotic-neutral-tracker.firebaseapp.com https://chaotic-neutral-tracker.web.app https://accounts.google.com",
+        "frame-ancestors": "'none'"
+      },
+      "devCsp": {
+        "default-src": "'self'",
+        "script-src": "'self' https://apis.google.com https://accounts.google.com https://www.google.com/recaptcha/ https://www.recaptcha.net/recaptcha/ https://www.gstatic.com/recaptcha/ 'unsafe-inline' http://127.0.0.1:5173",
+        "style-src": "'self' 'unsafe-inline' https://fonts.googleapis.com https://accounts.google.com http://127.0.0.1:5173",
+        "img-src": "'self' asset: http://asset.localhost https://asset.localhost blob: data: https://firebasestorage.googleapis.com https://storage.googleapis.com https://*.googleusercontent.com https://www.gstatic.com https://www.google.com https://www.recaptcha.net http://127.0.0.1:5173 http://127.0.0.1:9199",
+        "font-src": "'self' data: https://fonts.gstatic.com http://127.0.0.1:5173",
+        "connect-src": "'self' ipc: http://ipc.localhost https://ipc.localhost https://identitytoolkit.googleapis.com https://securetoken.googleapis.com https://firestore.googleapis.com https://firebasestorage.googleapis.com https://storage.googleapis.com https://firebaseappcheck.googleapis.com https://content-firebaseappcheck.googleapis.com https://firebaseinstallations.googleapis.com https://www.googleapis.com https://us-central1-chaotic-neutral-tracker.cloudfunctions.net https://apis.google.com https://chaotic-neutral-tracker.firebaseapp.com https://chaotic-neutral-tracker.web.app https://accounts.google.com https://www.google.com/recaptcha/ https://www.recaptcha.net/recaptcha/ https://www.gstatic.com/recaptcha/ http://127.0.0.1:5173 ws://127.0.0.1:5173 http://127.0.0.1:1420 ws://127.0.0.1:1420 http://127.0.0.1:5001 http://127.0.0.1:8080 http://127.0.0.1:9099 http://127.0.0.1:9199",
+        "frame-src": "'self' blob: https://chaotic-neutral-tracker.firebaseapp.com https://chaotic-neutral-tracker.web.app https://accounts.google.com https://apis.google.com https://www.google.com/recaptcha/ https://www.recaptcha.net/recaptcha/ https://www.gstatic.com/recaptcha/",
+        "worker-src": "'self' blob:",
+        "media-src": "'self' blob: data:",
+        "object-src": "'none'",
+        "base-uri": "'self'",
+        "form-action": "'self' https://chaotic-neutral-tracker.firebaseapp.com https://chaotic-neutral-tracker.web.app https://accounts.google.com",
+        "frame-ancestors": "'none'"
+      }
+    },
+    "withGlobalTauri": true
   },
   "bundle": {
     "active": true,
@@ -34,7 +64,8 @@
       "icons/128x128@2x.png",
       "icons/icon.icns",
       "icons/icon.ico"
-    ]
+    ],
+    "createUpdaterArtifacts": true
   },
   "plugins": {
     "updater": {

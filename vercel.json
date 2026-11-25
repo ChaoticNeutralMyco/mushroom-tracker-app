@@ -5,6 +5,13 @@
   "outputDirectory": "dist",
   "routes": [
     {
+      "src": "/app-version\\.json",
+      "headers": {
+        "Cache-Control": "no-store, max-age=0, must-revalidate"
+      },
+      "continue": true
+    },
+    {
       "handle": "filesystem"
     },
     {

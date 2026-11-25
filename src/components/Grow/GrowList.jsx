@@ -1009,7 +1009,7 @@ export default function GrowList({
 
       return (
         <div
-          className="flex items-center gap-2 px-2 py-1.5 hover:bg-zinc-50 dark:hover:bg-zinc-800/60"
+          className="flex min-w-0 flex-wrap items-center gap-2 px-2 py-2 hover:bg-zinc-50 dark:hover:bg-zinc-800/60"
           style={style}
           data-testid="grow-row"
         >
@@ -1031,15 +1031,15 @@ export default function GrowList({
           <img
             alt=""
             src={cover}
-            className="w-12 h-12 rounded-lg object-cover bg-zinc-200 dark:bg-zinc-800"
+            className="h-12 w-12 shrink-0 rounded-lg object-cover bg-zinc-200 dark:bg-zinc-800"
             loading="lazy"
           />
 
-          <div className="flex-1 min-w-0">
-            <div className="flex items-center gap-2">
+          <div className="min-w-0 flex-[1_1_12rem]">
+            <div className="flex min-w-0 flex-wrap items-center gap-2">
               <Link
                 to={`/grow/${grow.id}`}
-                className="font-medium truncate hover:underline"
+                className="min-w-0 max-w-full truncate font-medium hover:underline"
               >
                 {title || "Untitled"}
               </Link>
@@ -1055,12 +1055,12 @@ export default function GrowList({
                 <span className="chip">${Number(costNumber).toFixed(2)}</span>
               )}
             </div>
-            <div className="text-xs opacity-70">
+            <div className="break-words text-xs opacity-70">
               Stage date: {dateTxt} • Strain: {strain}
             </div>
           </div>
 
-          <div className="flex items-center gap-1">
+          <div className="flex w-full min-w-0 flex-wrap items-center gap-1 sm:w-auto">
             <Link className="chip" to={`/grow/${grow.id}`} data-testid="grow-row-open">
               Open
             </Link>

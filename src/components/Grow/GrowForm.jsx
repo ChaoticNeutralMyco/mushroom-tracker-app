@@ -1644,20 +1644,38 @@ export default function GrowForm(props) {
   return (
     <>
       <style>{`
-        .grow-form .label { color: #e5e7eb !important; }
+        /* Keep form controls legible and contained inside the mobile modal. */
+        .grow-form { box-sizing: border-box; width: 100%; min-width: 0; max-width: 100%; overflow-wrap: anywhere; }
+        .grow-form section, .grow-form section > div { min-width: 0; }
+        .grow-form .label { color: #334155 !important; font-weight: 600; }
+        .dark .grow-form .label { color: #e2e8f0 !important; }
         .grow-form input.input, .grow-form select.input, .grow-form textarea.input {
-          background-color: #0b1220 !important; color: #f8fafc !important; border: 1px solid #475569 !important; outline: none !important;
+          box-sizing: border-box; display: block; width: 100% !important; min-width: 0 !important; max-width: 100% !important;
+          min-height: 38px; padding: .45rem .65rem; border-radius: .5rem;
+          background-color: #ffffff !important; color: #0f172a !important;
+          border: 1px solid #94a3b8 !important; outline-offset: 2px;
+          color-scheme: light;
         }
-        .grow-form input::placeholder, .grow-form textarea::placeholder { color: #94a3b8 !important; opacity: 1; }
-        .dark .grow-form select { color-scheme: dark; }
-        .dark .grow-form option { background-color: #0b1220; color: #f8fafc; }
-        .grow-form option { background-color: #ffffff; color: #111827; }
-        .chipset { display: inline-flex; gap: .5rem; background: rgba(148,163,184,.1); padding: .25rem; border-radius: 9999px; }
-        .chipset button { padding: .35rem .75rem; border-radius: 9999px; font-size: .875rem; }
-        .chipset .active { background: var(--_accent-600); color: var(--_accent-on); }
+        .dark .grow-form input.input, .dark .grow-form select.input, .dark .grow-form textarea.input {
+          background-color: #0f172a !important; color: #f8fafc !important;
+          border-color: #64748b !important; color-scheme: dark;
+        }
+        .grow-form input.input:disabled, .grow-form select.input:disabled {
+          background-color: #f1f5f9 !important; color: #475569 !important;
+        }
+        .dark .grow-form input.input:disabled, .dark .grow-form select.input:disabled {
+          background-color: #1e293b !important; color: #cbd5e1 !important;
+        }
+        .grow-form input::placeholder, .grow-form textarea::placeholder { color: #64748b !important; opacity: 1; }
+        .dark .grow-form input::placeholder, .dark .grow-form textarea::placeholder { color: #94a3b8 !important; }
+        .grow-form select option { background-color: #ffffff; color: #111827; }
+        .dark .grow-form select option { background-color: #0f172a; color: #f8fafc; }
+        .grow-form .chipset { display: inline-flex; flex-wrap: wrap; gap: .5rem; background: rgba(148,163,184,.1); padding: .25rem; border-radius: 9999px; }
+        .grow-form .chipset button { padding: .35rem .75rem; border-radius: 9999px; font-size: .875rem; }
+        .grow-form .chipset .active { background: var(--_accent-600); color: var(--_accent-on); }
       `}</style>
 
-      <form className="grow-form" onSubmit={handleSubmit}>
+      <form className="grow-form rounded-xl bg-white p-3 text-zinc-900 dark:bg-zinc-900 dark:text-zinc-100 sm:p-4" onSubmit={handleSubmit}>
         {isSopStart ? (
           <section
             data-testid="grow-form-sop-banner"

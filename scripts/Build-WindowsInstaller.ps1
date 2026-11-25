@@ -1,90 +1,85 @@
-<#  Build Windows installer (Tauri) and copy MSI to .\release\windows
-    Requirements:
-      - Node 20.x
-      - Rust toolchain (stable)
-      - Visual Studio 2022 BuildTools (C++ workload)
-      - WiX Toolset v3 (Tauri uses WiX for MSI)
-    Safe to re-run.
-#>
+# scripts/Build-WindowsInstaller.ps1
+# Package the configured Tauri NSIS target using the local locked CLI.
+[CmdletBinding()]
+param(
+    [switch]$UnsignedAudit,
+    [switch]$SkipDependencyInstall,
+    [string]$OutputDirectory
+)
+$ErrorActionPreference = 'Stop'
+$root = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
+$npm = (Get-Command npm.cmd -ErrorAction Stop).Source
+$cli = Join-Path $root 'node_modules\.bin\tauri.cmd'
+$target = Join-Path $root 'src-tauri\target'
+$bundle = Join-Path $target 'release\bundle\nsis'
+$oldTarget = $env:CARGO_TARGET_DIR
+$override = $null
 
-$ErrorActionPreference = "Stop"
-
-# PowerShell 5-safe: only touch PSStyle on PS7+
-if ($PSVersionTable.PSVersion.Major -ge 7) {
-  try { $global:PSStyle.OutputRendering = "PlainText" } catch {}
+function Invoke-Step([string]$Executable,[string[]]$Arguments) {
+    $prior = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = 'Continue'
+        & $Executable @Arguments | Out-Host
+        $code = $LASTEXITCODE
+    } finally { $ErrorActionPreference = $prior }
+    if ($code -ne 0) { throw "Command failed (exit $code): $Executable $($Arguments -join ' ')" }
 }
 
-# Project root (script lives in /scripts)
-$root = Split-Path -Parent $PSScriptRoot
-Set-Location $root
-
-Write-Host "`n==> Building Vite app (web)..." -ForegroundColor Cyan
-npm ci --no-audit | Out-Host
-npm run build | Out-Host
-
-Write-Host "`n==> Ensuring Rust & Tauri CLI..." -ForegroundColor Cyan
-# Rustup (skip if present)
-if (-not (Get-Command rustup -ErrorAction SilentlyContinue)) {
-  Write-Host "Installing rustup..." -ForegroundColor Yellow
-  $tmp = Join-Path $env:TEMP "rustup-init.exe"
-  Invoke-WebRequest https://win.rustup.rs/x86_64 -OutFile $tmp
-  Start-Process -FilePath $tmp -ArgumentList "-y" -NoNewWindow -Wait
-  Remove-Item $tmp -Force -ErrorAction SilentlyContinue
-}
-rustup default stable | Out-Host
-
-# Tauri CLI via npx is fine; this checks it runs
-npx tauri -V 2>$null | Out-Null
-
-Write-Host "`n==> Checking prerequisites (WiX)..." -ForegroundColor Cyan
-# WiX (candle.exe) in PATH?
-if (-not (Get-Command candle.exe -ErrorAction SilentlyContinue)) {
-  try {
-    if (Get-Command winget -ErrorAction SilentlyContinue) {
-      Write-Host "Installing WiX Toolset via winget..." -ForegroundColor Yellow
-      winget install --id "WiXToolset.WiXToolset" -e --accept-package-agreements --accept-source-agreements | Out-Null
+Push-Location -LiteralPath $root
+try {
+    $pkg = Get-Content -LiteralPath 'package.json' -Raw | ConvertFrom-Json
+    # Windows PowerShell 5.1 cannot deserialize package-lock's empty root key.
+    $lockJson = & node.exe -e "const l=require('./package-lock.json');const p=l.packages;console.log(JSON.stringify({version:l.version,rootVersion:p[''].version,versions:Object.fromEntries(['@capacitor/core','@capacitor/cli','@capacitor/android','@tauri-apps/cli','vite'].map(k=>[k,p['node_modules/'+k].version]))}));"
+    if ($LASTEXITCODE -ne 0) { throw 'Cannot read the dependency lockfile.' }
+    $lock = $lockJson | ConvertFrom-Json
+    $config = Get-Content -LiteralPath 'src-tauri/tauri.conf.json' -Raw | ConvertFrom-Json
+    $cargoText = Get-Content -LiteralPath 'src-tauri/Cargo.toml' -Raw
+    $cargoVersion = [regex]::Match($cargoText, '(?m)^version\s*=\s*"([^"]+)"').Groups[1].Value
+    $pkgHash = (Get-FileHash -LiteralPath 'package.json' -Algorithm SHA256).Hash
+    $lockHash = (Get-FileHash -LiteralPath 'package-lock.json' -Algorithm SHA256).Hash
+    if ($pkg.version -ne $config.version -or $pkg.version -ne $cargoVersion -or $lock.version -ne $pkg.version -or $lock.rootVersion -ne $pkg.version) { throw 'Windows/package/lock version mismatch.' }
+    if (@($config.bundle.targets).Count -ne 1 -or $config.bundle.targets[0] -ne 'nsis' -or -not $config.bundle.active) { throw 'Expected active NSIS bundle target.' }
+    if (-not (Get-Command cargo.exe -ErrorAction SilentlyContinue)) { throw 'Rust cargo must already be installed.' }
+    if (-not $SkipDependencyInstall) { Invoke-Step $npm @('ci','--no-audit','--no-fund') }
+    foreach ($name in @('@tauri-apps/cli','vite')) {
+        $declared = $pkg.devDependencies.PSObject.Properties[$name].Value
+        $locked = $lock.versions.PSObject.Properties[$name].Value
+        $actual = (Get-Content -LiteralPath (Join-Path $root "node_modules/$name/package.json") -Raw | ConvertFrom-Json).version
+        if ($declared -ne $locked -or $actual -ne $locked) { throw "Local $name does not match the pinned lockfile version." }
+    }
+    $env:CARGO_TARGET_DIR = $target
+    $argsList = @('build','--bundles','nsis','--ci')
+    if ($UnsignedAudit) {
+        # Tauri's no-sign flag skips platform code signing; explicitly disable updater artifacts too.
+        $override = Join-Path ([IO.Path]::GetTempPath()) ('myco-tauri-audit-' + [guid]::NewGuid().ToString('N') + '.json')
+        [IO.File]::WriteAllText($override, '{"bundle":{"createUpdaterArtifacts":false}}')
+        $argsList += @('--no-sign','--config',$override)
+    }
+    # The configured beforeBuildCommand builds Vite automatically.
+    $started = [DateTime]::UtcNow
+    Write-Host 'Building Tauri NSIS installer...'
+    Invoke-Step $cli $argsList
+    $setups = @(Get-ChildItem -LiteralPath $bundle -Filter '*-setup.exe' -File -ErrorAction SilentlyContinue | Where-Object { $_.LastWriteTimeUtc -ge $started -and $_.Name -match ('_' + [regex]::Escape([string]$pkg.version) + '_') })
+    if ($setups.Count -ne 1) { throw "Expected exactly one newly generated NSIS setup for version $($pkg.version); found $($setups.Count)." }
+    if ((Get-FileHash -LiteralPath 'package.json' -Algorithm SHA256).Hash -ne $pkgHash -or (Get-FileHash -LiteralPath 'package-lock.json' -Algorithm SHA256).Hash -ne $lockHash) { throw 'Dependency manifest changed during packaging.' }
+    if (-not $OutputDirectory) { $OutputDirectory = if ($UnsignedAudit) { Join-Path $root 'release\windows\unsigned-audit' } else { Join-Path $root 'release\windows' } }
+    New-Item -ItemType Directory -Path $OutputDirectory -Force | Out-Null
+    $name = if ($UnsignedAudit) { $setups[0].BaseName + '-UNSIGNED-AUDIT.exe' } else { $setups[0].Name }
+    $dest = Join-Path $OutputDirectory $name
+    Copy-Item -LiteralPath $setups[0].FullName -Destination $dest -Force
+    if ((Get-FileHash -LiteralPath $setups[0].FullName -Algorithm SHA256).Hash -ne (Get-FileHash -LiteralPath $dest -Algorithm SHA256).Hash) { throw 'Installer copy verification failed.' }
+    Write-Host "NSIS setup: $dest"
+    if ($UnsignedAudit) {
+        Write-Host 'UNSIGNED AUDIT ONLY - not approved for distribution.'
     } else {
-      Write-Host "Winget not available. Please install WiX Toolset v3 manually if build fails." -ForegroundColor Yellow
+        $signature = $setups[0].FullName + '.sig'
+        if (-not (Test-Path -LiteralPath $signature -PathType Leaf) -or (Get-Item -LiteralPath $signature).LastWriteTimeUtc -lt $started) {
+            throw 'Fresh signed updater artifact is missing.'
+        }
+        Copy-Item -LiteralPath $signature -Destination ($dest + '.sig') -Force
     }
-  } catch {
-    Write-Host "WiX install check skipped." -ForegroundColor Yellow
-  }
+} finally {
+    if ($override) { Remove-Item -LiteralPath $override -Force -ErrorAction SilentlyContinue }
+    if ($null -eq $oldTarget) { Remove-Item Env:CARGO_TARGET_DIR -ErrorAction SilentlyContinue } else { $env:CARGO_TARGET_DIR = $oldTarget }
+    Pop-Location
 }
-
-Write-Host "`n==> Building Tauri bundle..." -ForegroundColor Cyan
-# Tauri v2+: produces MSI under src-tauri\target\release\bundle\msi\
-npx tauri build | Out-Host
-
-# Collect artifacts
-$bundleRoot = Join-Path $root "src-tauri\target\release\bundle"
-$msiDir = Join-Path $bundleRoot "msi"
-$exeDir = Join-Path $bundleRoot "windows"   # portable exe (if produced)
-$releaseOut = Join-Path $root "release\windows"
-New-Item -ItemType Directory -Force -Path $releaseOut | Out-Null
-
-$copied = @()
-
-if (Test-Path $msiDir) {
-  Get-ChildItem $msiDir -Filter *.msi |
-    Sort-Object LastWriteTime -Descending |
-    Select-Object -First 3 |
-    ForEach-Object {
-      Copy-Item $_.FullName -Destination $releaseOut -Force
-      $copied += $_.Name
-    }
-}
-
-if (Test-Path $exeDir) {
-  $portable = Get-ChildItem $exeDir -Include *.exe -Recurse |
-    Sort-Object LastWriteTime -Descending | Select-Object -First 1
-  if ($portable) {
-    Copy-Item $portable.FullName -Destination $releaseOut -Force
-    $copied += $portable.Name
-  }
-}
-
-Write-Host "`n==> Windows artifacts copied to: $releaseOut" -ForegroundColor Green
-$copied | ForEach-Object { Write-Host " - $_" }
-
-Write-Host "`nOpen folder:" -ForegroundColor Cyan
-try { Invoke-Item $releaseOut } catch {}

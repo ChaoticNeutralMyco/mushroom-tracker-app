@@ -513,30 +513,37 @@ function GrowRow({
   const iconSrc = getGrowTypeIconPath(grow.type || grow.growType);
 
   return (
-    <div className="rounded-xl border border-zinc-300 dark:border-zinc-800 bg-white dark:bg-zinc-900 p-4 space-y-3">
-      <div className="flex items-center justify-between gap-3">
-        <div className="min-w-0 flex items-center gap-3">
+    <div
+      className="rounded-xl border border-zinc-300 dark:border-zinc-800 bg-white dark:bg-zinc-900 p-4 space-y-3"
+      data-testid="timeline-grow-card"
+    >
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between" data-testid="timeline-grow-header">
+        <div className="flex min-w-0 items-start gap-3 sm:flex-1">
           <img
             src={iconSrc}
             alt=""
-            className="w-10 h-10 rounded-md object-cover border border-zinc-200 dark:border-zinc-700"
+            className="w-10 h-10 shrink-0 rounded-md object-cover border border-zinc-200 dark:border-zinc-700"
             loading="lazy"
           />
-          <div>
-            <div className="text-lg font-semibold truncate">
+          <div className="min-w-0 flex-1">
+            <div className="text-lg font-semibold break-words" data-testid="timeline-grow-title">
               {title}
-              {subLabel ? <span className="ml-2 text-xs opacity-70">({subLabel})</span> : null}
+              {subLabel ? (
+                <span className="block break-all text-xs font-normal opacity-70 sm:ml-2 sm:inline">
+                  ({subLabel})
+                </span>
+              ) : null}
               {archived && (
-                <span className="ml-2 px-2 py-0.5 text-[10px] rounded bg-zinc-200 dark:bg-zinc-700">
+                <span className="ml-2 inline-block rounded bg-zinc-200 px-2 py-0.5 text-[10px] dark:bg-zinc-700">
                   Archived
                 </span>
               )}
             </div>
-            <div className="mt-2 flex flex-wrap gap-2">
+            <div className="mt-2 flex flex-wrap gap-2" data-testid="timeline-grow-stages">
               {ALLOWED.map((s) => (
                 <span
                   key={s}
-                  className={`px-2 py-1 rounded-full text-xs border ${
+                  className={`inline-flex shrink-0 items-center whitespace-nowrap rounded-full border px-2 py-1 text-xs ${
                     stage === s
                       ? "chip chip--active"
                       : "chip"
@@ -549,10 +556,10 @@ function GrowRow({
           </div>
         </div>
 
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-stretch gap-2 sm:shrink-0 sm:items-center" data-testid="timeline-grow-actions">
           <Link
             to={`/quick/${grow.id}`}
-            className="px-3 py-1.5 rounded-lg bg-zinc-200 dark:bg-zinc-800 hover:bg-zinc-300 dark:hover:bg-zinc-700 text-xs"
+            className="flex min-h-11 min-w-0 flex-1 items-center justify-center rounded-lg bg-zinc-200 px-3 py-2 text-center text-xs leading-snug hover:bg-zinc-300 dark:bg-zinc-800 dark:hover:bg-zinc-700 sm:min-h-0 sm:flex-none sm:py-1.5"
           >
             Notes &amp; Photos
           </Link>
@@ -560,7 +567,7 @@ function GrowRow({
             <button
               onClick={advanceStage}
               disabled={stage === ALLOWED[ALLOWED.length - 1]}
-              className="btn btn-accent text-xs disabled:opacity-50 disabled:cursor-not-allowed"
+              className="btn btn-accent flex min-h-11 min-w-0 flex-1 items-center justify-center px-3 py-2 text-center text-xs leading-snug disabled:cursor-not-allowed disabled:opacity-50 sm:min-h-0 sm:flex-none sm:py-1.5"
               title={stage === ALLOWED[ALLOWED.length - 1] ? "Already at final stage" : "Advance Stage"}
             >
               Advance Stage

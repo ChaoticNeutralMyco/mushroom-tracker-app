@@ -251,10 +251,39 @@ export const E2E_USER_COLLECTIONS = [
   "clean_queue",
 ];
 
+// Deleting packaged inventory and trusted ledger entries requires admin privileges.
+// Grant those privileges ONLY to the local, disposable E2E Firestore emulator.
+// Never fall back to a production REST endpoint or browser-user permissions.
+function assertLocalE2eFirestoreCleanup(session: NodeAuthSession, path: string) {
+  const host = String(process.env.FIRESTORE_EMULATOR_HOST || "").trim();
+  const emulatorRequired = /^(1|true|yes)$/i.test(
+    String(process.env.E2E_REQUIRE_FIREBASE_EMULATORS || "")
+  );
+  const localHost = /^(127\.0\.0\.1|localhost):8080$/.test(host);
+  const expectedProject = "chaotic-neutral-tracker";
+  const validUserId = /^[A-Za-z0-9_-]{1,128}$/.test(session.userId);
+  const ownUserPath = validUserId && (
+    path === `users/${session.userId}` ||
+    path.startsWith(`users/${session.userId}/`)
+  );
+
+  if (
+    !emulatorRequired ||
+    !localHost ||
+    session.projectId !== expectedProject ||
+    !ownUserPath
+  ) {
+    throw new Error(
+      "E2E cleanup refused: a local Firestore emulator, expected test project, and matching test-user path are required."
+    );
+  }
+}
+
 export async function deleteFirestoreDocument(
   session: NodeAuthSession,
   path: string
 ) {
+  assertLocalE2eFirestoreCleanup(session, path);
   const url = firestoreDocumentsBaseUrl(session, path);
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), FIRESTORE_REST_TIMEOUT_MS);
@@ -264,14 +293,15 @@ export async function deleteFirestoreDocument(
       method: "DELETE",
       signal: controller.signal,
       headers: {
-        Authorization: `Bearer ${session.idToken}`,
+        // "owner" is recognized only by the Firestore emulator as admin.
+        Authorization: "Bearer owner",
         "Content-Type": "application/json",
       },
     });
 
     if (!response.ok && response.status !== 404) {
       const body = await response.text();
-      throw new Error(`Delete ${path} failed (${response.status}): ${body}`);
+      throw new Error(`Local E2E cleanup of ${path} failed (${response.status}): ${body}`);
     }
   } finally {
     clearTimeout(timeout);
@@ -289,6 +319,8 @@ async function deleteKnownCollection(session: NodeAuthSession, collectionPath: s
 }
 
 export async function deleteE2eUserData(session: NodeAuthSession) {
+  // Fail closed before enumerating anything or touching any documents.
+  assertLocalE2eFirestoreCleanup(session, `users/${session.userId}`);
   const deletedByCollection: Record<string, number> = {};
   let deleted = 0;
 

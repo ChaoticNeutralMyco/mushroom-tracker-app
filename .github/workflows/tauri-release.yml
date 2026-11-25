@@ -3,9 +3,6 @@ name: Tauri Desktop Release
 
 on:
   workflow_dispatch:
-  push:
-    tags:
-      - "v*.*.*"
 
 concurrency:
   group: tauri-release-${{ github.ref }}
@@ -16,6 +13,7 @@ permissions:
 
 jobs:
   build:
+    if: github.ref == 'refs/heads/main'
     runs-on: windows-2022
     env:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
@@ -48,19 +46,27 @@ jobs:
         with:
           toolchain: stable
 
+      - name: Read release version
+        id: version
+        shell: pwsh
+        run: |
+          $v = (Get-Content package.json -Raw | ConvertFrom-Json).version
+          "tag=v$v" >> $env:GITHUB_OUTPUT
+
       - name: Build desktop release
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAURI_PRIVATE_KEY: ${{ secrets.TAURI_PRIVATE_KEY }}
-          TAURI_KEY_PASSWORD: ${{ secrets.TAURI_KEY_PASSWORD }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_KEY_PASSWORD }}
         with:
-          tagName: ${{ github.ref_name }}
-          releaseName: "Chaotic Neutral Myco Tracker ${{ github.ref_name }}"
+          tagName: ${{ steps.version.outputs.tag }}
+          releaseName: "Chaotic Neutral Myco Tracker ${{ steps.version.outputs.tag }}"
           releaseBody: |
             Desktop release for Chaotic Neutral Myco Tracker.
 
             Includes the Windows NSIS installer and updater artifacts.
-          releaseDraft: false
+          releaseDraft: true
+          includeUpdaterJson: true
           prerelease: false
           tauriScript: "tauri"

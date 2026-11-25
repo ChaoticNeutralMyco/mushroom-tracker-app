@@ -1,4 +1,5 @@
 // vite.config.js
+import { readFileSync } from "node:fs";
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
@@ -13,8 +14,21 @@ export default defineConfig(async () => {
     tauriPlugin = null; // fine for web/Vercel
   }
 
+  const metadata = JSON.parse(readFileSync(new URL("./package.json", import.meta.url), "utf8"));
+  const versionManifest = {
+    name: "myco-version-manifest",
+    apply: "build",
+    generateBundle() {
+      this.emitFile({
+        type: "asset",
+        fileName: "app-version.json",
+        source: JSON.stringify({ version: metadata.version, notes: metadata.mycoReleaseNotes || [] }),
+      });
+    },
+  };
+
   return {
-    plugins: [tailwindcss(), react(), ...(tauriPlugin ? [tauriPlugin] : [])],
+    plugins: [tailwindcss(), react(), versionManifest, ...(tauriPlugin ? [tauriPlugin] : [])],
 
     build: {
       target: "es2020",

@@ -1,7 +1,7 @@
 # scripts/test-subscription-e2e.ps1
 
 param(
-    [ValidateSet("subscription", "lifecycle", "sop", "regression")]
+    [ValidateSet("subscription", "lifecycle", "sop", "regression", "ux", "operations", "modules")]
     [string]$Suite = "subscription",
 
     [string]$Reporter = ""
@@ -154,6 +154,17 @@ try {
                 "tests/e2e/sop-workflow.spec.ts"
             )
         }
+        "ux" {
+            @(
+                "tests/e2e/grow-create-smoke.spec.ts",
+                "tests/e2e/grow-stage-advance-smoke.spec.ts",
+                "tests/e2e/ux-dashboard-grow.spec.ts"
+            )
+        }
+        # The operations suite uses an ordered two-step browser run.
+        # The lifecycle completes trusted accounting before the UI-only audit starts.
+        "operations" { @("tests/e2e/grow-lifecycle.spec.ts") }
+        "modules" { @("tests/e2e/grow-lifecycle.spec.ts") }
     }
 
     $quotedTests = ($testFiles | ForEach-Object { "`"$_`"" }) -join " "
@@ -164,6 +175,24 @@ try {
         " --workers=1" +
         $reporterArgument
     )
+
+    if ($Suite -in @("operations", "modules")) {
+        # A separate Playwright invocation forces fixture creation to finish
+        # before UI observation. The second HTML report contains audit evidence;
+        # stdout records both test runs. Uses the same emulator process/account.
+        $auditTest = if ($Suite -eq "modules") {
+            '"tests/e2e/ux-remaining-modules.spec.ts"'
+        } else {
+            '"tests/e2e/ux-operations-archive.spec.ts"'
+        }
+        $auditCommand = (
+            "`"$node22`" `"$npmCli`" exec -- playwright test " +
+            $auditTest +
+            " --workers=1" +
+            $reporterArgument
+        )
+        $playwrightCommand = $playwrightCommand + " && " + $auditCommand
+    }
 
     & $node22 $firebaseCli emulators:exec `
         --config firebase.json `

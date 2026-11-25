@@ -5,6 +5,7 @@
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import SubscriptionPage from "./SubscriptionPage.jsx";
+import { AppUpdatesPanel } from "../components/ui/AppUpdates.jsx";
 import { auth, db } from "../firebase-config";
 import { doc, getDoc, serverTimestamp, setDoc } from "firebase/firestore";
 import { deleteAllUserData, clearAllLocalCaches, deleteGrowDataOnly } from "../lib/delete-all";
@@ -347,9 +348,6 @@ export default function Settings({
   const [showDeleteAllModal, setShowDeleteAllModal] = useState(false);
   const [typedConfirm, setTypedConfirm] = useState("");
 
-  // Simple status for updater button
-  // null | "checking" | "available" | "none" | "error"
-  const [updateStatus, setUpdateStatus] = useState(null);
 
   // ---- Labels state (kept in this file; read by LabelPrint via LS) ----
   const [labelTemplate, setLabelTemplate] = useState(() => {
@@ -946,43 +944,6 @@ export default function Settings({
       setTypedConfirm("");
     }
   }
-
-  // Desktop-only: check for updates via Tauri updater plugin (no-op in web builds)
-  const handleCheckForUpdates = async () => {
-    try {
-      // Guard: only run in Tauri desktop
-      const tauri = typeof window !== "undefined" ? window.__TAURI__ : null;
-      if (!tauri || !tauri.core || typeof tauri.core.invoke !== "function") {
-        pushNotice("Check for updates is only available in the installed desktop app.", "info");
-        return;
-      }
-
-      setUpdateStatus("checking");
-
-      // Call the updater plugin command.
-      // This mirrors the @tauri-apps/plugin-updater `check()` behavior.
-      const result = await tauri.core.invoke("plugin:updater|check");
-
-      console.log("Updater check result:", result);
-
-      // Try to support different shapes defensively
-      const available =
-        (result && typeof result === "object" && "available" in result && !!result.available) ||
-        (result && typeof result === "object" && result.response && result.response.available);
-
-      if (available) {
-        setUpdateStatus("available");
-        pushNotice("An update is available. The desktop updater will follow your configured behavior.", "success");
-      } else {
-        setUpdateStatus("none");
-        pushNotice("You are already on the latest desktop version.", "info");
-      }
-    } catch (err) {
-      console.error("Update check failed:", err);
-      setUpdateStatus("error");
-      pushNotice("Couldn't check for updates. Make sure you're online and that updater is configured.", "error");
-    }
-  };
 
   // Derived for reminders UI
   const taskRemindersOn = prefs.taskReminders !== false;
@@ -2000,38 +1961,7 @@ export default function Settings({
       {/* ADVANCED */}
       {activeTab === "adv" && (
         <section role="tabpanel" aria-label="Advanced settings" className="space-y-6">
-          {/* Updates block */}
-          <div className="space-y-3">
-            <h2 className="text-lg font-medium">Desktop Updates</h2>
-            <p className="text-sm text-slate-500 dark:text-slate-400">
-              Check for updates to the installed desktop app. This only works in the Tauri desktop build.
-            </p>
-            <div className="flex flex-wrap items-center gap-2">
-              <button
-                type="button"
-                className="btn"
-                onClick={handleCheckForUpdates}
-                disabled={busy || updateStatus === "checking"}
-              >
-                {updateStatus === "checking" ? "Checking…" : "Check for desktop updates"}
-              </button>
-              {updateStatus === "available" && (
-                <span className="text-xs text-emerald-600 dark:text-emerald-400">
-                  Update available — follow any prompts in the desktop app.
-                </span>
-              )}
-              {updateStatus === "none" && (
-                <span className="text-xs text-slate-500 dark:text-slate-400">
-                  You&apos;re on the latest version.
-                </span>
-              )}
-              {updateStatus === "error" && (
-                <span className="text-xs text-rose-500 dark:text-rose-400">
-                  Error checking for updates. See console for details.
-                </span>
-              )}
-            </div>
-          </div>
+          <AppUpdatesPanel />
 
           {/* Danger Zone (unchanged logic) */}
           <div className="space-y-3">

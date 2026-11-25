@@ -2104,20 +2104,17 @@ async function assertPackagedRetailSaleBlockedBeforeReview(
   const result = await page.evaluate(
     async ({ lotId, fixture }) => {
       const firebaseConfig = await import("/src/firebase-config.js");
-      const postprocess = await import("/src/lib/postprocess.js");
-      const userId = firebaseConfig.auth.currentUser?.uid;
-      if (!userId) {
+      const finishedInventory = await import("/src/lib/finishedInventoryApi.js");
+      if (!firebaseConfig.auth.currentUser?.uid) {
         throw new Error("No authenticated Firebase user found for pre-review sale validation.");
       }
 
       try {
-        await postprocess.recordFinishedInventoryMovement({
-          userId,
+        await finishedInventory.recordFinishedInventoryMovementTrusted({
           lotId,
           movementType: "sell",
           quantity: 1,
           date: fixture.date,
-          revenue: Number(fixture.unitPrice || 0) || 0,
           pricePerUnit: Number(fixture.unitPrice || 0) || 0,
           destinationType: fixture.destinationType,
           destinationName: fixture.destinationName,
@@ -2198,7 +2195,7 @@ async function reviewAndReleasePackagedRetailChild(
   await waitForFirestorePackagedRetailChildReleased(session, 30_000);
 }
 
-async function recordFinishedSaleViaAppSdk(
+async function recordFinishedSaleViaTrustedCallable(
   page: Page,
   session: NodeAuthSession
 ) {
@@ -2209,7 +2206,7 @@ async function recordFinishedSaleViaAppSdk(
 
   const lot = findPackagedRetailSaleLot(lots);
   if (!lot?.id) {
-    throw new Error("Could not find the packaged retail child for sale SDK validation.");
+    throw new Error("Could not find the packaged retail child for trusted sale validation.");
   }
 
   const existingRevenue = Number(lot?.outboundSummary?.revenue || 0) || 0;
@@ -2218,21 +2215,18 @@ async function recordFinishedSaleViaAppSdk(
   await page.evaluate(
     async ({ lotId, fixture }) => {
       const firebaseConfig = await import("/src/firebase-config.js");
-      const postprocess = await import("/src/lib/postprocess.js");
-      const userId = firebaseConfig.auth.currentUser?.uid;
-      if (!userId) {
+      const finishedInventory = await import("/src/lib/finishedInventoryApi.js");
+      if (!firebaseConfig.auth.currentUser?.uid) {
         throw new Error(
-          "No authenticated Firebase user found for packaged sale SDK validation."
+          "No authenticated Firebase user found for packaged trusted sale validation."
         );
       }
 
-      await postprocess.recordFinishedInventoryMovement({
-        userId,
+      await finishedInventory.recordFinishedInventoryMovementTrusted({
         lotId,
         movementType: "sell",
         quantity: Number(fixture.quantity || 0) || 0,
         date: fixture.date,
-        revenue: Number(fixture.revenue || 0) || 0,
         pricePerUnit: Number(fixture.unitPrice || 0) || 0,
         destinationType: fixture.destinationType,
         destinationName: fixture.destinationName,
@@ -2582,9 +2576,9 @@ async function recordFinishedSale(
   await openPostProcessingSubtab(page, "Sales");
 
   await withTimeout(
-    recordFinishedSaleViaAppSdk(page, session),
+    recordFinishedSaleViaTrustedCallable(page, session),
     30_000,
-    "Packaged retail sale app-SDK validation timed out."
+    "Packaged retail sale trusted-callable validation timed out."
   );
 
   await waitForFirestoreFinishedSale(session, 30_000);

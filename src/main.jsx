@@ -3,6 +3,7 @@ import React from "react";
 import ReactDOM from "react-dom/client";
 import { BrowserRouter } from "react-router";
 import App from "./App.jsx";
+import { AppUpdateProvider } from "./components/ui/AppUpdates.jsx";
 import QueryProvider from "./providers/QueryProvider.jsx";
 import { SubscriptionProvider } from "./providers/SubscriptionProvider.jsx";
 import "./index.css";
@@ -18,7 +19,7 @@ ReactDOM.createRoot(rootEl).render(
     <BrowserRouter>
       <QueryProvider>
         <SubscriptionProvider>
-          <App />
+          <AppUpdateProvider><App /></AppUpdateProvider>
         </SubscriptionProvider>
       </QueryProvider>
     </BrowserRouter>

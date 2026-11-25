@@ -435,7 +435,10 @@ test("billing controls use emulator-safe redirects and current-plan-aware action
   ).toHaveText(/^Manage billing$/i);
   await expect(
     page.getByTestId("subscription-plan-action-cultivator")
-  ).toHaveText(/Change in billing portal/i);
+  ).toHaveText(/^Plan changes coming soon$/i);
+  await expect(
+    page.getByTestId("subscription-plan-action-cultivator")
+  ).toBeDisabled();
 
   await manageBilling.click();
   await page.waitForURL(/billing=portal-return/, { timeout: 30_000 });
